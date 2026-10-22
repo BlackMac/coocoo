@@ -120,9 +120,24 @@ the agent's project on startup (cards in doing/done keep that agent). Every meth
 | `boards.cardDelete` | `{ projectId, cardId }` | `{}` |
 | `boards.cardStart` | `{ projectId, cardId, agentId?, worktree?: bool, model? }` | `Card` — prompts `agentId` (one of the project's agents, not archived) with the card (title, body, link, how to finish it) like `agents.prompt` (`auto`), or without `agentId` creates a new agent for it (title = card title, optionally in its own worktree); then records the agent on the card and moves it to the top of `doing`. `conflict` if it is already in doing/done |
 | `boards.cardDone` | `{ projectId, cardId, agentId? (the card's agent), commitMessage? (card title), note? }` | `{ card, commit?: CommitInfo, commitSkipped?: "not a git repository" \| "nothing to commit" }` — `git.commit` in that agent's directory (the project's without one), records the agent, then moves the card to the top of `done`; a failing commit leaves the card in place and returns the error |
-| `boards.sourceAdd` | `{ projectId, kind: "feed" \| "command", target, intervalMins? (15, min 5) }` | `Board` — fetched now and then every interval while the daemon runs. `feed`: RSS/Atom URL fetched with `curl`; `command`: `sh -c target` in the project directory, one card per output line. New entries go to the top of `inbox` (the 20 newest on the first fetch); entries are remembered, so deleted cards do not come back. Errors land in `BoardSource.error` |
-| `boards.sourceRemove` | `{ projectId, sourceId }` | `Board` (its cards stay) |
-| `boards.sourceRefresh` | `{ projectId, sourceId }` | `Board` — fetch now |
+| `boards.sourceAdd` | `{ projectId, kind: "feed" \| "command" \| "script", target? (feed URL / command), script? , name? (required for scripts), intervalMins? (15 \| 60 \| 360 \| 1440, default 60), agentId? }` | `{ source: BoardSource, imported }` — an importer for the inbox, run now and then on its schedule while the daemon runs (see below); `source.error` says why a run failed |
+| `boards.sourceUpdate` | `{ projectId, sourceId, name? ("" clears, not for scripts), target? (feed/command), script? (scripts), intervalMins?, agentId? }` | `{ source, imported }` — a given `target`/`script` runs right away; `agentId` records who changed it |
+| `boards.sourceRemove` | `{ projectId, sourceId }` | `Board` (its cards stay; a script's directory is deleted) |
+| `boards.sourceRefresh` | `{ projectId, sourceId }` | `{ source, imported }` — run now |
+
+Importers (`BoardSource`): `feed` fetches an RSS/Atom URL with `curl`; `command` runs `sh -c target`
+in the project directory; `script` is a program (usually written by an agent through
+`kanban_importer_save`) stored in the board and run as `<interpreter from its #! line, else sh>
+<file>` in its own directory `<data_dir>/boards/importers/<source id>/` (cwd, `$HOME`,
+`$COOCOO_STATE_DIR`; kept between runs) with `$COOCOO_PROJECT_DIR`, `PATH` and `LANG` only, 60 s
+timeout. On Linux scripts are sandboxed with Landlock (unprivileged): they can read the system
+(`/usr`, `/etc`, `/proc`, …) and the project, write only their directory (and `/dev`); the rest of
+the filesystem, including the home directory, is denied; network stays open. `BoardSource.sandboxed`
+is the state of the last run (false where Landlock is missing, e.g. macOS). Commands and scripts
+print one item per line: plain text (the title, deduped by the line) or a JSON object
+`{ title, body?, url? (http/https), id? }` (deduped by `id`, else `url`, else `title`). New entries
+go to the top of `inbox` (at most 20 on the first run); entries are remembered, so deleted cards do
+not come back. A failing run (non-zero exit: the last stderr lines) lands in `BoardSource.error`.
 
 Card webhooks: when a card enters `doing` (by `boards.cardStart` or a move) its `startUrl`, when it
 enters `done` (`boards.cardDone`, `kanban_done` or a move) its `doneUrl` gets a `POST` with JSON
@@ -182,6 +197,6 @@ such as `ask`; via the vendored official Rust client `crates/omp-rpc`). The daem
   spawn fails with an agent error if the endpoint cannot be obtained;
 - registers host tools (`coocoo_hosts`, `coocoo_projects`, `coocoo_agents`, `coocoo_spawn`,
   `coocoo_send`, `coocoo_wait`) so agents orchestrate other agents on any host of the fleet, and
-  `kanban_list`, `kanban_add`, `kanban_move`, `kanban_done` for the board of the agent's project;
+  `kanban_list`, `kanban_add`, `kanban_move`, `kanban_done` for the board of the agent's project, and `kanban_importers`, `kanban_importer_save` (create/change a script or feed importer; runs it once and reports the result), `kanban_importer_delete` for its inbox importers (agents cannot create or change `command` importers);
 - enables `set_ask_dialog` and surfaces omp `extension_ui_request`s as `UiRequest`s;
 - hibernates idle agents (process exit, session kept) and resumes them with `--resume <sessionFile>`.

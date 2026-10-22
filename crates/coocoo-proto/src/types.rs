@@ -558,18 +558,34 @@ pub struct Card {
 #[serde(rename_all = "camelCase")]
 pub struct BoardSource {
     pub id: String,
-    /// `feed`: RSS/Atom URL; `command`: shell command run in the agent's directory, one card
-    /// per output line.
+    /// `feed`: RSS/Atom URL; `command`: shell command run in the project directory; `script`: a
+    /// small program an agent wrote, run sandboxed in its own state directory. Commands and
+    /// scripts print one item per line (plain title or a JSON object).
     pub kind: String,
-    /// Feed URL or command.
+    /// Feed URL or command (empty for scripts).
+    #[serde(default)]
     pub target: String,
+    /// Label, e.g. "Svelte changelog" (required for scripts).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Source code of a `script` importer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<String>,
     pub interval_mins: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checked_at: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// Entry keys already imported (feed guid/link, command line), newest last; deleting a card
-    /// does not bring it back.
+    /// Whether the last run of a script was sandboxed (Landlock on Linux).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandboxed: Option<bool>,
+    /// The agent that created or last changed it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_title: Option<String>,
+    /// Entry keys already imported (feed guid/link, line or JSON `id`), newest last; deleting a
+    /// card does not bring it back.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub seen: Vec<String>,
 }

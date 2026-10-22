@@ -671,6 +671,7 @@ name = "coocoo-agents"
 version = "0.1.0"
 dependencies = [
  "coocoo-proto",
+ "libc",
  "omp-rpc",
  "parking_lot",
  "quick-xml",

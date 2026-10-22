@@ -16,8 +16,8 @@ use coocoo_proto::{ApiError, ApiResult, Board, BoardEvent, BoardSource, Card, Ca
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::Agents;
 use crate::state::Life;
+use crate::{Agents, sandbox};
 
 const MAX_TITLE: usize = 300;
 const MAX_BODY: usize = 8 * 1024;
@@ -25,8 +25,11 @@ const MAX_BODY: usize = 8 * 1024;
 const MAX_SEEN: usize = 1000;
 /// A newly added source imports only its newest entries; older ones are marked seen.
 const FIRST_IMPORT: usize = 20;
-const DEFAULT_INTERVAL_MINS: u32 = 15;
-const MIN_INTERVAL_MINS: u32 = 5;
+/// The schedules an importer can run on, in minutes (15 min, hourly, every 6 h, daily).
+pub(crate) const INTERVALS: [u32; 4] = [15, 60, 360, 1440];
+const DEFAULT_INTERVAL_MINS: u32 = 60;
+const SCRIPT_TIMEOUT: Duration = Duration::from_secs(60);
+const MAX_SCRIPT: usize = 64 * 1024;
 /// How often due sources are looked for.
 const POLL_TICK: Duration = Duration::from_secs(60);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
@@ -109,8 +112,27 @@ struct CardDoneParams {
 struct SourceAddParams {
     project_id: String,
     kind: String,
+    #[serde(default)]
     target: String,
+    name: Option<String>,
+    script: Option<String>,
     interval_mins: Option<u32>,
+    /// The agent creating it.
+    agent_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SourceUpdateParams {
+    project_id: String,
+    source_id: String,
+    /// `""` clears it (not for scripts).
+    name: Option<String>,
+    target: Option<String>,
+    script: Option<String>,
+    interval_mins: Option<u32>,
+    /// The agent changing it.
+    agent_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -123,7 +145,7 @@ struct SourceParams {
 /// One entry from a source.
 #[derive(Debug, PartialEq)]
 struct Entry {
-    /// Dedup key: feed guid/link, or the command's output line.
+    /// Dedup key: feed guid/link, the output line, or a JSON line's `id`/`url`/`title`.
     key: String,
     title: String,
     body: Option<String>,
@@ -173,6 +195,40 @@ fn clean_url(url: &str) -> ApiResult<Option<String>> {
         return Err(ApiError::invalid(format!("`{url}` is not an http(s) URL")));
     }
     Ok(Some(url.to_owned()))
+}
+
+fn check_interval(mins: u32) -> ApiResult<u32> {
+    if INTERVALS.contains(&mins) {
+        return Ok(mins);
+    }
+    Err(ApiError::invalid(format!("intervalMins must be one of {INTERVALS:?} (minutes), not {mins}")))
+}
+
+/// Importer label; `None` when blank.
+fn clean_name(name: &str) -> Option<String> {
+    let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!name.is_empty()).then(|| truncate(&name, MAX_TITLE))
+}
+
+fn check_target(kind: &str, target: &str) -> ApiResult<String> {
+    let target = target.trim();
+    match kind {
+        "feed" if target.starts_with("http://") || target.starts_with("https://") => {}
+        "feed" => return Err(ApiError::invalid("a feed needs an http(s) URL")),
+        _ if target.is_empty() => return Err(ApiError::invalid("the command must not be empty")),
+        _ => {}
+    }
+    Ok(target.to_owned())
+}
+
+fn check_script(script: String) -> ApiResult<String> {
+    if script.trim().is_empty() {
+        return Err(ApiError::invalid("the script must not be empty"));
+    }
+    if script.len() > MAX_SCRIPT {
+        return Err(ApiError::invalid(format!("the script is larger than {} KiB", MAX_SCRIPT / 1024)));
+    }
+    Ok(script)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -350,22 +406,28 @@ impl Agents {
             "boards.cardDone" => self.card_done(params(p)?).await,
             "boards.sourceAdd" => {
                 let p: SourceAddParams = params(p)?;
-                let target = p.target.trim().to_owned();
-                match p.kind.as_str() {
-                    "feed" if target.starts_with("http://") || target.starts_with("https://") => {}
-                    "feed" => return Err(ApiError::invalid("a feed needs an http(s) URL")),
-                    "command" if !target.is_empty() => {}
-                    "command" => return Err(ApiError::invalid("the command must not be empty")),
-                    other => return Err(ApiError::invalid(format!("unknown source kind `{other}` (feed, command)"))),
-                }
+                let interval_mins = check_interval(p.interval_mins.unwrap_or(DEFAULT_INTERVAL_MINS))?;
+                let name = p.name.as_deref().and_then(clean_name);
+                let (target, script) = match p.kind.as_str() {
+                    "feed" | "command" => (check_target(&p.kind, &p.target)?, None),
+                    "script" if name.is_none() => return Err(ApiError::invalid("a script importer needs a name")),
+                    "script" => (String::new(), Some(check_script(p.script.unwrap_or_default())?)),
+                    other => return Err(ApiError::invalid(format!("unknown source kind `{other}` (feed, command, script)"))),
+                };
                 self.project(&p.project_id).await?;
+                let agent = p.agent_id.map(|id| self.get(&id)).transpose()?.map(|a| a.summary());
                 let source = BoardSource {
                     id: new_id(),
                     kind: p.kind,
                     target,
-                    interval_mins: p.interval_mins.unwrap_or(DEFAULT_INTERVAL_MINS).max(MIN_INTERVAL_MINS),
+                    name,
+                    script,
+                    interval_mins,
                     checked_at: None,
                     error: None,
+                    sandboxed: None,
+                    agent_id: agent.as_ref().map(|a| a.id.clone()),
+                    agent_title: agent.map(|a| a.title),
                     seen: Vec::new(),
                 };
                 let source_id = source.id.clone();
@@ -373,22 +435,69 @@ impl Agents {
                     b.sources.push(source);
                     Ok(((), true))
                 })?;
-                self.refresh_source(&p.project_id, &source_id).await;
-                ok(self.edit_board(&p.project_id, |b| Ok((b.clone(), false)))?)
+                let imported = self.refresh_source(&p.project_id, &source_id).await;
+                self.source_run(&p.project_id, &source_id, imported)
+            }
+            "boards.sourceUpdate" => {
+                let p: SourceUpdateParams = params(p)?;
+                let interval_mins = p.interval_mins.map(check_interval).transpose()?;
+                let script = p.script.map(check_script).transpose()?;
+                self.project(&p.project_id).await?;
+                let agent = p.agent_id.map(|id| self.get(&id)).transpose()?.map(|a| a.summary());
+                // A given feed URL, command or script runs right away (also when unchanged).
+                let rerun = self.edit_board(&p.project_id, |b| {
+                    let source = b.sources.iter_mut().find(|s| s.id == p.source_id).ok_or_else(|| ApiError::not_found("source"))?;
+                    let script_kind = source.kind == "script";
+                    let mut rerun = false;
+                    if let Some(target) = &p.target {
+                        if script_kind {
+                            return Err(ApiError::invalid("a script importer has no target; change its script"));
+                        }
+                        source.target = check_target(&source.kind, target)?;
+                        rerun = true;
+                    }
+                    if let Some(script) = script {
+                        if !script_kind {
+                            return Err(ApiError::invalid(format!("a {} source has no script", source.kind)));
+                        }
+                        source.script = Some(script);
+                        rerun = true;
+                    }
+                    if let Some(name) = &p.name {
+                        let name = clean_name(name);
+                        if name.is_none() && script_kind {
+                            return Err(ApiError::invalid("a script importer needs a name"));
+                        }
+                        source.name = name;
+                    }
+                    if let Some(mins) = interval_mins {
+                        source.interval_mins = mins;
+                    }
+                    if let Some(agent) = &agent {
+                        source.agent_id = Some(agent.id.clone());
+                        source.agent_title = Some(agent.title.clone());
+                    }
+                    Ok((rerun, true))
+                })?;
+                let imported = if rerun { self.refresh_source(&p.project_id, &p.source_id).await } else { 0 };
+                self.source_run(&p.project_id, &p.source_id, imported)
             }
             "boards.sourceRemove" => {
                 let p: SourceParams = params(p)?;
                 self.project(&p.project_id).await?;
-                ok(self.edit_board(&p.project_id, |b| {
+                let board = self.edit_board(&p.project_id, |b| {
                     b.sources.retain(|s| s.id != p.source_id);
                     Ok((b.clone(), true))
-                })?)
+                })?;
+                // A script's state directory goes with it.
+                let _ = std::fs::remove_dir_all(self.importer_dir(&p.source_id));
+                ok(board)
             }
             "boards.sourceRefresh" => {
                 let p: SourceParams = params(p)?;
                 self.project(&p.project_id).await?;
-                self.refresh_source(&p.project_id, &p.source_id).await;
-                ok(self.edit_board(&p.project_id, |b| Ok((b.clone(), false)))?)
+                let imported = self.refresh_source(&p.project_id, &p.source_id).await;
+                self.source_run(&p.project_id, &p.source_id, imported)
             }
             _ => Err(ApiError::unknown_method(method)),
         }
@@ -402,6 +511,20 @@ impl Agents {
 
     fn board_file(&self, project_id: &str) -> PathBuf {
         self.boards_dir.join(format!("{project_id}.json"))
+    }
+
+    /// Working and state directory of a script importer (its files persist between runs).
+    fn importer_dir(&self, source_id: &str) -> PathBuf {
+        self.boards_dir.join("importers").join(source_id)
+    }
+
+    /// Result of adding/changing/running a source: `{ source, imported }` (`source.error` says
+    /// why a run failed).
+    fn source_run(&self, project_id: &str, source_id: &str, imported: usize) -> ApiResult<Value> {
+        let source = self.edit_board(project_id, |b| Ok((b.sources.iter().find(|s| s.id == source_id).cloned(), false)))?;
+        let mut source = source.ok_or_else(|| ApiError::not_found("source"))?;
+        source.seen = Vec::new();
+        Ok(json!({ "source": source, "imported": imported }))
     }
 
     /// Run `f` on the project's board (loaded on first use); persist and announce it when `f`
@@ -512,21 +635,30 @@ impl Agents {
         });
     }
 
-    /// Fetch one source and drop its new entries at the top of the inbox. Commands run in the
-    /// project directory.
-    async fn refresh_source(&self, project_id: &str, source_id: &str) {
+    /// Fetch one source and drop its new entries at the top of the inbox; returns how many
+    /// cards it added. Commands run in the project directory, scripts sandboxed in their own.
+    async fn refresh_source(&self, project_id: &str, source_id: &str) -> usize {
         let source = self.edit_board(project_id, |b| Ok((b.sources.iter().find(|s| s.id == source_id).cloned(), false)));
-        let Ok(Some(source)) = source else { return };
+        let Ok(Some(source)) = source else { return 0 };
+        let mut sandboxed = None;
         let fetched = match source.kind.as_str() {
             "feed" => fetch_feed(&source.target).await,
-            _ => match self.project(project_id).await {
+            kind => match self.project(project_id).await {
+                Ok(project) if kind == "script" => {
+                    let (result, confined) = run_script(source.script.as_deref().unwrap_or_default(), &self.importer_dir(source_id), &project.path).await;
+                    sandboxed = Some(confined);
+                    result
+                }
                 Ok(project) => run_command(&source.target, &project.path).await,
                 Err(err) => Err(err.message),
             },
         };
-        let _ = self.edit_board(project_id, |b| {
-            let Some(source) = b.sources.iter_mut().find(|s| s.id == source_id) else { return Ok(((), false)) };
+        self.edit_board(project_id, |b| {
+            let Some(source) = b.sources.iter_mut().find(|s| s.id == source_id) else { return Ok((0, false)) };
             source.checked_at = Some(now_ms());
+            if sandboxed.is_some() {
+                source.sandboxed = sandboxed;
+            }
             let entries = match fetched {
                 Ok(entries) => {
                     source.error = None;
@@ -534,7 +666,7 @@ impl Agents {
                 }
                 Err(err) => {
                     source.error = Some(err);
-                    return Ok(((), true));
+                    return Ok((0, true));
                 }
             };
             let first = source.seen.is_empty();
@@ -544,16 +676,19 @@ impl Agents {
             source.seen.drain(..excess);
             let take = if first { FIRST_IMPORT } else { usize::MAX };
             let source_id = source.id.clone();
-            for (i, entry) in fresh.into_iter().take(take).enumerate() {
+            let mut imported = 0;
+            for entry in fresh.into_iter().take(take) {
                 let Ok(title) = clean_title(&entry.title) else { continue };
                 let mut card = new_card(title, clean_body(entry.body), CardColumn::Inbox);
                 card.url = entry.url;
                 card.source = Some(source_id.clone());
-                let at = insert_at(&b.cards, CardColumn::Inbox, i);
+                let at = insert_at(&b.cards, CardColumn::Inbox, imported);
                 b.cards.insert(at, card);
+                imported += 1;
             }
-            Ok(((), true))
-        });
+            Ok((imported, true))
+        })
+        .unwrap_or(0)
     }
 
     /// Check due sources of every board every [`POLL_TICK`] while the daemon runs.
@@ -592,16 +727,19 @@ impl Agents {
     }
 }
 
-async fn output(mut command: tokio::process::Command, what: &str) -> Result<String, String> {
+async fn output(mut command: tokio::process::Command, what: &str, timeout: Duration) -> Result<String, String> {
     command.stdin(std::process::Stdio::null()).kill_on_drop(true);
-    let out = tokio::time::timeout(FETCH_TIMEOUT, command.output())
+    let out = tokio::time::timeout(timeout, command.output())
         .await
-        .map_err(|_| format!("{what} timed out"))?
+        .map_err(|_| format!("{what} timed out after {} s", timeout.as_secs()))?
         .map_err(|e| format!("cannot run {what}: {e}"))?;
     if !out.status.success() {
+        // The last few stderr lines: enough to see a traceback's point of failure.
         let stderr = String::from_utf8_lossy(&out.stderr);
-        let reason = stderr.lines().map(str::trim).rfind(|l| !l.is_empty()).unwrap_or("failed");
-        return Err(if reason.starts_with(what) { reason.to_owned() } else { format!("{what}: {reason}") });
+        let lines: Vec<&str> = stderr.lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).collect();
+        let reason = lines[lines.len().saturating_sub(5)..].join("\n");
+        let reason = if reason.is_empty() { format!("exited with {}", out.status) } else { truncate(&reason, 1500) };
+        return Err(if reason.starts_with(what) { reason } else { format!("{what}: {reason}") });
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
@@ -663,20 +801,77 @@ async fn post_json(url: &str, body: &Value) -> Result<(), String> {
 async fn fetch_feed(url: &str) -> Result<Vec<Entry>, String> {
     let mut command = tokio::process::Command::new("curl");
     command.args(["-fsSL", "--max-time", "25", "--max-filesize", MAX_FEED_BYTES, "-A", "coocoo", "--", url]);
-    parse_feed(&output(command, "curl").await?)
+    parse_feed(&output(command, "curl", FETCH_TIMEOUT).await?)
 }
 
-/// One card per non-empty output line, keyed by the line.
 async fn run_command(command_line: &str, cwd: &str) -> Result<Vec<Entry>, String> {
     let mut command = tokio::process::Command::new("sh");
     command.args(["-c", command_line]).current_dir(cwd);
-    let out = output(command, "command").await?;
-    Ok(out
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .map(|line| Entry { key: line.to_owned(), title: line.to_owned(), body: None, url: None })
-        .collect())
+    Ok(parse_lines(&output(command, "command", FETCH_TIMEOUT).await?))
+}
+
+/// Run a script importer in `dir` (its cwd, `$HOME` and state directory), sandboxed where
+/// possible: it may read the system and the project and change only `dir`. The shebang line
+/// picks the interpreter (`sh` without one). The environment is not inherited (it may hold
+/// API keys). Returns the entries and whether it ran sandboxed.
+async fn run_script(script: &str, dir: &Path, project_dir: &str) -> (Result<Vec<Entry>, String>, bool) {
+    let tmp = dir.join("tmp");
+    let file = dir.join("importer");
+    if let Err(err) = std::fs::create_dir_all(&tmp).and_then(|()| std::fs::write(&file, script)) {
+        return (Err(format!("cannot write the script: {err}")), false);
+    }
+    // Run the interpreter on the file instead of exec'ing the file itself: no exec bit, and no
+    // ETXTBSY when another thread forks while the file is being written.
+    let shebang = script.strip_prefix("#!").and_then(|s| s.lines().next()).map(str::trim).filter(|l| !l.is_empty());
+    let mut command = match shebang {
+        Some(line) => {
+            let (interpreter, arg) = line.split_once(char::is_whitespace).map_or((line, None), |(i, a)| (i, Some(a.trim())));
+            let mut command = tokio::process::Command::new(interpreter);
+            command.args(arg);
+            command
+        }
+        None => tokio::process::Command::new("sh"),
+    };
+    let path = std::env::var_os("PATH").unwrap_or_else(|| "/usr/local/bin:/usr/bin:/bin".into());
+    let lang = std::env::var_os("LANG").unwrap_or_else(|| "C.UTF-8".into());
+    command
+        .arg(&file)
+        .current_dir(dir)
+        .env_clear()
+        .env("PATH", path)
+        .env("LANG", lang)
+        .env("HOME", dir)
+        .env("TMPDIR", &tmp)
+        .env("COOCOO_STATE_DIR", dir)
+        .env("COOCOO_PROJECT_DIR", project_dir);
+    let sandboxed = match sandbox::confine(&mut command, &[Path::new(project_dir)], &[dir]) {
+        Ok(()) => true,
+        Err(reason) => {
+            tracing::warn!(dir = %dir.display(), "importer runs unsandboxed: {reason}");
+            false
+        }
+    };
+    (output(command, "script", SCRIPT_TIMEOUT).await.map(|out| parse_lines(&out)), sandboxed)
+}
+
+/// One entry per non-empty line: a JSON object `{ title, body?, url?, id? }` (deduped by `id`,
+/// else `url`, else `title`; objects without a title are skipped) or plain text (the title,
+/// deduped by the line).
+fn parse_lines(out: &str) -> Vec<Entry> {
+    let lines = out.lines().map(str::trim).filter(|l| !l.is_empty());
+    lines
+        .filter_map(|line| {
+            let object = line.starts_with('{').then(|| serde_json::from_str::<serde_json::Map<String, Value>>(line).ok()).flatten();
+            let Some(object) = object else {
+                return Some(Entry { key: line.to_owned(), title: line.to_owned(), body: None, url: None });
+            };
+            let text = |key: &str| object.get(key).and_then(Value::as_str).map(str::trim).filter(|v| !v.is_empty()).map(str::to_owned);
+            let title = text("title")?;
+            let url = text("url").filter(|u| u.starts_with("http://") || u.starts_with("https://"));
+            let id = object.get("id").and_then(|v| v.as_str().map(str::to_owned).or_else(|| v.as_number().map(ToString::to_string)));
+            Some(Entry { key: id.or_else(|| url.clone()).unwrap_or_else(|| title.clone()), title, body: text("body"), url })
+        })
+        .collect()
 }
 
 /// Items of an RSS 2.0/RDF (`item`) or Atom (`entry`) feed, in document order.
@@ -837,6 +1032,15 @@ mod tests {
         assert_eq!(clean_url(" https://x.y/h?a=1 ").unwrap().as_deref(), Some("https://x.y/h?a=1"));
         assert_eq!(clean_url("").unwrap(), None);
         assert!(clean_url("file:///etc/passwd").is_err() && clean_url("http://a b").is_err());
+    }
+
+    #[test]
+    fn output_lines_become_entries() {
+        let out = "plain line\n\n{\"title\": \"v2.1\", \"body\": \"notes\", \"url\": \"https://x.y/2.1\", \"id\": 21}\n{\"title\": \"no id\", \"url\": \"javascript:alert(1)\"}\n{\"body\": \"no title\"}\n{not json";
+        let entries = parse_lines(out);
+        let keys: Vec<(&str, &str, Option<&str>)> = entries.iter().map(|e| (e.key.as_str(), e.title.as_str(), e.url.as_deref())).collect();
+        assert_eq!(keys, [("plain line", "plain line", None), ("21", "v2.1", Some("https://x.y/2.1")), ("no id", "no id", None), ("{not json", "{not json", None)]);
+        assert_eq!(entries[1].body.as_deref(), Some("notes"));
     }
 
     #[test]

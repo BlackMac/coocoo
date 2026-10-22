@@ -13,4 +13,5 @@ serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 parking_lot.workspace = true
+libc.workspace = true
 quick-xml = { version = "0.42", default-features = false }

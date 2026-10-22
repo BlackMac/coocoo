@@ -5,8 +5,8 @@
   import { ui } from '../lib/ui.svelte';
   import { href } from '../lib/router.svelte';
   import { agentState } from '../lib/status';
-  import type { AgentSummary, Card, CardColumn } from '../lib/protocol';
-  import { ArrowUp, ExternalLink, GitCommitHorizontal, Inbox, Plus, RotateCw, Rss, Terminal, Trash2, Webhook, X } from '../lib/icons';
+  import { IMPORT_INTERVALS, type AgentSummary, type BoardSource, type Card, type CardColumn } from '../lib/protocol';
+  import { ArrowUp, ExternalLink, FileCode, GitCommitHorizontal, Inbox, Plus, RotateCw, Rss, ShieldCheck, ShieldOff, Terminal, Trash2, Webhook, X } from '../lib/icons';
   import StartCard from '../agent/StartCard.svelte';
   import StatusDot from '../components/StatusDot.svelte';
 
@@ -116,18 +116,18 @@
     void move(card, target.column, index);
   }
 
-  // ─── Sources ───────────────────────────────────────────────────────────────────────────────
+  // ─── Importers (inbox sources) ─────────────────────────────────────────────────────────────
   let sourcesOpen = $state(false);
   let srcKind = $state<'feed' | 'command'>('feed');
   let srcTarget = $state('');
-  let srcInterval = $state(15);
+  let srcInterval = $state(60);
   let srcBusy = $state(false);
   async function addSource(e: SubmitEvent) {
     e.preventDefault();
     if (!srcTarget.trim()) return;
     srcBusy = true;
-    const ok = await run('Could not add the source', () =>
-      fleet.call('boards.sourceAdd', { projectId, kind: srcKind, target: srcTarget.trim(), intervalMins: srcInterval }, host, 60_000),
+    const ok = await run('Could not add the importer', () =>
+      fleet.call('boards.sourceAdd', { projectId, kind: srcKind, target: srcTarget.trim(), intervalMins: srcInterval }, host, 90_000),
     );
     srcBusy = false;
     if (ok) srcTarget = '';
@@ -135,13 +135,36 @@
   let refreshing = $state<string | null>(null);
   async function refreshSource(id: string) {
     refreshing = id;
-    await run('Could not refresh the source', () => fleet.call('boards.sourceRefresh', { projectId, sourceId: id }, host, 60_000));
+    await run('Could not run the importer', () => fleet.call('boards.sourceRefresh', { projectId, sourceId: id }, host, 90_000));
     refreshing = null;
   }
-  const removeSource = (id: string) => run('Could not remove the source', () => fleet.call('boards.sourceRemove', { projectId, sourceId: id }, host));
+  const reschedule = (s: BoardSource, intervalMins: number) =>
+    run('Could not change the schedule', () => fleet.call('boards.sourceUpdate', { projectId, sourceId: s.id, intervalMins }, host));
+  function removeSource(s: BoardSource) {
+    const remove = () => run('Could not delete the importer', () => fleet.call('boards.sourceRemove', { projectId, sourceId: s.id }, host));
+    if (s.kind !== 'script') return void remove();
+    // A script is work an agent did: ask first.
+    ui.dialog = {
+      kind: 'confirm',
+      title: 'Delete importer',
+      message: `Delete the script importer “${s.name}”? Cards it imported stay.`,
+      action: 'Delete',
+      danger: true,
+      run: async () => {
+        await remove();
+      },
+    };
+  }
+  let scriptOpen = $state<string | null>(null);
+  const intervalLabel = (mins: number) =>
+    ({ 15: 'every 15 min', 60: 'hourly', 360: 'every 6 h', 1440: 'daily' })[mins] ?? `every ${mins} min`;
+  /** The preset schedules, plus a source's older custom one. */
+  const intervalChoices = (mins: number): number[] =>
+    (IMPORT_INTERVALS as readonly number[]).includes(mins) ? [...IMPORT_INTERVALS] : [...IMPORT_INTERVALS, mins].sort((a, b) => a - b);
   const sourceName = (id?: string) => {
     const s = board?.sources.find((x) => x.id === id);
     if (!s) return undefined;
+    if (s.name) return s.name;
     return s.kind === 'feed' ? s.target.replace(/^https?:\/\/(www\.)?/, '').split('/')[0] : s.target;
   };
 </script>
@@ -241,39 +264,60 @@
 
     <section class="sources">
       <button class="shead" onclick={() => (sourcesOpen = !sourcesOpen)} aria-expanded={sourcesOpen}>
-        <Rss size={12} />Inbox sources<span class="count num">{board.sources.length}</span>
+        <Rss size={12} />Importers<span class="count num">{board.sources.length}</span>
       </button>
       {#if sourcesOpen}
         {#each board.sources as s (s.id)}
           <div class="src">
-            {#if s.kind === 'feed'}<Rss size={12} />{:else}<Terminal size={12} />{/if}
+            {#if s.kind === 'feed'}<Rss size={12} />{:else if s.kind === 'command'}<Terminal size={12} />{:else}<FileCode size={12} />{/if}
             <div class="sinfo">
-              <span class="mono ellipsis" title={s.target}>{s.target}</span>
-              <span class="faint">
-                every {s.intervalMins} min{s.checkedAt ? ` · checked ${ago(s.checkedAt, now.value)} ago` : ''}
+              {#if s.kind === 'script'}
+                <button class="sname" onclick={() => (scriptOpen = scriptOpen === s.id ? null : s.id)} aria-expanded={scriptOpen === s.id} title="Show the script">
+                  <span class="ellipsis">{s.name}</span>
+                </button>
+              {:else}
+                <span class="mono ellipsis" title={s.target}>{s.name ?? s.target}</span>
+              {/if}
+              <span class="faint smeta">
+                {#if s.kind === 'script' && s.sandboxed !== undefined}
+                  {#if s.sandboxed}
+                    <span class="sbx" title="Can read the system and the project, write only its own directory"><ShieldCheck size={11} />sandboxed</span>
+                  {:else}
+                    <span class="sbx off" title="Sandboxing (Landlock) is not available on this host"><ShieldOff size={11} />not sandboxed</span>
+                  {/if}
+                {/if}
+                {#if s.agentTitle}<span class="ellipsis">by {s.agentTitle}</span>{/if}
+                {#if s.checkedAt}<span>ran {ago(s.checkedAt, now.value)} ago</span>{/if}
               </span>
               {#if s.error}<span class="serr">{s.error}</span>{/if}
+              {#if scriptOpen === s.id && s.script}<pre class="script mono">{s.script}</pre>{/if}
             </div>
-            <button class="btn ghost icon sm" title="Check now" aria-label="Check now" disabled={refreshing === s.id} onclick={() => refreshSource(s.id)}>
+            <select class="select interval" value={s.intervalMins} onchange={(e) => reschedule(s, Number(e.currentTarget.value))} aria-label="Schedule">
+              {#each intervalChoices(s.intervalMins) as mins (mins)}<option value={mins}>{intervalLabel(mins)}</option>{/each}
+            </select>
+            <button class="btn ghost icon sm" title="Run now" aria-label="Run now" disabled={refreshing === s.id} onclick={() => refreshSource(s.id)}>
               <span class:spin={refreshing === s.id}><RotateCw size={12} /></span>
             </button>
-            <button class="btn ghost icon sm" title="Remove source" aria-label="Remove source" onclick={() => removeSource(s.id)}><X size={13} /></button>
+            <button class="btn ghost icon sm" title="Delete importer" aria-label="Delete importer" onclick={() => removeSource(s)}><X size={13} /></button>
           </div>
         {/each}
-          <form class="sadd" onsubmit={addSource}>
-            <input class="input mono target" bind:value={srcTarget} placeholder={srcKind === 'feed' ? 'https://example.com/feed.xml' : 'gh issue list --json title -q ".[].title"'} spellcheck="false" aria-label={srcKind === 'feed' ? 'Feed URL' : 'Command'} />
-            <select class="select" bind:value={srcKind} aria-label="Source kind">
-              <option value="feed">RSS/Atom feed</option>
-              <option value="command">Command</option>
-            </select>
-            <label class="every faint">every <input class="input num" type="number" min="5" bind:value={srcInterval} /> min</label>
-            <button class="btn sm" disabled={srcBusy || !srcTarget.trim()}>{#if srcBusy}<span class="spinner"></span>{:else}Add{/if}</button>
-          </form>
-          <p class="hint">
-            {srcKind === 'feed'
-              ? 'New feed items become inbox cards (the 20 newest when you add it).'
-              : 'Runs in the project directory; each output line becomes an inbox card once.'}
-          </p>
+        <form class="sadd" onsubmit={addSource}>
+          <input class="input mono target" bind:value={srcTarget} placeholder={srcKind === 'feed' ? 'https://example.com/feed.xml' : 'gh issue list --json title -q ".[].title"'} spellcheck="false" aria-label={srcKind === 'feed' ? 'Feed URL' : 'Command'} />
+          <select class="select" bind:value={srcKind} aria-label="Importer kind">
+            <option value="feed">RSS/Atom feed</option>
+            <option value="command">Command</option>
+          </select>
+          <select class="select" bind:value={srcInterval} aria-label="Schedule">
+            {#each IMPORT_INTERVALS as mins (mins)}<option value={mins}>{intervalLabel(mins)}</option>{/each}
+          </select>
+          <button class="btn sm" disabled={srcBusy || !srcTarget.trim()}>{#if srcBusy}<span class="spinner"></span>{:else}Add{/if}</button>
+        </form>
+        <p class="hint">
+          {srcKind === 'feed'
+            ? 'New feed items become inbox cards (the 20 newest when you add it).'
+            : 'Runs in the project directory; each output line becomes an inbox card once.'}
+          For anything else, ask an agent to build an importer, e.g. “put every new entry of X's changelog in the inbox”.
+        </p>
       {/if}
     </section>
   {/if}
@@ -538,6 +582,56 @@
   }
   .serr {
     color: var(--red);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .sname {
+    display: flex;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .sname:hover {
+    text-decoration: underline;
+  }
+  .smeta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 8px;
+    min-width: 0;
+  }
+  .sbx {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    color: var(--green);
+  }
+  .sbx.off {
+    color: var(--amber);
+  }
+  .script {
+    max-height: 260px;
+    margin: 4px 0 0;
+    padding: 8px;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    background: var(--bg);
+    color: var(--text-2);
+    font-size: var(--fs-xs);
+    white-space: pre;
+  }
+  .src .interval {
+    flex: none;
+    width: auto;
+    height: 24px;
+    padding-left: 6px;
+    font-size: var(--fs-xs);
   }
   .sadd {
     display: flex;
@@ -550,15 +644,6 @@
   }
   .sadd > .target {
     flex: 1 1 100%;
-  }
-  .every {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    font-size: var(--fs-xs);
-  }
-  .every .input {
-    width: 56px;
   }
   .spin {
     display: flex;

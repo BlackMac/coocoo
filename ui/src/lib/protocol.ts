@@ -330,14 +330,34 @@ export interface Card {
   hookError?: string;
 }
 
+export type SourceKind = 'feed' | 'command' | 'script';
+
+/** Schedules an importer can run on, in minutes. */
+export const IMPORT_INTERVALS = [15, 60, 360, 1440] as const;
+
 export interface BoardSource {
   id: string;
-  /** `feed` (RSS/Atom URL) or `command` (one card per output line). */
-  kind: 'feed' | 'command';
+  /** `feed` (RSS/Atom URL), `command` (run in the project, one card per output line) or
+   *  `script` (a program an agent wrote, run sandboxed in its own directory). */
+  kind: SourceKind;
+  /** Feed URL or command; empty for scripts. */
   target: string;
+  name?: string;
+  script?: string;
   intervalMins: number;
   checkedAt?: number;
   error?: string;
+  /** Whether a script's last run was sandboxed. */
+  sandboxed?: boolean;
+  /** Agent that created or last changed it. */
+  agentId?: string;
+  agentTitle?: string;
+}
+
+/** Result of adding, changing or running a source. */
+export interface SourceRun {
+  source: BoardSource;
+  imported: number;
 }
 
 export interface AgentDetail {
@@ -629,9 +649,16 @@ export interface Methods {
   /** Without `agentId` a new agent is created for the card (optionally in a worktree). */
   'boards.cardStart': [{ projectId: string; cardId: string; agentId?: string; worktree?: boolean; model?: string }, Card];
   'boards.cardDone': [{ projectId: string; cardId: string; agentId?: string; commitMessage?: string; note?: string }, { card: Card; commit?: CommitInfo; commitSkipped?: string }];
-  'boards.sourceAdd': [{ projectId: string; kind: 'feed' | 'command'; target: string; intervalMins?: number }, Board];
+  'boards.sourceAdd': [
+    { projectId: string; kind: SourceKind; target?: string; name?: string; script?: string; intervalMins?: number; agentId?: string },
+    SourceRun,
+  ];
+  'boards.sourceUpdate': [
+    { projectId: string; sourceId: string; name?: string; target?: string; script?: string; intervalMins?: number; agentId?: string },
+    SourceRun,
+  ];
   'boards.sourceRemove': [{ projectId: string; sourceId: string }, Board];
-  'boards.sourceRefresh': [{ projectId: string; sourceId: string }, Board];
+  'boards.sourceRefresh': [{ projectId: string; sourceId: string }, SourceRun];
   'agents.hibernate': [{ id: string }, AgentSummary];
   'agents.archive': [{ id: string }, AgentSummary];
   'agents.delete': [{ id: string; removeWorktree?: boolean }, Ok];

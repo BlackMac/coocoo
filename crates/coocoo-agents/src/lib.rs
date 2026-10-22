@@ -12,6 +12,7 @@ mod api;
 mod board;
 mod mapper;
 mod process;
+mod sandbox;
 mod state;
 mod timeline;
 mod tools;

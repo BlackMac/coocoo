@@ -324,6 +324,105 @@ impl ToolEnv {
         let done = self.call(None, "boards.cardDone", params)?;
         Ok(text(&json!({ "column": "done", "commit": done.get("commit"), "commitSkipped": done.get("commitSkipped") })))
     }
+
+    /// An importer as the agent sees it; `script` only on request (it can be long).
+    fn importer_view(&self, s: &Value, with_script: bool) -> Value {
+        let mut view = json!({
+            "id": s["id"],
+            "kind": s["kind"],
+            "name": s.get("name"),
+            "intervalMins": s["intervalMins"],
+            "lastRun": s.get("checkedAt"),
+            "error": s.get("error"),
+        });
+        if s["kind"] != "script" {
+            view["target"] = s["target"].clone();
+        } else {
+            view["sandboxed"] = s.get("sandboxed").cloned().unwrap_or(Value::Null);
+        }
+        if let Some(agent) = s.get("agentId").and_then(Value::as_str) {
+            view["by"] = if agent == self.agent_id { json!("you") } else { s.get("agentTitle").cloned().unwrap_or(json!(agent)) };
+        }
+        if with_script {
+            view["script"] = s.get("script").cloned().unwrap_or(Value::Null);
+        }
+        view
+    }
+
+    fn importers(&self, args: Map<String, Value>) -> ToolResult {
+        let board = self.call(None, "boards.get", json!({ "projectId": self.project_id()? }))?;
+        let sources = board["sources"].as_array().cloned().unwrap_or_default();
+        match str_arg(&args, "id") {
+            Some(id) => {
+                let source = sources.iter().find(|s| s["id"] == id.as_str()).ok_or_else(|| err(format!("no importer `{id}`")))?;
+                Ok(text(&self.importer_view(source, true)))
+            }
+            None => Ok(text(&Value::Array(sources.iter().map(|s| self.importer_view(s, false)).collect()))),
+        }
+    }
+
+    fn importer_save(&self, args: Map<String, Value>) -> ToolResult {
+        let project_id = self.project_id()?;
+        let interval = args.get("intervalMins").and_then(Value::as_u64);
+        let (script, feed) = (args.get("script").and_then(Value::as_str).filter(|s| !s.trim().is_empty()), str_arg(&args, "feedUrl"));
+        if script.is_some() && feed.is_some() {
+            return Err(err("give either `script` or `feedUrl`, not both"));
+        }
+        let run = match str_arg(&args, "id") {
+            None => {
+                let mut params = json!({ "projectId": project_id, "agentId": self.agent_id, "name": str_arg(&args, "name") });
+                match (script, feed) {
+                    (Some(script), _) => (params["kind"], params["script"]) = (json!("script"), json!(script)),
+                    (_, Some(url)) => (params["kind"], params["target"]) = (json!("feed"), json!(url)),
+                    _ => return Err(err("a new importer needs `script` (or `feedUrl` for an RSS/Atom feed)")),
+                }
+                if let Some(mins) = interval {
+                    params["intervalMins"] = json!(mins);
+                }
+                self.call(None, "boards.sourceAdd", params)?
+            }
+            Some(id) => {
+                let board = self.call(None, "boards.get", json!({ "projectId": project_id }))?;
+                let kind = board["sources"].as_array().into_iter().flatten().find(|s| s["id"] == id.as_str()).map(|s| s["kind"].clone());
+                let kind = kind.ok_or_else(|| err(format!("no importer `{id}`")))?;
+                if kind == "command" && (script.is_some() || feed.is_some()) {
+                    return Err(err("command importers belong to the user: you may only rename, reschedule or delete them"));
+                }
+                if (kind == "script" && feed.is_some()) || (kind == "feed" && script.is_some()) {
+                    return Err(err(format!("importer `{id}` is a {} importer", kind.as_str().unwrap_or_default())));
+                }
+                let mut params = json!({ "projectId": project_id, "sourceId": id, "agentId": self.agent_id });
+                let changed = [("name", str_arg(&args, "name").map(Value::from)), ("script", script.map(Value::from)), ("target", feed.clone().map(Value::from)), ("intervalMins", interval.map(Value::from))];
+                let mut any = false;
+                for (key, value) in changed {
+                    if let Some(value) = value {
+                        params[key] = value;
+                        any = true;
+                    }
+                }
+                let run = if any { Some(self.call(None, "boards.sourceUpdate", params)?) } else { None };
+                match run {
+                    // A new script or URL already ran.
+                    Some(run) if script.is_some() || feed.is_some() => run,
+                    _ => self.call(None, "boards.sourceRefresh", json!({ "projectId": project_id, "sourceId": id }))?,
+                }
+            }
+        };
+        let mut report = self.importer_view(&run["source"], false);
+        report["imported"] = run["imported"].clone();
+        Ok(text(&report))
+    }
+
+    fn importer_delete(&self, args: Map<String, Value>) -> ToolResult {
+        let id = required(&args, "id")?;
+        let project_id = self.project_id()?;
+        let board = self.call(None, "boards.get", json!({ "projectId": project_id }))?;
+        if !board["sources"].as_array().into_iter().flatten().any(|s| s["id"] == id.as_str()) {
+            return Err(err(format!("no importer `{id}`")));
+        }
+        self.call(None, "boards.sourceRemove", json!({ "projectId": project_id, "sourceId": id }))?;
+        Ok(text(&json!({ "deleted": id })))
+    }
 }
 
 const COLUMNS: &[&str] = &["inbox", "todo", "doing", "done"];
@@ -500,5 +599,52 @@ pub(crate) fn host_tools(agents: &Arc<Agents>, agent_id: &str, orchestrator: Arc
             }),
             |env, args, _| env.kanban_done(args),
         ),
+        tool(
+            "kanban_importers",
+            "Inbox importers",
+            "List the importers that fill your project's Kanban inbox (RSS/Atom feeds, the user's commands, and script importers agents built) with schedule, last run and error; with `id`, one importer including its script.",
+            json!({
+                "type": "object",
+                "properties": { "id": { "type": "string", "description": "Show this importer with its script." } },
+                "additionalProperties": false
+            }),
+            |env, args, _| env.importers(args),
+        ),
+        tool(
+            "kanban_importer_save",
+            "Save importer",
+            IMPORTER_SAVE_DOC,
+            json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Importer to change; omit to create one." },
+                    "name": { "type": "string", "description": "Label shown to the user, e.g. \"Svelte changelog\" (required for a new script)." },
+                    "script": { "type": "string", "description": "Full source of a script importer." },
+                    "feedUrl": { "type": "string", "description": "RSS/Atom feed URL, instead of a script, when the source already has a feed." },
+                    "intervalMins": { "type": "integer", "enum": crate::board::INTERVALS, "description": "How often it runs: 15, 60 (default), 360 or 1440 minutes." }
+                },
+                "additionalProperties": false
+            }),
+            |env, args, _| env.importer_save(args),
+        ),
+        tool(
+            "kanban_importer_delete",
+            "Delete importer",
+            "Delete an importer of your project's Kanban inbox (cards it imported stay; a script's state directory is removed).",
+            json!({
+                "type": "object",
+                "properties": { "id": { "type": "string" } },
+                "required": ["id"],
+                "additionalProperties": false
+            }),
+            |env, args, _| env.importer_delete(args),
+        ),
     ]
 }
+
+const IMPORTER_SAVE_DOC: &str = "Create or change an importer that fills your project's Kanban inbox on a schedule, e.g. \"take every new entry of X's changelog\". \
+Usually a script: a small program whose first line picks the interpreter (`#!/usr/bin/env python3`; `sh` without one) and that prints one item per line to stdout, newest first: \
+plain text (the card title) or a JSON object {\"title\", \"body\"?, \"url\"?, \"id\"?}. Each item becomes an inbox card once (deduped by id, else url, else title; the first run imports at most 20). \
+It runs with a 60 s timeout in its own state directory (cwd, $HOME and $COOCOO_STATE_DIR; files there persist between runs), may read the project ($COOCOO_PROJECT_DIR) and use the network, but does not inherit your environment; \
+on Linux it is sandboxed: it can read the system (/usr, /etc, …) but not the rest of the home directory, and can write only its state directory, so use system interpreters and tools (python3, curl, …). \
+Saving runs it once right away and reports how many cards it imported or its error (stderr tail), so fix and save again until it works. With `id` and nothing else it just runs again.";

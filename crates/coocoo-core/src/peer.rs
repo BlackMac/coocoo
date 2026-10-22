@@ -771,6 +771,7 @@ fn request_timeout(method: &str) -> Duration {
         "boards.cardDone",
         "boards.sourceAdd",
         "boards.sourceRefresh",
+        "boards.sourceUpdate",
         "git.commit",
         "git.merge",
         "git.diff",
