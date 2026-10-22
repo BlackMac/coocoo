@@ -14,6 +14,7 @@ mod process;
 mod state;
 mod timeline;
 mod tools;
+mod usage;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -23,7 +24,8 @@ use std::time::{Duration, Instant};
 
 use coocoo_proto::util::{now_ms, read_json, write_json_atomic};
 use coocoo_proto::{
-    ApiError, ApiResult, Emitter, ItemKind, ModelInfo, Orchestrator, Paths, TimelineEvent, TimelineItem, events,
+    ApiError, ApiResult, Emitter, ItemKind, ModelInfo, Orchestrator, Paths, ProviderUsage, TimelineEvent, TimelineItem,
+    events,
 };
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -70,6 +72,8 @@ pub struct Agents {
     runtime: OnceLock<Handle>,
     agents: RwLock<HashMap<String, Arc<Agent>>>,
     models: tokio::sync::Mutex<Option<(Instant, Vec<ModelInfo>)>>,
+    /// `agents.usage` per provider; one fetch at a time so concurrent viewers share it.
+    usage: tokio::sync::Mutex<HashMap<String, (Instant, ProviderUsage)>>,
     /// The hibernation sweep task is running.
     hibernator: AtomicBool,
 }
@@ -91,6 +95,7 @@ impl Agents {
             runtime: OnceLock::new(),
             agents: RwLock::new(agents),
             models: tokio::sync::Mutex::new(None),
+            usage: tokio::sync::Mutex::new(HashMap::new()),
             hibernator: AtomicBool::new(false),
         })
     }

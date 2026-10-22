@@ -4,6 +4,7 @@
   import { ui, type Draft } from '../lib/ui.svelte';
   import type { AgentDetail, AgentSummary, ImageInput, ModelInfo } from '../lib/protocol';
   import { ArrowUp, Image, MousePointerClick, Paperclip, Square, X } from '../lib/icons';
+  import UsageMeter from './UsageMeter.svelte';
 
   let { agent: a, detail }: { agent: AgentSummary; detail?: AgentDetail } = $props();
 
@@ -217,6 +218,7 @@
         {#if !a.thinking}<option value="">Thinking: default</option>{/if}
         {#each THINKING as t (t)}<option value={t}>Thinking: {t}</option>{/each}
       </select>
+      <UsageMeter host={a.hostId} model={a.model} {running} />
       <span class="grow"></span>
       {#if running}
         <div class="seg" role="radiogroup" aria-label="Delivery">

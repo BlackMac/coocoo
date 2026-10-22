@@ -409,6 +409,75 @@ pub struct ModelInfo {
     pub reasoning: bool,
 }
 
+/// `agents.usage`: one provider's subscription quota on a host, normalized from
+/// `omp usage --json` (every account of the provider that omp is logged in with).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderUsage {
+    pub provider: String,
+    /// When the quota was read (ms since epoch).
+    pub fetched_at: i64,
+    /// Quota per window summed over the accounts, shortest window first (omp's `capacity`).
+    pub windows: Vec<UsageCapacity>,
+    pub accounts: Vec<UsageAccount>,
+}
+
+/// Quota left in one window across all accounts of a provider.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageCapacity {
+    /// `5h`, `7d`, …; windows without a duration use the provider's label (`extra`).
+    pub window: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    /// Separate pool inside the window that only some models draw from (e.g. a model tier).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meter: Option<String>,
+    /// Accounts reporting a limit in this window.
+    pub accounts: u32,
+    /// Accounts' worth of quota used: each account adds its binding limit's used fraction.
+    pub used: f64,
+    /// Earliest reset among the window's limits (ms since epoch).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageAccount {
+    /// Email, organization or account id, whichever the provider reports.
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+    pub limits: Vec<UsageLimit>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageLimit {
+    pub id: String,
+    pub label: String,
+    /// Window label (`5 Hour`, `7 Day`); absent for quotas without a window (extra usage).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<i64>,
+    /// `percent`, `usd`, `tokens`, `requests`, `credits`, `minutes`, `bytes` or `unknown`.
+    pub unit: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub used: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<f64>,
+    /// 0–1; above 1 means overage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub used_fraction: Option<f64>,
+    /// `ok`, `warning`, `exhausted` or `unknown`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+}
+
 // ─── Browser ──────────────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

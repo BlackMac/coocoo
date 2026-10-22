@@ -21,6 +21,16 @@ export function ago(ts: number, now = Date.now()): string {
   return '';
 }
 
+/** Compact countdown: `12m`, `3h 20m`, `2d 4h`; `now` once reached. */
+export function until(ts: number, now = Date.now()): string {
+  const m = Math.floor((ts - now) / 60_000);
+  if (m < 1) return 'now';
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return m % 60 ? `${h}h ${m % 60}m` : `${h}h`;
+  return h % 24 ? `${Math.floor(h / 24)}d ${h % 24}h` : `${Math.floor(h / 24)}d`;
+}
+
 export function bytes(n: number): string {
   if (n < 1024) return `${n} B`;
   const units = ['KB', 'MB', 'GB', 'TB'];

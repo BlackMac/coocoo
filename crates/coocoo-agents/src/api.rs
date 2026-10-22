@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 use coocoo_proto::error::{ok, params};
 use coocoo_proto::util::{new_id, now_ms};
 use coocoo_proto::{
-    AgentStatus, AgentSummary, ApiError, ApiResult, ImageInput, ItemKind, ModelInfo, Project, WorktreeRef, events,
+    AgentStatus, AgentSummary, ApiError, ApiResult, ImageInput, ItemKind, ModelInfo, Project, ProviderUsage, WorktreeRef,
+    events,
 };
 use omp_rpc::{
     AbortCommand, Client, ClientOptions, ExtensionUiResponse, GetAvailableModelsCommand, ImageContent, LitImage,
@@ -18,7 +19,7 @@ use serde_json::{Value, json};
 use crate::process::{call, client_error};
 use crate::state::{Agent, Life, PendingPrompt, State};
 use crate::timeline;
-use crate::{Agents, write_meta};
+use crate::{Agents, usage, write_meta};
 
 /// `agents.models` cache lifetime.
 const MODELS_TTL: Duration = Duration::from_secs(600);
@@ -118,6 +119,12 @@ struct DeleteParams {
     remove_worktree: bool,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UsageParams {
+    provider: String,
+}
+
 /// Default title: first non-empty prompt line, at most [`TITLE_CHARS`] characters.
 fn default_title(prompt: Option<&str>, id: &str) -> String {
     let line = prompt.and_then(|p| p.lines().map(str::trim).find(|l| !l.is_empty()));
@@ -188,6 +195,7 @@ impl Agents {
             "agents.setModel" => self.set_model(params(p)?).await,
             "agents.setThinking" => self.set_thinking(params(p)?).await,
             "agents.models" => ok(self.models().await?),
+            "agents.usage" => ok(self.usage(params(p)?).await?),
             "agents.hibernate" => {
                 let IdParams { id } = params(p)?;
                 let agent = self.get(&id)?;
@@ -486,6 +494,21 @@ impl Agents {
             .collect();
         *cache = Some((Instant::now(), models.clone()));
         Ok(models)
+    }
+
+    async fn usage(&self, UsageParams { provider }: UsageParams) -> ApiResult<ProviderUsage> {
+        if !usage::valid_provider(&provider) {
+            return Err(ApiError::invalid(format!("invalid provider id `{provider}`")));
+        }
+        let mut cache = self.usage.lock().await;
+        if let Some((at, report)) = cache.get(&provider)
+            && at.elapsed() < usage::USAGE_TTL
+        {
+            return Ok(report.clone());
+        }
+        let report = usage::fetch(&self.omp, &self.root, &provider, now_ms()).await?;
+        cache.insert(provider, (Instant::now(), report.clone()));
+        Ok(report)
     }
 
     async fn delete(&self, p: DeleteParams) -> ApiResult<Value> {

@@ -271,6 +271,47 @@ export interface ModelInfo {
   reasoning: boolean;
 }
 
+/** `agents.usage`: one provider's subscription quota on a host (normalized `omp usage --json`). */
+export interface ProviderUsage {
+  provider: string;
+  fetchedAt: number;
+  /** Quota per window summed over the accounts, shortest window first. */
+  windows: UsageCapacity[];
+  accounts: UsageAccount[];
+}
+
+export interface UsageCapacity {
+  /** `5h`, `7d`, …; windows without a duration use the provider's label (`extra`). */
+  window: string;
+  durationMs?: number;
+  /** Separate pool inside the window that only some models draw from (e.g. a model tier). */
+  meter?: string;
+  accounts: number;
+  /** Accounts' worth of quota used (0…accounts). */
+  used: number;
+  resetsAt?: number;
+}
+
+export interface UsageAccount {
+  label: string;
+  org?: string;
+  plan?: string;
+  limits: UsageLimit[];
+}
+
+export interface UsageLimit {
+  id: string;
+  label: string;
+  window?: string;
+  resetsAt?: number;
+  unit: string;
+  used?: number;
+  limit?: number;
+  /** 0–1; above 1 means overage. */
+  usedFraction?: number;
+  status?: 'ok' | 'warning' | 'exhausted' | 'unknown';
+}
+
 // ─── omp extension_ui_request payloads (crates/omp-rpc/src/wire.rs) ─────────────────────────
 
 export interface SelectOptionDetail {
@@ -479,6 +520,7 @@ export interface Methods {
   'agents.setModel': [{ id: string; model: string }, AgentSummary];
   'agents.setThinking': [{ id: string; level: string }, AgentSummary];
   'agents.models': [Empty | undefined, ModelInfo[]];
+  'agents.usage': [{ provider: string }, ProviderUsage];
   'agents.hibernate': [{ id: string }, AgentSummary];
   'agents.archive': [{ id: string }, AgentSummary];
   'agents.delete': [{ id: string; removeWorktree?: boolean }, Ok];

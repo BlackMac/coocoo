@@ -83,6 +83,7 @@ Params marked `?` are optional. Return types refer to `types.rs`.
 | `agents.setModel` | `{ id, model: "provider/id" }` | `AgentSummary` |
 | `agents.setThinking` | `{ id, level }` | `AgentSummary` |
 | `agents.models` | – | `ModelInfo[]` (cached per host) |
+| `agents.usage` | `{ provider }` | `ProviderUsage` — the provider's subscription quota on this host from `omp usage --json --provider <provider>`: `windows` (5 h, 7 d, … summed over all logged-in accounts; `used` in accounts' worth, earliest `resetsAt`; `meter` marks a pool only some models draw from) and per-account `limits` (`unit` percent/usd/tokens/…, `usedFraction`, `status`, `resetsAt`). Empty for pay-per-token providers. Cached 60 s per provider; `unavailable` if omp fails or takes over 20 s |
 | `agents.hibernate` | `{ id }` | `AgentSummary` |
 | `agents.archive` | `{ id }` | `AgentSummary` (status `stopped`, process gone, read-only) |
 | `agents.delete` | `{ id, removeWorktree?: bool }` | `{}` |
