@@ -22,7 +22,7 @@ use axum::serve::ListenerExt;
 use coocoo_agents::Agents;
 use coocoo_browser::Browser;
 use coocoo_proto::{Emitter, Paths};
-use coocoo_workspace::{PidSource, Stats, Workspace};
+use coocoo_workspace::{PidSource, Stats, Terminals, Workspace};
 use parking_lot::Mutex;
 use tokio::task::JoinHandle;
 
@@ -80,10 +80,11 @@ impl Daemon {
             })
         };
         let stats = Stats::new(emitter.clone(), pids);
+        let terminals = Terminals::new(emitter.clone());
 
         let host_id = config.host_id.clone();
         let token = config.token.clone();
-        let app = App::new(paths, config, emitter.clone(), Subsystems { workspace, stats, agents, browser });
+        let app = App::new(paths, config, emitter.clone(), Subsystems { workspace, stats, terminals, agents, browser });
         app.agents.set_orchestrator(Arc::new(Orch {
             app: Arc::downgrade(&app),
             host_id: host_id.clone(),

@@ -22,7 +22,9 @@ daemon → client   {"event": "agent.updated", "host": "<origin hostId>", "data"
   means the link to that peer lagged: refetch that host's state.
 - `browser.watch`/`browser.unwatch`/`stats.watch` addressed to a peer are reference-counted by the
   home daemon: several clients share one remote stream, which stops when the last one leaves or
-  disconnects, and is re-established after a reconnect.
+  disconnects, and is re-established after a reconnect. `terminal.attach`/`terminal.detach` are
+  counted the same way per terminal; after a reconnect clients re-attach themselves (output sent
+  while the link was down is only in the scrollback).
 - Error codes: `invalid_params`, `not_found`, `unknown_method`, `conflict`, `unauthorized`,
   `unavailable`, `forbidden`, `internal`.
 - HTTP (same port): `GET /api/health` (no auth, CORS `*`) → `{ok, hostId, name, version}`; static
@@ -66,6 +68,20 @@ Params marked `?` are optional. Return types refer to `types.rs`.
 | `git.worktreeCreate` | `{ projectId, branch?, base? }` | `WorktreeRef` — new branch (default `coocoo/<id>`) from `base` (default current branch) under `<data_dir>/worktrees/<project-name>-<project-id>/<branch-slug>` |
 | `git.worktreeRemove` | `{ projectId, path, deleteBranch?: bool }` | `{}` |
 | `fs.list` | `{ path? }` (default home) | `{ path, parent?, entries: FsEntry[] }` — directories first, hidden entries omitted |
+
+### terminal — `coocoo-workspace` (Linux/macOS hosts)
+A terminal is a login shell (`$SHELL -l`, else `/bin/sh`, with `TERM=xterm-256color`) on a pty. It
+keeps running while nobody is attached and ends when the shell exits or on `terminal.kill`.
+
+| Method | Params | Result |
+|---|---|---|
+| `terminal.list` | – | `TerminalInfo[]` (oldest first) |
+| `terminal.open` | `{ cwd, cols? (80), rows? (24) }` | `TerminalInfo` — `cwd` must be a directory; does not attach |
+| `terminal.attach` | `{ id, cols?, rows? }` | `{ data: String }` — the recent output (≤ 256 KiB); this connection then receives `terminal.output`/`terminal.exit` until `terminal.detach` or disconnect. Output may arrive before this reply: apply it after `data` |
+| `terminal.detach` | `{ id }` | `{}` — the shell keeps running |
+| `terminal.input` | `{ id, data }` | `{}` — keystrokes/paste as UTF-8 text (≤ 256 KiB) |
+| `terminal.resize` | `{ id, cols, rows }` | `{}` — last resize wins when several clients are attached |
+| `terminal.kill` | `{ id }` | `{}` — SIGHUP to the shell's process group |
 
 ### agents — `coocoo-agents` (omp only)
 | Method | Params | Result |
@@ -122,6 +138,8 @@ Params marked `?` are optional. Return types refer to `types.rs`.
 | `browser.updated` | `BrowserProfileInfo` | all |
 | `browser.frame` | `BrowserFrame` | watching connection only |
 | `browser.console` | `BrowserConsoleEntry` | watching connection only |
+| `terminal.output` | `{ id, data }` (UTF-8 text) | attached connections only |
+| `terminal.exit` | `{ id, code? }` (`null` when killed by a signal) | attached connections only |
 | `system.resync` | `{}` | connection that lagged; refetch everything |
 
 ## omp integration

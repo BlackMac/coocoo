@@ -1,5 +1,6 @@
-//! Projects registry, git (status, diff, worktrees, commit, merge), filesystem browsing and
-//! host resource stats. Handles the `projects.*`, `git.*`, `fs.*` and `stats.*` methods.
+//! Projects registry, git (status, diff, worktrees, commit, merge), filesystem browsing, host
+//! resource stats and terminals. Handles the `projects.*`, `git.*`, `fs.*`, `stats.*` and
+//! `terminal.*` methods.
 //!
 //! git is driven through the `git` CLI (no libgit2): smaller binary, exact user semantics.
 
@@ -8,7 +9,10 @@ mod fs;
 mod git;
 mod projects;
 mod stats;
+mod terminal;
 mod watch;
+
+pub use terminal::Terminals;
 
 use std::collections::HashMap;
 use std::path::PathBuf;

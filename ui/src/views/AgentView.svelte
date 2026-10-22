@@ -2,6 +2,7 @@
   // Heavy panels load on first use and stay cached for the session.
   let changesMod: Promise<typeof import('../panels/ChangesPanel.svelte')> | undefined;
   let browserMod: Promise<typeof import('../panels/BrowserPanel.svelte')> | undefined;
+  let terminalMod: Promise<typeof import('../panels/TerminalPanel.svelte')> | undefined;
 </script>
 
 <script lang="ts">
@@ -10,7 +11,7 @@
   import { router } from '../lib/router.svelte';
   import { agentState, STATE_LABEL } from '../lib/status';
   import { ui, type PanelTab } from '../lib/ui.svelte';
-  import { Archive, Ellipsis, FileDiff, Globe, Info, ListChecks, Moon, PanelRight, Trash2, MessageSquareText } from '../lib/icons';
+  import { Archive, Ellipsis, FileDiff, Globe, Info, ListChecks, Moon, PanelRight, Terminal, Trash2, MessageSquareText } from '../lib/icons';
   import StatusDot from '../components/StatusDot.svelte';
   import InlineEdit from '../components/InlineEdit.svelte';
   import Menu, { type MenuItem } from '../components/Menu.svelte';
@@ -44,12 +45,14 @@
   const TABS: { id: PanelTab; label: string; icon: typeof FileDiff }[] = [
     { id: 'changes', label: 'Changes', icon: FileDiff },
     { id: 'browser', label: 'Browser', icon: Globe },
+    { id: 'terminal', label: 'Terminal', icon: Terminal },
     { id: 'plan', label: 'Plan', icon: ListChecks },
     { id: 'info', label: 'Info', icon: Info },
   ];
 
   const loadChanges = () => (changesMod ??= import('../panels/ChangesPanel.svelte'));
   const loadBrowser = () => (browserMod ??= import('../panels/BrowserPanel.svelte'));
+  const loadTerminal = () => (terminalMod ??= import('../panels/TerminalPanel.svelte'));
 
   async function act(method: 'agents.hibernate' | 'agents.archive', label: string) {
     try {
@@ -160,6 +163,8 @@
             {#await loadChanges() then m}<m.default agent={a} {project} />{/await}
           {:else if ui.panel.tab === 'browser'}
             {#await loadBrowser() then m}<m.default agent={a} {project} />{/await}
+          {:else if ui.panel.tab === 'terminal'}
+            {#await loadTerminal() then m}<m.default {host} cwd={a.cwd} />{/await}
           {:else if ui.panel.tab === 'plan'}
             <PlanPanel {detail} agent={a} />
           {:else}

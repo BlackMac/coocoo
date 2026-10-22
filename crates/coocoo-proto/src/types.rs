@@ -69,6 +69,20 @@ pub struct HostStats {
     pub procs: Vec<ProcStat>,
 }
 
+/// A login shell on a pseudo-terminal (`terminal.*`). It keeps running while nobody is attached
+/// and ends when the shell exits or on `terminal.kill`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalInfo {
+    pub id: String,
+    pub cwd: String,
+    /// Shell executable (`$SHELL`, else `/bin/sh`).
+    pub shell: String,
+    pub cols: u16,
+    pub rows: u16,
+    pub created_at: i64,
+}
+
 // ─── Projects / git ───────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

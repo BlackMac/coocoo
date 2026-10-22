@@ -90,6 +90,11 @@ pub mod events {
     pub const BROWSER_FRAME: &str = "browser.frame";
     /// `BrowserConsoleEntry` — console/log/exception line; sent only to watching connections.
     pub const BROWSER_CONSOLE: &str = "browser.console";
+    /// `{ "id": String, "data": String }` — terminal output; sent only to attached connections.
+    pub const TERMINAL_OUTPUT: &str = "terminal.output";
+    /// `{ "id": String, "code": i32? }` — the terminal's shell exited; sent only to attached
+    /// connections.
+    pub const TERMINAL_EXIT: &str = "terminal.exit";
     /// `{}` — the connection lagged behind the event stream; the client must refetch state.
     pub const SYSTEM_RESYNC: &str = "system.resync";
 }

@@ -66,11 +66,18 @@ struct BrowserWatch {
     conns: Vec<ConnSink>,
 }
 
+/// One forwarded `terminal.attach` and the local connections receiving its output.
+struct TerminalWatch {
+    id: String,
+    conns: Vec<ConnSink>,
+}
+
 #[derive(Default)]
 struct Watches {
     /// Local connections with a forwarded `stats.watch {enabled:true}`.
     stats: HashSet<u64>,
     browser: Vec<BrowserWatch>,
+    terminals: Vec<TerminalWatch>,
 }
 
 pub(crate) struct PeerLink {
@@ -109,6 +116,12 @@ struct TargetRef<'a> {
     profile: Cow<'a, str>,
     #[serde(borrow)]
     target_id: Cow<'a, str>,
+}
+
+#[derive(Deserialize)]
+struct TerminalRef<'a> {
+    #[serde(borrow)]
+    id: Cow<'a, str>,
 }
 
 impl PeerLink {
@@ -225,6 +238,8 @@ impl PeerLink {
                 "browser.watch" => return self.forward_watch(sink, params).await,
                 "browser.unwatch" => return self.forward_unwatch(sink.id, params).await,
                 "stats.watch" => return self.forward_stats_watch(sink.id, params).await,
+                "terminal.attach" => return self.forward_attach(sink, params).await,
+                "terminal.detach" => return self.forward_detach(sink.id, params).await,
                 _ => {}
             }
         }
@@ -299,9 +314,46 @@ impl PeerLink {
         }
     }
 
+    async fn forward_attach(&self, sink: &ConnSink, params: Value) -> ApiResult<Reply> {
+        let id = TerminalRef::deserialize(&params).map_err(ApiError::from)?.id.into_owned();
+        // Always forwarded: the remote returns this viewer's scrollback snapshot.
+        let result = self.request("terminal.attach", params).await?;
+        let mut watches = self.watches.lock();
+        match watches.terminals.iter_mut().find(|t| t.id == id) {
+            Some(t) => {
+                t.conns.retain(|c| !c.is_closed());
+                if !t.conns.iter().any(|c| c.id == sink.id) {
+                    t.conns.push(sink.clone());
+                }
+            }
+            None => watches.terminals.push(TerminalWatch { id, conns: vec![sink.clone()] }),
+        }
+        Ok(Reply::Raw(result))
+    }
+
+    async fn forward_detach(&self, conn_id: u64, params: Value) -> ApiResult<Reply> {
+        let id = TerminalRef::deserialize(&params).map_err(ApiError::from)?.id;
+        let last = {
+            let mut watches = self.watches.lock();
+            match watches.terminals.iter().position(|t| t.id == id) {
+                Some(idx) => {
+                    let t = &mut watches.terminals[idx];
+                    t.conns.retain(|c| c.id != conn_id && !c.is_closed());
+                    let empty = t.conns.is_empty();
+                    if empty {
+                        watches.terminals.remove(idx);
+                    }
+                    empty
+                }
+                None => true,
+            }
+        };
+        if last { self.request("terminal.detach", params).await.map(Reply::Raw) } else { Ok(Reply::Value(json!({}))) }
+    }
+
     /// Drop a closed local connection's subscriptions; stop remote streams nobody watches.
     pub fn conn_closed(self: &Arc<Self>, conn_id: u64) {
-        let (unwatch, stats_off) = {
+        let (unwatch, detach, stats_off) = {
             let mut watches = self.watches.lock();
             let mut unwatch = Vec::new();
             watches.browser.retain_mut(|w| {
@@ -314,10 +366,18 @@ impl PeerLink {
                     true
                 }
             });
+            let mut detach = Vec::new();
+            watches.terminals.retain_mut(|t| {
+                t.conns.retain(|c| c.id != conn_id && !c.is_closed());
+                if t.conns.is_empty() {
+                    detach.push(json!({ "id": t.id }));
+                }
+                !t.conns.is_empty()
+            });
             let stats_off = watches.stats.remove(&conn_id) && watches.stats.is_empty();
-            (unwatch, stats_off)
+            (unwatch, detach, stats_off)
         };
-        if unwatch.is_empty() && !stats_off {
+        if unwatch.is_empty() && detach.is_empty() && !stats_off {
             return;
         }
         let link = self.clone();
@@ -325,13 +385,18 @@ impl PeerLink {
             for params in unwatch {
                 let _ = link.request("browser.unwatch", params).await;
             }
+            for params in detach {
+                let _ = link.request("terminal.detach", params).await;
+            }
             if stats_off {
                 let _ = link.request("stats.watch", json!({ "enabled": false })).await;
             }
         });
     }
 
-    /// Re-establish forwarded streams on a fresh connection.
+    /// Re-establish forwarded streams on a fresh connection. Terminals are not re-attached here:
+    /// output sent while the link was down is gone, so clients re-attach (and replay the
+    /// scrollback) when the host comes back online.
     fn rewatch(self: &Arc<Self>) {
         let (browser, stats) = {
             let mut watches = self.watches.lock();
@@ -615,6 +680,11 @@ impl PeerLink {
                         self.deliver(&target, text);
                     }
                 }
+                events::TERMINAL_OUTPUT | events::TERMINAL_EXIT => {
+                    if let Some(term) = frame.data.and_then(|d| serde_json::from_str::<TerminalRef<'_>>(d.get()).ok()) {
+                        self.deliver_terminal(&term.id, event == events::TERMINAL_EXIT, text);
+                    }
+                }
                 events::HOST_UPDATED => {
                     let info = frame.data.and_then(|d| serde_json::from_str::<HostInfo>(d.get()).ok());
                     if let Some(info) = info.filter(|i| i.id == host) {
@@ -653,6 +723,22 @@ impl PeerLink {
         for conn in &w.conns {
             // Lossy: a slow viewer gets fewer frames instead of unbounded memory.
             conn.try_send(shared.clone());
+        }
+    }
+
+    /// Route terminal output (or its exit) to the local connections attached to it.
+    fn deliver_terminal(&self, id: &str, exited: bool, text: &Utf8Bytes) {
+        let mut watches = self.watches.lock();
+        let Some(idx) = watches.terminals.iter().position(|t| t.id == id) else { return };
+        let shared: Arc<str> = Arc::from(text.as_str());
+        let t = &mut watches.terminals[idx];
+        t.conns.retain(|c| !c.is_closed());
+        for conn in &t.conns {
+            // A full client queue drops output; the client re-attaches to resync.
+            conn.try_send(shared.clone());
+        }
+        if exited || t.conns.is_empty() {
+            watches.terminals.remove(idx);
         }
     }
 }

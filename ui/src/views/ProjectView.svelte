@@ -1,3 +1,7 @@
+<script lang="ts" module>
+  let terminalMod: Promise<typeof import('../panels/TerminalPanel.svelte')> | undefined;
+</script>
+
 <script lang="ts">
   import { fleet } from '../lib/fleet.svelte';
   import { ago, shortPath } from '../lib/format';
@@ -5,7 +9,7 @@
   import { href, router } from '../lib/router.svelte';
   import { ui } from '../lib/ui.svelte';
   import type { CommitInfo } from '../lib/protocol';
-  import { Copy, ExternalLink, GitBranch, GitCommitHorizontal, Plus, RefreshCw, Trash2, X, Globe, Ellipsis } from '../lib/icons';
+  import { Copy, ExternalLink, GitBranch, GitCommitHorizontal, Plus, RefreshCw, Terminal, Trash2, X, Globe, Ellipsis } from '../lib/icons';
   import AgentRow from '../components/AgentRow.svelte';
   import HostDot from '../components/HostDot.svelte';
   import Menu from '../components/Menu.svelte';
@@ -23,6 +27,8 @@
   let refreshing = $state(false);
   let newUrl = $state('');
   let showArchived = $state(false);
+  let showTerminal = $state(false);
+  const loadTerminal = () => (terminalMod ??= import('../panels/TerminalPanel.svelte'));
 
   $effect(() => {
     const path = p?.path;
@@ -117,6 +123,9 @@
             <button class="btn ghost icon" title="Refresh git status" aria-label="Refresh" onclick={refresh} disabled={refreshing}>
               <span class:spin={refreshing}><RefreshCw size={14} /></span>
             </button>
+            <button class="btn ghost icon" class:active={showTerminal} title="Terminal in the project directory" aria-label="Terminal" aria-pressed={showTerminal} onclick={() => (showTerminal = !showTerminal)}>
+              <Terminal size={14} />
+            </button>
             <Menu
               label="Project actions"
               items={[
@@ -155,6 +164,12 @@
           </form>
         </div>
       </header>
+
+      {#if showTerminal}
+        <section class="card term-sec">
+          {#await loadTerminal() then m}<m.default {host} cwd={p.path} />{/await}
+        </section>
+      {/if}
 
       <section class="agents-sec">
         <h2 class="section-title">Agents <span class="count">{active.length}</span></h2>
@@ -222,6 +237,11 @@
   .scroll {
     flex: 1;
     overflow-y: auto;
+  }
+  .term-sec {
+    height: min(440px, 60vh);
+    overflow: hidden;
+    padding: 0;
   }
   .page {
     max-width: 1280px;

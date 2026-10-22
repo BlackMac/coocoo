@@ -14,7 +14,7 @@ use coocoo_proto::{
     ApiError, ApiResult, ConnSink, Emitter, HostInfo, HostKind, Orchestrator, PROTOCOL_VERSION, Paths, Response,
     events,
 };
-use coocoo_workspace::{Stats, Workspace};
+use coocoo_workspace::{Stats, Terminals, Workspace};
 use parking_lot::{Mutex, RwLock};
 use serde::Deserialize;
 use serde::Serialize;
@@ -36,6 +36,7 @@ pub(crate) struct App {
     pub emitter: Emitter,
     pub workspace: Arc<Workspace>,
     pub stats: Arc<Stats>,
+    pub terminals: Arc<Terminals>,
     pub agents: Arc<Agents>,
     pub browser: Arc<Browser>,
     pub peers: RwLock<Vec<Arc<PeerLink>>>,
@@ -99,6 +100,7 @@ pub(crate) fn encode_reply(id: u64, reply: ApiResult<Reply>) -> Arc<str> {
 pub(crate) struct Subsystems {
     pub workspace: Arc<Workspace>,
     pub stats: Arc<Stats>,
+    pub terminals: Arc<Terminals>,
     pub agents: Arc<Agents>,
     pub browser: Arc<Browser>,
 }
@@ -115,6 +117,7 @@ impl App {
             emitter,
             workspace: subsystems.workspace,
             stats: subsystems.stats,
+            terminals: subsystems.terminals,
             agents: subsystems.agents,
             browser: subsystems.browser,
             peers: RwLock::new(Vec::new()),
@@ -181,6 +184,7 @@ impl App {
     pub fn conn_closed(&self, conn_id: u64) {
         self.browser.conn_closed(conn_id);
         self.stats.conn_closed(conn_id);
+        self.terminals.conn_closed(conn_id);
         for peer in self.peers.read().iter() {
             peer.conn_closed(conn_id);
         }
@@ -206,6 +210,7 @@ impl App {
             "system" => self.system(caller, method, params).await,
             "hosts" => self.hosts(method, params).await,
             "stats" => self.stats.dispatch(method, params, &caller.sink).await,
+            "terminal" => self.terminals.dispatch(method, params, &caller.sink).await,
             "projects" | "git" | "fs" => self.workspace.dispatch(method, params).await,
             "agents" => self.agents.dispatch(method, params).await,
             "browser" => self.browser.dispatch(method, params, &caller.sink).await,

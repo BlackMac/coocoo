@@ -76,6 +76,16 @@ export interface HostStats {
   procs: ProcStat[];
 }
 
+/** A login shell on a pseudo-terminal; keeps running while nobody is attached. */
+export interface TerminalInfo {
+  id: string;
+  cwd: string;
+  shell: string;
+  cols: number;
+  rows: number;
+  createdAt: number;
+}
+
 // ─── Projects / git ───────────────────────────────────────────────────────────────────────────
 
 export interface Project {
@@ -484,6 +494,14 @@ export interface Methods {
   'stats.watch': [{ enabled: boolean }, Ok];
   'stats.get': [Empty | undefined, HostStats];
 
+  'terminal.list': [Empty | undefined, TerminalInfo[]];
+  'terminal.open': [{ cwd: string; cols?: number; rows?: number }, TerminalInfo];
+  'terminal.attach': [{ id: string; cols?: number; rows?: number }, { data: string }];
+  'terminal.detach': [{ id: string }, Ok];
+  'terminal.input': [{ id: string; data: string }, Ok];
+  'terminal.resize': [{ id: string; cols: number; rows: number }, Ok];
+  'terminal.kill': [{ id: string }, Ok];
+
   'projects.list': [Empty | undefined, Project[]];
   'projects.get': [{ id: string }, Project];
   'projects.add': [{ path: string; name?: string }, Project];
@@ -568,6 +586,8 @@ export interface Events {
   'browser.updated': BrowserProfileInfo;
   'browser.frame': BrowserFrame;
   'browser.console': BrowserConsoleEntry;
+  'terminal.output': { id: string; data: string };
+  'terminal.exit': { id: string; code?: number | null };
   'system.resync': Empty;
 }
 

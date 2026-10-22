@@ -20,7 +20,7 @@
   and are relayed unchanged; peer links subscribe to local-origin events only, so there are no
   relay loops. Screencast frames are routed only to the client connections watching that tab.
 - **Subsystems never depend on each other.** `coocoo-workspace` (projects, git, worktrees, fs,
-  host stats), `coocoo-agents` (omp), and `coocoo-browser` (Chromium/CDP) depend only on
+  host stats, terminals), `coocoo-agents` (omp), and `coocoo-browser` (Chromium/CDP) depend only on
   `coocoo-proto`. Cross-cutting calls (an agent creating a worktree, an agent spawning another
   agent on a different host) go through the `Orchestrator` trait, which is the same routed call
   path a client uses.
