@@ -6,7 +6,7 @@
   import { href } from '../lib/router.svelte';
   import { agentState } from '../lib/status';
   import type { AgentSummary, Card, CardColumn } from '../lib/protocol';
-  import { ArrowUp, ExternalLink, GitCommitHorizontal, Inbox, Plus, RotateCw, Rss, Terminal, Trash2, X } from '../lib/icons';
+  import { ArrowUp, ExternalLink, GitCommitHorizontal, Inbox, Plus, RotateCw, Rss, Terminal, Trash2, Webhook, X } from '../lib/icons';
   import StartCard from '../agent/StartCard.svelte';
   import StatusDot from '../components/StatusDot.svelte';
 
@@ -64,14 +64,22 @@
   let openId = $state<string | null>(null);
   let editTitle = $state('');
   let editBody = $state('');
+  let editStartUrl = $state('');
+  let editDoneUrl = $state('');
   function toggle(card: Card) {
     openId = openId === card.id ? null : card.id;
     editTitle = card.title;
     editBody = card.body ?? '';
+    editStartUrl = card.startUrl ?? '';
+    editDoneUrl = card.doneUrl ?? '';
   }
   async function save(card: Card) {
     const ok = await run('Could not save the card', () =>
-      fleet.call('boards.cardUpdate', { projectId, cardId: card.id, title: editTitle, body: editBody }, host),
+      fleet.call(
+        'boards.cardUpdate',
+        { projectId, cardId: card.id, title: editTitle, body: editBody, startUrl: editStartUrl, doneUrl: editDoneUrl },
+        host,
+      ),
     );
     if (ok) openId = null;
   }
@@ -188,17 +196,22 @@
                     <StartCard {host} {projectId} {card} {agent} primary />
                   {/if}
                 </div>
-                {#if !open && (card.agentId || card.source || card.commit || card.note)}
+                {#if !open && (card.agentId || card.source || card.commit || card.note || card.startUrl || card.doneUrl)}
                   <div class="sub faint">
                     {#if card.agentId}{@render agentChip(card)}{/if}
                     {#if card.commit}<span class="mono"><GitCommitHorizontal size={11} />{card.commit.sha.slice(0, 7)}</span>{/if}
+                    {#if card.startUrl || card.doneUrl}<span class="hooks" class:err={!!card.hookError} title={card.hookError ?? 'Webhooks on start/done'}><Webhook size={11} /></span>{/if}
                     {#if card.note}<span class="ellipsis">{card.note}</span>{:else if card.source}<span class="ellipsis">{sourceName(card.source)}</span>{/if}
                   </div>
                 {/if}
+                {#if !open && card.hookError}<div class="herr">{card.hookError}</div>{/if}
                 {#if open}
                   <div class="detail">
                     <input class="input" bind:value={editTitle} aria-label="Title" />
                     <textarea class="textarea" bind:value={editBody} rows="4" placeholder="Details for the agent (optional)"></textarea>
+                    <label class="hook"><span class="faint">Webhook on start</span><input class="input mono" bind:value={editStartUrl} placeholder="https://… (POSTed when it moves to Doing)" spellcheck="false" /></label>
+                    <label class="hook"><span class="faint">Webhook on done</span><input class="input mono" bind:value={editDoneUrl} placeholder="https://… (POSTed when it moves to Done)" spellcheck="false" /></label>
+                    {#if card.hookError}<div class="herr">{card.hookError}</div>{/if}
                     {#if card.agentId}<div class="faint">{col.id === 'done' ? 'Done by' : 'Agent:'} {@render agentChip(card)}</div>{/if}
                     {#if card.url}<a class="link" href={card.url} target="_blank" rel="noopener noreferrer"><ExternalLink size={11} />{card.url}</a>{/if}
                     {#if card.note}<div class="note"><span class="faint">Note:</span> {card.note}</div>{/if}
@@ -427,6 +440,24 @@
     align-items: center;
     gap: 4px;
     color: var(--accent-text);
+    font-size: var(--fs-xs);
+    overflow-wrap: anywhere;
+  }
+  .hook {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-size: var(--fs-xs);
+  }
+  .hooks {
+    display: inline-flex;
+    flex: none;
+  }
+  .hooks.err {
+    color: var(--red);
+  }
+  .herr {
+    color: var(--red);
     font-size: var(--fs-xs);
     overflow-wrap: anywhere;
   }

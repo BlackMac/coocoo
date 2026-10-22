@@ -543,6 +543,15 @@ pub struct Card {
     /// That agent's title at the time, for when it has been deleted since.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_title: Option<String>,
+    /// Webhook POSTed when work on the card starts (it enters doing).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_url: Option<String>,
+    /// Webhook POSTed when the card is finished (it enters done).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done_url: Option<String>,
+    /// Why the last webhook call failed; cleared by the next successful one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hook_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

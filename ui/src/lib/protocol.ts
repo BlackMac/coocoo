@@ -323,6 +323,11 @@ export interface Card {
   agentId?: string;
   /** That agent's title at the time (it may have been deleted since). */
   agentTitle?: string;
+  /** Webhooks POSTed when the card enters doing / done. */
+  startUrl?: string;
+  doneUrl?: string;
+  /** Why the last webhook call failed. */
+  hookError?: string;
 }
 
 export interface BoardSource {
@@ -618,8 +623,8 @@ export interface Methods {
   'agents.usage': [{ provider: string; model?: string }, ProviderUsage];
   'agents.subagentTimeline': [{ id: string; sessionFile: string; live?: boolean }, TimelinePage];
   'boards.get': [{ projectId: string }, Board];
-  'boards.cardAdd': [{ projectId: string; title: string; body?: string; column?: CardColumn; top?: boolean }, Card];
-  'boards.cardUpdate': [{ projectId: string; cardId: string; title?: string; body?: string; column?: CardColumn; index?: number }, Card];
+  'boards.cardAdd': [{ projectId: string; title: string; body?: string; column?: CardColumn; top?: boolean; startUrl?: string; doneUrl?: string }, Card];
+  'boards.cardUpdate': [{ projectId: string; cardId: string; title?: string; body?: string; column?: CardColumn; index?: number; startUrl?: string; doneUrl?: string }, Card];
   'boards.cardDelete': [{ projectId: string; cardId: string }, Ok];
   /** Without `agentId` a new agent is created for the card (optionally in a worktree). */
   'boards.cardStart': [{ projectId: string; cardId: string; agentId?: string; worktree?: boolean; model?: string }, Card];

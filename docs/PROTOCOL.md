@@ -115,14 +115,21 @@ the agent's project on startup (cards in doing/done keep that agent). Every meth
 | Method | Params | Result |
 |---|---|---|
 | `boards.get` | `{ projectId }` | `Board` — `cards` (`column` inbox/todo/doing/done; a column's order is the order of its cards, first = top; `agentId`/`agentTitle` = the agent it was handed to or that finished it) and `sources` |
-| `boards.cardAdd` | `{ projectId, title, body?, column? (todo), top?: bool }` | `Card` |
-| `boards.cardUpdate` | `{ projectId, cardId, title?, body? ("" clears), column?, index? }` | `Card` — `index` = position in the (target) column, 0 = top, past the end = bottom |
+| `boards.cardAdd` | `{ projectId, title, body?, column? (todo), top?: bool, startUrl?, doneUrl? }` | `Card` — `startUrl`/`doneUrl`: http(s) webhooks, see below |
+| `boards.cardUpdate` | `{ projectId, cardId, title?, body?, startUrl?, doneUrl? ("" clears each), column?, index? }` | `Card` — `index` = position in the (target) column, 0 = top, past the end = bottom |
 | `boards.cardDelete` | `{ projectId, cardId }` | `{}` |
 | `boards.cardStart` | `{ projectId, cardId, agentId?, worktree?: bool, model? }` | `Card` — prompts `agentId` (one of the project's agents, not archived) with the card (title, body, link, how to finish it) like `agents.prompt` (`auto`), or without `agentId` creates a new agent for it (title = card title, optionally in its own worktree); then records the agent on the card and moves it to the top of `doing`. `conflict` if it is already in doing/done |
 | `boards.cardDone` | `{ projectId, cardId, agentId? (the card's agent), commitMessage? (card title), note? }` | `{ card, commit?: CommitInfo, commitSkipped?: "not a git repository" \| "nothing to commit" }` — `git.commit` in that agent's directory (the project's without one), records the agent, then moves the card to the top of `done`; a failing commit leaves the card in place and returns the error |
 | `boards.sourceAdd` | `{ projectId, kind: "feed" \| "command", target, intervalMins? (15, min 5) }` | `Board` — fetched now and then every interval while the daemon runs. `feed`: RSS/Atom URL fetched with `curl`; `command`: `sh -c target` in the project directory, one card per output line. New entries go to the top of `inbox` (the 20 newest on the first fetch); entries are remembered, so deleted cards do not come back. Errors land in `BoardSource.error` |
 | `boards.sourceRemove` | `{ projectId, sourceId }` | `Board` (its cards stay) |
 | `boards.sourceRefresh` | `{ projectId, sourceId }` | `Board` — fetch now |
+
+Card webhooks: when a card enters `doing` (by `boards.cardStart` or a move) its `startUrl`, when it
+enters `done` (`boards.cardDone`, `kanban_done` or a move) its `doneUrl` gets a `POST` with JSON
+`{ event: "start" | "done", text, card: { id, title, body?, url?, column, note?, commit? }, agent: { id, title }?, project: { id, name, path }?, host, ts }`
+(`text` is a one-line summary for chat webhooks that read a `text` field). Sent with `curl` from the
+project's host in the background (15 s timeout); a non-2xx answer or network error is stored in
+`Card.hookError` (cleared by the next successful call), nothing is retried.
 
 ### browser — `coocoo-browser`
 | Method | Params | Result |

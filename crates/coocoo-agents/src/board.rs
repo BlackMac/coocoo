@@ -50,6 +50,9 @@ struct CardAddParams {
     /// Insert at the top of the column instead of the bottom.
     #[serde(default)]
     top: bool,
+    /// Webhooks for start and done (http/https).
+    start_url: Option<String>,
+    done_url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -63,6 +66,10 @@ struct CardUpdateParams {
     column: Option<CardColumn>,
     /// Position in the (target) column, 0 = top; past the end = bottom.
     index: Option<usize>,
+    /// `""` clears it.
+    start_url: Option<String>,
+    /// `""` clears it.
+    done_url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -150,6 +157,39 @@ fn new_card(title: String, body: Option<String>, column: CardColumn) -> Card {
         commit: None,
         agent_id: None,
         agent_title: None,
+        start_url: None,
+        done_url: None,
+        hook_error: None,
+    }
+}
+
+/// A webhook URL from the client: `""` = none; anything else must be http(s).
+fn clean_url(url: &str) -> ApiResult<Option<String>> {
+    let url = url.trim();
+    if url.is_empty() {
+        return Ok(None);
+    }
+    if !(url.starts_with("http://") || url.starts_with("https://")) || url.chars().any(char::is_whitespace) {
+        return Err(ApiError::invalid(format!("`{url}` is not an http(s) URL")));
+    }
+    Ok(Some(url.to_owned()))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Hook {
+    Start,
+    Done,
+}
+
+impl Hook {
+    /// The hook a move from `from` to `to` triggers: entering doing or done.
+    fn for_move(from: CardColumn, to: CardColumn) -> Option<Hook> {
+        match to {
+            _ if from == to => None,
+            CardColumn::Doing => Some(Hook::Start),
+            CardColumn::Done => Some(Hook::Done),
+            _ => None,
+        }
     }
 }
 
@@ -247,10 +287,13 @@ impl Agents {
             "boards.cardAdd" => {
                 let p: CardAddParams = params(p)?;
                 let (title, body) = (clean_title(&p.title)?, clean_body(p.body));
+                let start_url = p.start_url.as_deref().map(clean_url).transpose()?.flatten();
+                let done_url = p.done_url.as_deref().map(clean_url).transpose()?.flatten();
                 self.project(&p.project_id).await?;
                 let column = p.column.unwrap_or(CardColumn::Todo);
                 ok(self.edit_board(&p.project_id, |b| {
-                    let card = new_card(title, body, column);
+                    let mut card = new_card(title, body, column);
+                    (card.start_url, card.done_url) = (start_url, done_url);
                     let at = insert_at(&b.cards, column, if p.top { 0 } else { usize::MAX });
                     b.cards.insert(at, card.clone());
                     Ok((card, true))
@@ -259,8 +302,10 @@ impl Agents {
             "boards.cardUpdate" => {
                 let p: CardUpdateParams = params(p)?;
                 let title = p.title.as_deref().map(clean_title).transpose()?;
+                let start_url = p.start_url.as_deref().map(clean_url).transpose()?;
+                let done_url = p.done_url.as_deref().map(clean_url).transpose()?;
                 self.project(&p.project_id).await?;
-                ok(self.edit_board(&p.project_id, |b| {
+                let (card, hook) = self.edit_board(&p.project_id, |b| {
                     let card = card_mut(b, &p.card_id)?;
                     if let Some(title) = title {
                         card.title = title;
@@ -268,14 +313,25 @@ impl Agents {
                     if let Some(body) = p.body {
                         card.body = clean_body(Some(body));
                     }
+                    if let Some(url) = start_url {
+                        card.start_url = url;
+                    }
+                    if let Some(url) = done_url {
+                        card.done_url = url;
+                    }
                     card.updated_at = now_ms();
                     let column = card.column;
                     let card = match (p.column, p.index) {
                         (None, None) => card.clone(),
                         (to, index) => move_card(b, &p.card_id, to.unwrap_or(column), index.unwrap_or(usize::MAX))?,
                     };
-                    Ok((card, true))
-                })?)
+                    let hook = Hook::for_move(column, card.column);
+                    Ok(((card, hook), true))
+                })?;
+                if let Some(hook) = hook {
+                    self.fire_hook(&p.project_id, &card, hook);
+                }
+                ok(card)
             }
             "boards.cardDelete" => {
                 let p: CardParams = params(p)?;
@@ -389,12 +445,14 @@ impl Agents {
             }
             None => self.create_for_card(&p.project_id, &card.title, card_prompt(&card), p.worktree, p.model).await?,
         };
-        ok(self.edit_board(&p.project_id, |b| {
+        let card = self.edit_board(&p.project_id, |b| {
             let c = card_mut(b, &p.card_id)?;
             c.agent_id = Some(summary.id.clone());
             c.agent_title = Some(summary.title.clone());
             Ok((move_card(b, &p.card_id, CardColumn::Doing, 0)?, true))
-        })?)
+        })?;
+        self.fire_hook(&p.project_id, &card, Hook::Start);
+        ok(card)
     }
 
     async fn card_done(self: &Arc<Self>, p: CardDoneParams) -> ApiResult<Value> {
@@ -422,7 +480,36 @@ impl Agents {
             }
             move_card(b, &p.card_id, CardColumn::Done, 0).map(|c| (c, true))
         })?;
+        self.fire_hook(&p.project_id, &card, Hook::Done);
         Ok(json!({ "card": card, "commit": commit, "commitSkipped": skipped }))
+    }
+
+    /// POST the card's webhook for `hook`, if it has one, in the background. A failure is noted
+    /// on the card (`hookError`) and never blocks the board.
+    fn fire_hook(self: &Arc<Self>, project_id: &str, card: &Card, hook: Hook) {
+        let Some(url) = (match hook {
+            Hook::Start => card.start_url.clone(),
+            Hook::Done => card.done_url.clone(),
+        }) else {
+            return;
+        };
+        let (me, project_id, card) = (self.clone(), project_id.to_owned(), card.clone());
+        self.handle().spawn(async move {
+            let project = me.project(&project_id).await.ok();
+            let payload = hook_payload(&me, project.as_ref(), &card, hook);
+            let result = post_json(&url, &payload).await;
+            let label = if hook == Hook::Start { "start" } else { "done" };
+            if let Err(err) = &result {
+                tracing::warn!(card = %card.id, %url, "{label} webhook failed: {err}");
+            }
+            let _ = me.edit_board(&project_id, |b| {
+                let Some(c) = b.cards.iter_mut().find(|c| c.id == card.id) else { return Ok(((), false)) };
+                let error = result.err().map(|e| format!("{label} webhook: {e}"));
+                let changed = c.hook_error != error;
+                c.hook_error = error;
+                Ok(((), changed))
+            });
+        });
     }
 
     /// Fetch one source and drop its new entries at the top of the inbox. Commands run in the
@@ -517,6 +604,59 @@ async fn output(mut command: tokio::process::Command, what: &str) -> Result<Stri
         return Err(if reason.starts_with(what) { reason.to_owned() } else { format!("{what}: {reason}") });
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Webhook body. `text` is a one-line summary, so chat webhooks that read a `text` field (Slack,
+/// Mattermost, ntfy via its JSON API…) show something useful without a template.
+fn hook_payload(agents: &Agents, project: Option<&Project>, card: &Card, hook: Hook) -> Value {
+    let agent = card.agent_id.as_ref().map(|id| {
+        let title = agents.get(id).map(|a| a.summary().title).ok().or(card.agent_title.clone());
+        json!({ "id": id, "title": title })
+    });
+    // Agents created for a card carry its title: naming them again adds nothing.
+    let who = agent.as_ref().and_then(|a| a["title"].as_str()).filter(|t| *t != card.title).map(|t| format!(" ({t})")).unwrap_or_default();
+    let text = match hook {
+        Hook::Start => format!("▶ Started: {}{who}", card.title),
+        Hook::Done => match &card.commit {
+            Some(commit) => format!("✓ Done: {}{who} — {} {}", card.title, &commit.sha[..commit.sha.len().min(7)], commit.summary),
+            None => format!("✓ Done: {}{who}", card.title),
+        },
+    };
+    json!({
+        "event": if hook == Hook::Start { "start" } else { "done" },
+        "text": text,
+        "card": {
+            "id": card.id, "title": card.title, "body": card.body, "url": card.url,
+            "column": card.column, "note": card.note, "commit": card.commit,
+        },
+        "agent": agent,
+        "project": project.map(|p| json!({ "id": p.id, "name": p.name, "path": p.path })),
+        "host": agents.host_id(),
+        "ts": now_ms(),
+    })
+}
+
+/// POST `body` as JSON with the `curl` CLI; any non-2xx status is an error.
+async fn post_json(url: &str, body: &Value) -> Result<(), String> {
+    use tokio::io::AsyncWriteExt;
+    let mut command = tokio::process::Command::new("curl");
+    command
+        .args(["-fsS", "-o", "/dev/null", "--max-time", "15", "-X", "POST", "-H", "Content-Type: application/json", "-A", "coocoo"])
+        .args(["--data-binary", "@-", "--", url])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = command.spawn().map_err(|e| format!("cannot run curl: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(body.to_string().as_bytes()).await;
+    }
+    let out = tokio::time::timeout(FETCH_TIMEOUT, child.wait_with_output()).await.map_err(|_| "timed out".to_owned())?.map_err(|e| e.to_string())?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    Err(stderr.lines().map(str::trim).rfind(|l| !l.is_empty()).unwrap_or("failed").trim_start_matches("curl: ").to_owned())
 }
 
 /// Fetched with the `curl` CLI (no HTTP/TLS stack in the daemon).
@@ -685,6 +825,18 @@ mod tests {
         move_card(&mut b, "b", CardColumn::Done, usize::MAX).unwrap();
         assert_eq!(columns(&b, CardColumn::Done), ["x", "b"]);
         assert!(move_card(&mut b, "nope", CardColumn::Done, 0).is_err());
+    }
+
+    #[test]
+    fn webhooks_fire_on_entering_doing_or_done_only() {
+        use CardColumn::*;
+        let hooks: Vec<_> = [(Todo, Doing), (Doing, Doing), (Doing, Done), (Inbox, Done), (Done, Todo), (Todo, Inbox)]
+            .map(|(from, to)| Hook::for_move(from, to).map(|h| h == Hook::Start))
+            .to_vec();
+        assert_eq!(hooks, [Some(true), None, Some(false), Some(false), None, None]);
+        assert_eq!(clean_url(" https://x.y/h?a=1 ").unwrap().as_deref(), Some("https://x.y/h?a=1"));
+        assert_eq!(clean_url("").unwrap(), None);
+        assert!(clean_url("file:///etc/passwd").is_err() && clean_url("http://a b").is_err());
     }
 
     #[test]

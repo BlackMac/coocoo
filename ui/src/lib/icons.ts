@@ -62,3 +62,4 @@ export { default as SquareKanban } from '@lucide/svelte/icons/square-kanban';
 export { default as Rss } from '@lucide/svelte/icons/rss';
 export { default as Play } from '@lucide/svelte/icons/play';
 export { default as GripVertical } from '@lucide/svelte/icons/grip-vertical';
+export { default as Webhook } from '@lucide/svelte/icons/webhook';
