@@ -100,7 +100,8 @@
     await tick();
     position();
     active = Math.max(0, flat.findIndex((r) => r.value === value));
-    input?.focus();
+    // On touch devices focusing would pop the keyboard over the list; search starts on tap.
+    if (!matchMedia('(pointer: coarse)').matches) input?.focus();
     scrollActive();
   }
 
