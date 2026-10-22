@@ -1,0 +1,35 @@
+[package]
+name = "coocoo-desktop"
+description = "Coocoo desktop app: Tauri 2 shell that embeds the Coocoo daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "coocoo-desktop"
+path = "src/main.rs"
+
+[features]
+# `tauri build` enables this itself; enable it manually for plain `cargo build`s that should load
+# the bundled `ui/dist` instead of the Vite dev server (`devUrl`).
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+coocoo-core.workspace = true
+coocoo-proto.workspace = true
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-notification = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-window-state = "2"
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+toml = { version = "0.9", default-features = false, features = ["parse", "serde"] }

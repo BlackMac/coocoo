@@ -8,6 +8,7 @@ members = [
   "crates/coocoo-workspace",
   "crates/coocoo-core",
   "crates/coocoo-cli",
+  "src-tauri",
 ]
 default-members = ["crates/coocoo-cli"]
 

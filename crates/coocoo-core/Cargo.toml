@@ -16,7 +16,7 @@ coocoo-agents.workspace = true
 coocoo-browser.workspace = true
 coocoo-workspace.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
 tokio.workspace = true
 tokio-tungstenite.workspace = true
 futures-util.workspace = true
@@ -24,6 +24,7 @@ axum.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
 parking_lot.workspace = true
+libc.workspace = true
 toml = { version = "0.9", default-features = false, features = ["parse", "serde", "display"] }
 rust-embed = { workspace = true, optional = true }
 mime_guess = { workspace = true, optional = true }

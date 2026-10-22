@@ -1,6 +1,8 @@
 # Coocoo wire protocol (v1)
 
 One WebSocket per client at `ws://<host>:<port>/ws?token=<token>`. Text frames, one JSON object each.
+A bad token is refused with HTTP 401 before the upgrade. `&scope=local` starts the connection in
+`system.subscribe {scope:"local"}` mode (used by peer links, so no relayed event can loop back).
 Envelope types live in `crates/coocoo-proto/src/wire.rs`; payload types in `types.rs`; the UI
 mirrors both in `ui/src/lib/protocol.ts`. All JSON is camelCase.
 
@@ -13,13 +15,20 @@ daemon → client   {"event": "agent.updated", "host": "<origin hostId>", "data"
 
 - `host` omitted (or equal to the home daemon id) → handled by the daemon the client is connected to.
   Any other known host id → forwarded over that peer link (one hop; peers never forward further).
+  Unknown host → `not_found`; known but offline → `unavailable`.
 - Every event carries its origin `host`; the home daemon relays peer events unchanged, so a client
-  connected to one daemon sees the whole fleet.
+  connected to one daemon sees the whole fleet. `host.updated`/`host.removed` describe the home
+  daemon's view of its fleet and are never relayed further. A `system.resync` with a peer's `host`
+  means the link to that peer lagged: refetch that host's state.
+- `browser.watch`/`browser.unwatch`/`stats.watch` addressed to a peer are reference-counted by the
+  home daemon: several clients share one remote stream, which stops when the last one leaves or
+  disconnects, and is re-established after a reconnect.
 - Error codes: `invalid_params`, `not_found`, `unknown_method`, `conflict`, `unauthorized`,
   `unavailable`, `forbidden`, `internal`.
-- HTTP (same port): `GET /api/health` (no auth) → `{ok, hostId, name, version}`;
-  `GET /cdp/<profile>/json/version` (loopback clients only, no token) → Chrome's discovery JSON,
-  launching that profile's Chromium on demand; static UI at `/` (web/phone access).
+- HTTP (same port): `GET /api/health` (no auth, CORS `*`) → `{ok, hostId, name, version}`;
+  `GET /cdp/<profile>/json/version` (loopback clients and loopback `Host` header only, no token) →
+  Chrome's discovery JSON, launching that profile's Chromium on demand; static UI at `/` (web/phone
+  access, SPA fallback to `index.html`).
 
 ## Methods
 
@@ -31,7 +40,7 @@ Params marked `?` are optional. Return types refer to `types.rs`.
 | `system.hello` | – | `{ protocol: u32, host: HostInfo, hosts: HostInfo[] }` (`hosts` = local + peers) |
 | `system.subscribe` | `{ scope: "all" \| "local" }` | `{}` — peer links use `local` (only events originating on this daemon) |
 | `hosts.list` | – | `HostInfo[]` |
-| `hosts.add` | `{ kind: "direct", url, token, name? }` or `{ kind: "ssh", target: "user@host", sshPort?, remotePort? (7421), token?, install?: bool, name? }` | `HostInfo` |
+| `hosts.add` | `{ kind: "direct", url, token?, name? }` or `{ kind: "ssh", target: "user@host", sshPort?, remotePort? (7421), token?, install?: bool, name? }` | `HostInfo` — connects first and fails (`unavailable`, with the reason) if the host cannot be reached; `conflict` if already in the fleet. `url`: `ws://host:port`, `host[:port]`, or a pairing link `http://host:port/#token=…` (then `token` may be omitted). SSH without `token` runs `coocoo token` remotely; `install` copies this `coocoo` binary to `~/.local/bin` when missing (same OS/arch) and starts it (lingering systemd user unit, else `nohup`) |
 | `hosts.remove` | `{ id }` | `{}` |
 | `hosts.rename` | `{ id, name }` | `HostInfo` (`id` = local renames this daemon) |
 | `stats.watch` | `{ enabled: bool }` | `{}` — while ≥1 connection watches, `host.stats` every 2 s |
@@ -87,7 +96,7 @@ Params marked `?` are optional. Return types refer to `types.rs`.
 | `browser.watch` | `{ profile, targetId, maxWidth?, maxHeight?, quality? }` | `{}` — this connection receives `browser.frame` + `browser.console` for the tab until `browser.unwatch` or disconnect |
 | `browser.unwatch` | `{ profile, targetId }` | `{}` |
 | `browser.resize` | `{ profile, targetId, width, height }` | `{}` — viewport in CSS px (fits page to the viewer pane) |
-| `browser.input` | `{ profile, targetId, event }` | `{}` — `event`: `{type:"mouse", action:"down"\|"up"\|"move"\|"wheel", x, y, button?, clickCount?, deltaX?, deltaY?, modifiers?}`, `{type:"key", action:"down"\|"up", key, code, text?, keyCode?, modifiers?}`, `{type:"text", text}`; coordinates in CSS px of the page viewport |
+| `browser.input` | `{ profile, targetId, event }` | `{}` — `event`: `{type:"mouse", action:"down"\|"up"\|"move"\|"wheel", x, y, button?, clickCount?, deltaX?, deltaY?, modifiers?}`, `{type:"key", action:"down"\|"up", key, code, text?, keyCode?, modifiers?}`, `{type:"text", text}`; coordinates in CSS px of the page viewport; `modifiers` = CDP bitmask (Alt 1, Ctrl 2, Meta 4, Shift 8), a list of names, or `{alt,ctrl,meta,shift}` flags; `button` = DOM name or number |
 | `browser.console` | `{ profile, targetId }` | `BrowserConsoleEntry[]` (last 500) |
 | `browser.screenshot` | `{ profile, targetId }` | `{ data: base64 PNG }` |
 | `browser.inspect` | `{ profile, targetId, x, y }` | `{ selector, tag, html (outer, ≤ 4 KiB), text (≤ 1 KiB), styles: {prop: value} (layout/typography/color subset), box: {x,y,width,height}, screenshot: base64 PNG of the element (≤ 800 px) }` — "design mode": the UI attaches this to a prompt |
@@ -112,8 +121,8 @@ Params marked `?` are optional. Return types refer to `types.rs`.
 
 ## omp integration
 
-Each agent is one `omp --mode rpc` process (via the vendored official Rust client
-`crates/omp-rpc`). The daemon:
+Each agent is one `omp --mode rpc-ui` process (same wire protocol as `rpc`, plus omp's tool dialogs
+such as `ask`; via the vendored official Rust client `crates/omp-rpc`). The daemon:
 
 - passes `--config <overlay>` setting `browser.cdpUrl = http://127.0.0.1:<port>/cdp/<profile>`, so
   omp's own browser tool drives the daemon-managed, per-project Chromium that the UI live-views;

@@ -1,0 +1,14 @@
+{
+  "name": "coocoo-desktop",
+  "private": true,
+  "description": "Tauri CLI for the Coocoo desktop app (npm run dev|build|icon)",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "icon": "tauri icon icons/icon.svg && rm -rf icons/android icons/ios icons/Square*Logo.png icons/StoreLogo.png"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.4"
+  }
+}

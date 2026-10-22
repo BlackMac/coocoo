@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The UI talks to the daemon over WebSocket; tray, window state and notifications are driven from Rust, so the webview only gets Tauri's core defaults.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

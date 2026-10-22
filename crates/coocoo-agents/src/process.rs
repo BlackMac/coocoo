@@ -1,0 +1,676 @@
+//! omp process lifecycle: spawn (with the browser overlay and host tools), the per-process
+//! event thread, post-turn state refresh, and crash handling.
+
+use std::io::{Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
+use std::process::Command as Process;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::time::Instant;
+
+use coocoo_proto::util::{now_ms, preview};
+use coocoo_proto::{
+    ApiError, ApiResult, DiffStat, ItemKind, TimelineDelta, TodoPhase, TodoTask, UiRequest, events,
+};
+use omp_rpc::{
+    Client, ClientOptions, Command, Event, GetSessionStatsCommand, GetStateCommand, PromptCommand, SessionState,
+    SessionStats, SetAskDialogCommand, SetSubagentSubscriptionCommand, SubagentSubscriptionLevel,
+};
+use serde::Serialize;
+use serde_json::{Value, json};
+
+use crate::Agents;
+use crate::mapper::{Effect, Mapper, Sink};
+use crate::state::{Agent, Life, PendingPrompt, Proc, State};
+
+/// Session events the supervisor consumes; everything else (`agent_end` with the whole
+/// transcript, tool output streaming, turn markers) stays inside omp.
+const EVENTS: &[&str] = &[
+    "agent_start",
+    "message_update",
+    "message_end",
+    "tool_execution_start",
+    "tool_execution_end",
+    "auto_compaction_start",
+    "auto_compaction_end",
+    "auto_retry_start",
+    "auto_retry_end",
+    "retry_fallback_applied",
+    "model_changed",
+    "thinking_level_changed",
+    "notice",
+    "queue_update",
+    "todo_auto_clear",
+    "irc_message",
+];
+
+/// `set_event_filter` with `messageUpdates: "delta"`; the generated command lacks the field.
+#[derive(Serialize)]
+struct SetEventFilter {
+    events: &'static [&'static str],
+    #[serde(rename = "messageUpdates")]
+    message_updates: &'static str,
+}
+
+impl Command for SetEventFilter {
+    const NAME: &'static str = "set_event_filter";
+    const TIMEOUT_MS: Option<u64> = None;
+    type Output = Value;
+
+    fn decode(data: Option<Value>) -> Result<Value, serde_json::Error> {
+        Ok(data.unwrap_or(Value::Null))
+    }
+}
+
+/// omp executable: explicit config, then `PATH`, then the usual install locations.
+pub(crate) fn resolve_omp(configured: Option<&str>) -> PathBuf {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    if let Some(path) = configured.filter(|p| !p.is_empty()) {
+        return match (path.strip_prefix("~/"), &home) {
+            (Some(rest), Some(home)) => home.join(rest),
+            _ => PathBuf::from(path),
+        };
+    }
+    let on_path = std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
+        .map(|dir| dir.join("omp"));
+    let fallbacks = home.iter().flat_map(|h| [h.join(".local/bin/omp"), h.join(".bun/bin/omp")]);
+    on_path.chain(fallbacks).find(|p| is_executable(p)).unwrap_or_else(|| PathBuf::from("omp"))
+}
+
+fn is_executable(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        path.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
+    }
+}
+
+pub(crate) fn client_error(err: omp_rpc::Error) -> ApiError {
+    match err {
+        omp_rpc::Error::Command { error, .. } => ApiError::conflict(error),
+        omp_rpc::Error::Closed => ApiError::unavailable("the agent process exited"),
+        omp_rpc::Error::Timeout { command } => ApiError::unavailable(format!("omp did not answer `{command}` in time")),
+        other => ApiError::internal(other),
+    }
+}
+
+fn join_error(err: tokio::task::JoinError) -> ApiError {
+    ApiError::internal(format!("background task failed: {err}"))
+}
+
+/// Run a blocking omp call off the async runtime.
+pub(crate) async fn call<C>(client: Arc<Client>, command: C) -> ApiResult<C::Output>
+where
+    C: Command + Send + 'static,
+    C::Output: Send + 'static,
+{
+    tokio::task::spawn_blocking(move || client.call(&command)).await.map_err(join_error)?.map_err(client_error)
+}
+
+/// Everything needed to start one omp process.
+struct SpawnSpec {
+    omp: PathBuf,
+    dir: PathBuf,
+    cwd: String,
+    resume: Option<String>,
+    model: Option<String>,
+    thinking: Option<String>,
+    extra_args: Vec<String>,
+    cdp_url: String,
+    agent_id: String,
+    host_id: String,
+    tools: Vec<omp_rpc::HostTool>,
+}
+
+struct Spawned {
+    client: Client,
+    events: Receiver<Event>,
+    state: Option<SessionState>,
+    /// The recorded session file was gone, so a fresh session was started.
+    lost_session: Option<String>,
+}
+
+const STDERR_LOG: &str = "omp-stderr.log";
+
+/// Last non-empty lines of the process's stderr, for crash reports.
+fn stderr_tail(dir: &Path) -> Option<String> {
+    let mut file = std::fs::File::open(dir.join(STDERR_LOG)).ok()?;
+    let len = file.metadata().ok()?.len();
+    file.seek(SeekFrom::Start(len.saturating_sub(2048))).ok()?;
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf);
+    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let tail = lines[lines.len().saturating_sub(3)..].join(" | ");
+    (!tail.is_empty()).then(|| preview(&tail, 600))
+}
+
+fn spawn_omp(spec: SpawnSpec) -> Result<Spawned, String> {
+    std::fs::create_dir_all(&spec.dir).map_err(|e| format!("cannot create {}: {e}", spec.dir.display()))?;
+    let overlay = spec.dir.join("omp-overlay.yml");
+    // A JSON string is a valid YAML double-quoted scalar.
+    let yaml = format!("browser:\n  cdpUrl: {}\n", serde_json::Value::String(spec.cdp_url.clone()));
+    std::fs::write(&overlay, yaml).map_err(|e| format!("cannot write {}: {e}", overlay.display()))?;
+    let stderr = std::fs::File::create(spec.dir.join(STDERR_LOG)).map_err(|e| format!("cannot create stderr log: {e}"))?;
+
+    let mut process = Process::new(&spec.omp);
+    // `rpc-ui` (same wire protocol as `rpc`) additionally enables the tool UI context, so the
+    // `ask` tool and tool dialogs reach the user as `extension_ui_request`s.
+    process
+        .args(["--mode", "rpc-ui", "--allow-home", "--cwd"])
+        .arg(&spec.cwd)
+        .arg("--config")
+        .arg(&overlay)
+        .current_dir(&spec.cwd)
+        .env("COOCOO_AGENT_ID", &spec.agent_id)
+        .env("COOCOO_HOST_ID", &spec.host_id)
+        .stderr(stderr);
+    let mut lost_session = None;
+    if let Some(session) = spec.resume {
+        if Path::new(&session).is_file() {
+            process.arg("--resume").arg(&session);
+        } else {
+            lost_session = Some(session);
+        }
+    }
+    if let Some(model) = &spec.model {
+        process.arg("--model").arg(model);
+    }
+    if let Some(thinking) = &spec.thinking {
+        process.arg("--thinking").arg(thinking);
+    }
+    process.args(&spec.extra_args);
+
+    let options = ClientOptions { tools: spec.tools, ..ClientOptions::default() };
+    let (client, events) = Client::spawn(process, options).map_err(|err| {
+        let detail = stderr_tail(&spec.dir).map(|t| format!(" ({t})")).unwrap_or_default();
+        match err {
+            omp_rpc::Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound => {
+                format!("omp not found at `{}`; install omp or set agents.ompPath", spec.omp.display())
+            }
+            other => format!("failed to start omp: {other}{detail}"),
+        }
+    })?;
+    // Optional capabilities: older omp builds answer with an error, which is fine.
+    for (what, result) in [
+        ("set_ask_dialog", client.call(&SetAskDialogCommand { enabled: true }).map(drop)),
+        (
+            "set_subagent_subscription",
+            client.call(&SetSubagentSubscriptionCommand { level: SubagentSubscriptionLevel::Progress }).map(drop),
+        ),
+        ("set_event_filter", client.call(&SetEventFilter { events: EVENTS, message_updates: "delta" }).map(drop)),
+    ] {
+        if let Err(err) = result {
+            tracing::debug!(agent = %spec.agent_id, %err, "{what} unsupported");
+        }
+    }
+    let state = client.call(&GetStateCommand {}).map_err(|e| tracing::debug!(%e, "get_state failed")).ok();
+    Ok(Spawned { client, events, state, lost_session })
+}
+
+/// Fold `get_state` into the agent state. Returns the new model when it changed.
+fn apply_session_state(st: &mut State, state: SessionState) -> Option<String> {
+    let mut model_change = None;
+    if let Some(model) = state.model {
+        let model = format!("{}/{}", model.provider, model.id);
+        if st.summary.model.as_ref().is_some_and(|m| *m != model) {
+            model_change = Some(model.clone());
+        }
+        st.summary.model = Some(model);
+    }
+    if let Some(level) = state.thinking_level {
+        st.summary.thinking = Some(level.as_str().to_owned());
+    }
+    if let Some(file) = state.session_file {
+        st.summary.session_file = Some(file);
+    }
+    if let Some(usage) = state.context_usage {
+        st.summary.context_percent = Some(usage.percent as f32);
+        st.context_window = u64::try_from(usage.context_window).ok();
+    }
+    st.queued_steering = state.queued_messages.steering;
+    st.queued_follow_up = state.queued_messages.follow_up;
+    st.todos = state
+        .todo_phases
+        .into_iter()
+        .map(|phase| TodoPhase {
+            name: phase.name,
+            tasks: phase
+                .tasks
+                .into_iter()
+                .map(|t| TodoTask { content: t.content, status: t.status.as_str().to_owned() })
+                .collect(),
+        })
+        .collect();
+    st.sync();
+    model_change
+}
+
+fn apply_stats(st: &mut State, stats: SessionStats) {
+    st.summary.cost_usd = Some(stats.cost);
+    st.summary.tokens = u64::try_from(stats.tokens.total).ok();
+    if let Some(usage) = stats.context_usage {
+        st.summary.context_percent = Some(usage.percent as f32);
+        st.context_window = u64::try_from(usage.context_window).ok();
+    }
+    if st.summary.session_file.is_none() {
+        st.summary.session_file = stats.session_file;
+    }
+}
+
+impl Agents {
+    /// The agent's client, spawning (or resuming) its process first when needed.
+    pub(crate) async fn ensure_live(self: &Arc<Self>, agent: &Arc<Agent>) -> ApiResult<Arc<Client>> {
+        let _lifecycle = agent.lifecycle.lock().await;
+        {
+            let st = agent.state.lock();
+            if st.deleted {
+                return Err(ApiError::not_found(format_args!("agent {}", agent.id)));
+            }
+            if let Some(proc) = &st.proc {
+                return Ok(proc.client.clone());
+            }
+            if st.life == Life::Stopped {
+                return Err(ApiError::conflict("the agent is archived"));
+            }
+        }
+        self.spawn_locked(agent).await
+    }
+
+    /// Spawn the process. Caller holds `agent.lifecycle`.
+    async fn spawn_locked(self: &Arc<Self>, agent: &Arc<Agent>) -> ApiResult<Arc<Client>> {
+        let orchestrator = self.orch()?;
+        let spec = {
+            let mut st = agent.state.lock();
+            st.life = Life::Starting;
+            st.summary.error = None;
+            st.sync();
+            let profile = st.summary.project_id.clone().unwrap_or_else(|| "default".to_owned());
+            SpawnSpec {
+                omp: self.omp.clone(),
+                dir: agent.dir.clone(),
+                cwd: st.summary.cwd.clone(),
+                resume: st.summary.session_file.clone(),
+                model: st.summary.model.clone(),
+                thinking: st.summary.thinking.clone(),
+                extra_args: self.config.extra_args.clone(),
+                cdp_url: format!("{}/cdp/{profile}", orchestrator.http_base().trim_end_matches('/')),
+                agent_id: agent.id.clone(),
+                host_id: self.host_id().to_owned(),
+                tools: crate::tools::host_tools(self, &agent.id, orchestrator.clone()),
+            }
+        };
+        self.changed(agent);
+
+        let spawned = tokio::task::spawn_blocking(move || spawn_omp(spec)).await.map_err(join_error)?;
+        let spawned = match spawned {
+            Ok(spawned) => spawned,
+            Err(message) => {
+                tracing::warn!(agent = %agent.id, %message, "omp failed to start");
+                {
+                    let mut st = agent.state.lock();
+                    st.take_process(Life::Crashed);
+                    st.summary.error = Some(message.clone());
+                    st.sync();
+                }
+                self.push_item(agent, ItemKind::Error, message.clone()).await;
+                self.changed(agent);
+                return Err(ApiError::unavailable(message));
+            }
+        };
+
+        let client = Arc::new(spawned.client);
+        let (generation, pending, model_change) = {
+            let mut st = agent.state.lock();
+            st.generation += 1;
+            st.proc = Some(Proc { client: client.clone(), pid: client.pid().unwrap_or(0) });
+            st.life = Life::Live;
+            st.idle_since = Instant::now();
+            if spawned.lost_session.is_some() {
+                st.summary.session_file = None;
+            }
+            let model_change = spawned.state.map(|s| apply_session_state(&mut st, s)).unwrap_or_default();
+            st.sync();
+            (st.generation, std::mem::take(&mut st.pending), model_change)
+        };
+        let me = self.clone();
+        let thread_agent = agent.clone();
+        let events = spawned.events;
+        let started = std::thread::Builder::new()
+            .name(format!("omp-{}", agent.id))
+            .spawn(move || me.run_events(&thread_agent, generation, events));
+        if let Err(err) = started {
+            // Without its event thread the process is unusable; tear it down again.
+            let (proc, _) = agent.state.lock().take_process(Life::Crashed);
+            let _ = tokio::task::spawn_blocking(move || drop(proc)).await;
+            return Err(ApiError::internal(format!("cannot start event thread: {err}")));
+        }
+        if let Some(lost) = spawned.lost_session {
+            self.push_item(agent, ItemKind::Notice, format!("Session file {lost} is gone; started a new session")).await;
+        }
+        if let Some(model) = model_change {
+            self.push_item(agent, ItemKind::Notice, format!("Model: {model}")).await;
+        }
+        self.changed(agent);
+        self.ensure_hibernator();
+
+        for prompt in pending {
+            if let Err(err) = self.send_prompt(agent, client.clone(), prompt).await {
+                self.push_item(agent, ItemKind::Error, format!("Prompt not delivered: {}", err.message)).await;
+            }
+        }
+        Ok(client)
+    }
+
+    /// Send one prompt whose `outstanding` slot was already reserved (`State::begin_prompt`).
+    pub(crate) async fn send_prompt(&self, agent: &Arc<Agent>, client: Arc<Client>, prompt: PendingPrompt) -> ApiResult<()> {
+        let command = PromptCommand {
+            message: prompt.message,
+            images: prompt.images,
+            streaming_behavior: Some(prompt.behavior),
+        };
+        let result = call(client, command).await;
+        match &result {
+            Ok(ack) if ack.agent_invoked == Some(false) => agent.state.lock().cancel_prompt(),
+            Ok(_) => {}
+            Err(_) => agent.state.lock().cancel_prompt(),
+        }
+        self.changed(agent);
+        result.map(drop)
+    }
+
+    /// Body of the per-process event thread: map frames until the process is gone.
+    fn run_events(self: Arc<Self>, agent: &Arc<Agent>, generation: u64, events: Receiver<Event>) {
+        let mut mapper = Mapper::new();
+        let mut sink = LiveSink { agents: &self, agent, generation };
+        loop {
+            let event = match mapper.deadline() {
+                Some(deadline) => match events.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                    Ok(event) => event,
+                    Err(RecvTimeoutError::Timeout) => {
+                        mapper.flush(&mut sink);
+                        continue;
+                    }
+                    Err(RecvTimeoutError::Disconnected) => break,
+                },
+                None => match events.recv() {
+                    Ok(event) => event,
+                    Err(_) => break,
+                },
+            };
+            match event {
+                Event::Notification(notification) => mapper.handle(notification, &mut sink),
+                Event::Undecodable { raw, error } => {
+                    let kind = raw.get("type").and_then(Value::as_str).unwrap_or("?").to_owned();
+                    tracing::debug!(agent = %agent.id, kind, error, "undecodable omp frame");
+                }
+                Event::UnmatchedResponse(_) => {}
+            }
+        }
+        mapper.finish(&mut sink);
+        agent.timeline.lock().close();
+        self.on_process_exit(agent, generation);
+    }
+
+    /// The event stream ended. Unless the process was stopped on purpose, it crashed.
+    fn on_process_exit(&self, agent: &Arc<Agent>, generation: u64) {
+        let detail = stderr_tail(&agent.dir);
+        let message = match &detail {
+            Some(detail) => format!("omp exited unexpectedly: {detail}"),
+            None => "omp exited unexpectedly".to_owned(),
+        };
+        let (proc, requests) = {
+            let mut st = agent.state.lock();
+            if st.generation != generation || st.deleted {
+                return;
+            }
+            let taken = st.take_process(Life::Crashed);
+            st.summary.error = Some(message.clone());
+            st.summary.unread = true;
+            st.summary.last_activity_at = now_ms();
+            st.sync();
+            taken
+        };
+        tracing::warn!(agent = %agent.id, %message, "agent process crashed");
+        // Reaps the process group; this is a plain thread, so blocking is fine.
+        drop(proc);
+        for request in &requests {
+            self.emit_resolved(&agent.id, &request.id);
+        }
+        self.push_item_blocking(agent, ItemKind::Error, format!("{message}. Send a message to resume the session."));
+        self.changed(agent);
+    }
+
+    /// Re-read session state after a turn (or a todo/model change). Coalesced per agent.
+    pub(crate) fn schedule_refresh(&self, agent: &Arc<Agent>, full: bool) {
+        agent.refresh_pending.fetch_or(if full { REFRESH_FULL } else { REFRESH_STATE }, Ordering::AcqRel);
+        if agent.refresh_running.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let Some(me) = self.me.upgrade() else { return };
+        let agent = agent.clone();
+        self.handle().spawn(async move {
+            loop {
+                let bits = agent.refresh_pending.swap(0, Ordering::AcqRel);
+                if bits == 0 {
+                    agent.refresh_running.store(false, Ordering::Release);
+                    if agent.refresh_pending.load(Ordering::Acquire) != 0
+                        && !agent.refresh_running.swap(true, Ordering::AcqRel)
+                    {
+                        continue;
+                    }
+                    return;
+                }
+                me.refresh(&agent, bits & REFRESH_FULL == REFRESH_FULL).await;
+            }
+        });
+    }
+
+    async fn refresh(&self, agent: &Arc<Agent>, full: bool) {
+        if let Some(client) = agent.client() {
+            let snapshot = tokio::task::spawn_blocking(move || {
+                (client.call(&GetStateCommand {}).ok(), client.call(&GetSessionStatsCommand {}).ok())
+            })
+            .await;
+            if let Ok((state, stats)) = snapshot {
+                let model_change = {
+                    let mut st = agent.state.lock();
+                    if !st.is_live() {
+                        return;
+                    }
+                    let change = state.and_then(|s| apply_session_state(&mut st, s));
+                    if let Some(stats) = stats {
+                        apply_stats(&mut st, stats);
+                    }
+                    st.sync();
+                    change
+                };
+                if let Some(model) = model_change {
+                    self.push_item(agent, ItemKind::Notice, format!("Model: {model}")).await;
+                }
+                self.changed(agent);
+            }
+        }
+        if !full {
+            return;
+        }
+        let Ok(orchestrator) = self.orch() else { return };
+        let (cwd, base, project_id) = {
+            let st = agent.state.lock();
+            (st.summary.cwd.clone(), st.summary.worktree.as_ref().map(|w| w.base.clone()), st.summary.project_id.clone())
+        };
+        let mut params = json!({ "cwd": cwd });
+        if let Some(base) = base {
+            params["base"] = Value::String(base);
+        }
+        match orchestrator.call(None, "git.diffStat".to_owned(), params).await {
+            Ok(value) => {
+                if let Ok(diff) = serde_json::from_value::<DiffStat>(value) {
+                    agent.state.lock().summary.diff = Some(diff);
+                    self.changed(agent);
+                }
+            }
+            Err(err) => tracing::debug!(agent = %agent.id, %err, "diff stat unavailable"),
+        }
+        if let Some(project_id) = project_id
+            && let Err(err) = orchestrator.call(None, "projects.refresh".to_owned(), json!({ "id": project_id })).await
+        {
+            tracing::debug!(agent = %agent.id, %err, "project refresh failed");
+        }
+    }
+}
+
+pub(crate) const REFRESH_STATE: u8 = 1;
+pub(crate) const REFRESH_FULL: u8 = 3;
+
+/// Applies mapper output to a live agent (on its event thread).
+struct LiveSink<'a> {
+    agents: &'a Agents,
+    agent: &'a Arc<Agent>,
+    generation: u64,
+}
+
+impl LiveSink<'_> {
+    /// Mutate state only while this thread's process is still the agent's current one; frames
+    /// still queued from a stopped process must not leak into its successor.
+    fn update(&self, f: impl FnOnce(&mut State) -> bool) -> bool {
+        let mut st = self.agent.state.lock();
+        if st.generation != self.generation {
+            return false;
+        }
+        f(&mut st)
+    }
+}
+
+impl Sink for LiveSink<'_> {
+    fn seq(&mut self) -> u64 {
+        self.agent.timeline.lock().alloc()
+    }
+
+    fn effect(&mut self, effect: Effect) {
+        let (agents, agent) = (self.agents, self.agent);
+        match effect {
+            Effect::Upsert(item) => {
+                if let Err(err) = agent.timeline.lock().upsert(&item) {
+                    tracing::warn!(agent = %agent.id, %err, "timeline write failed");
+                }
+                agents.emit_item(&agent.id, item);
+            }
+            Effect::Delta { item_id, text } => {
+                agent.timeline.lock().append_text(&item_id, &text);
+                agents.emitter.emit(events::AGENT_DELTA, &TimelineDelta { agent_id: agent.id.clone(), item_id, text });
+            }
+            Effect::AgentStart => {
+                if self.update(|st| {
+                    st.on_agent_start();
+                    true
+                }) {
+                    agents.changed(agent);
+                }
+            }
+            Effect::PromptResult { status, settled, error } => {
+                let mut finished = false;
+                if self.update(|st| {
+                    finished = st.on_prompt_result(status, settled, error);
+                    true
+                }) {
+                    if finished {
+                        agents.schedule_refresh(agent, true);
+                    }
+                    agents.changed(agent);
+                }
+            }
+            Effect::Settled => {
+                let mut finished = false;
+                if self.update(|st| {
+                    finished = st.on_settled();
+                    true
+                }) {
+                    if finished {
+                        agents.schedule_refresh(agent, true);
+                    }
+                    agents.changed(agent);
+                }
+            }
+            Effect::Request { id, method, payload } => {
+                let request = UiRequest { id, agent_id: agent.id.clone(), method, payload, created_at: now_ms() };
+                let added = self.update(|st| {
+                    st.add_request(request.clone());
+                    true
+                });
+                if added {
+                    agents.emitter.emit(events::AGENT_REQUEST, &request);
+                    agents.changed(agent);
+                }
+            }
+            Effect::Resolve { id } => {
+                if self.update(|st| st.resolve_request(&id).is_some()) {
+                    agents.emit_resolved(&agent.id, &id);
+                    agents.changed(agent);
+                }
+            }
+            Effect::SubagentStarted(id) => {
+                if self.update(|st| {
+                    let added = st.subagents.insert(id);
+                    st.sync();
+                    added
+                }) {
+                    agents.changed(agent);
+                }
+            }
+            Effect::SubagentEnded(id) => {
+                if self.update(|st| {
+                    let removed = st.subagents.remove(&id);
+                    st.sync();
+                    removed
+                }) {
+                    agents.changed(agent);
+                }
+            }
+            Effect::Queue { steering, follow_up } => {
+                if self.update(|st| {
+                    st.queued_steering = steering;
+                    st.queued_follow_up = follow_up;
+                    true
+                }) {
+                    agents.changed(agent);
+                }
+            }
+            Effect::Thinking(level) => {
+                if self.update(|st| {
+                    let changed = st.summary.thinking.as_deref() != Some(level.as_str());
+                    st.summary.thinking = Some(level);
+                    changed
+                }) {
+                    agents.changed(agent);
+                }
+            }
+            Effect::Output(text) => {
+                if self.update(|st| {
+                    st.summary.preview = Some(preview(&text, 240));
+                    st.last_output = Some(text);
+                    true
+                }) {
+                    agents.changed(agent);
+                }
+            }
+            Effect::Refresh => agents.schedule_refresh(agent, false),
+            Effect::TodosCleared => {
+                if self.update(|st| {
+                    st.todos.clear();
+                    st.sync();
+                    true
+                }) {
+                    agents.changed(agent);
+                }
+            }
+        }
+    }
+}
