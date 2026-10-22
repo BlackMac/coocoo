@@ -90,6 +90,15 @@ fn create_main_window(app: &AppHandle, backend: &Backend) -> tauri::Result<()> {
         .visible(false)
         .initialization_script(format!("window.__COOCOO__ = {bootstrap};"))
         .build()?;
+    // The UI is a single document fed over WebSocket: WebKit's page/resource caches only hold
+    // memory. The document-viewer model disables them.
+    #[cfg(target_os = "linux")]
+    window.with_webview(|webview| {
+        use webkit2gtk::{CacheModel, WebContextExt, WebViewExt};
+        if let Some(context) = webview.inner().context() {
+            context.set_cache_model(CacheModel::DocumentViewer);
+        }
+    })?;
     window.show()?;
     window.set_focus()
 }

@@ -58,8 +58,8 @@
       </div>
     </div>
     <div class="procs num">
-      <span title="Coocoo daemon">daemon <b>{bytes(procs.daemon)}</b></span>
-      <span title="{procs.ompN} omp processes">omp <b>{bytes(procs.omp)}</b>{#if procs.ompN}<span class="faint"> ×{procs.ompN}</span>{/if}</span>
+      <span title="Coocoo process (daemon; the desktop app including its webview)">coocoo <b>{bytes(procs.daemon)}</b></span>
+      <span title="{procs.ompN} omp processes">omp <b>{procs.ompN ? bytes(procs.omp) : '—'}</b>{#if procs.ompN}<span class="faint"> ×{procs.ompN}</span>{/if}</span>
       <span title="Chromium">chromium <b>{procs.chrome ? bytes(procs.chrome) : '—'}</b></span>
     </div>
   {:else}

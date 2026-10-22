@@ -543,6 +543,8 @@ async fn inspect(profile: &Arc<Profile>, target_id: &str, x: f64, y: f64) -> Api
                     s,
                 )
                 .await?;
+            // The scaled clip briefly re-renders the page; give watchers the normal view back.
+            profile.refresh_frame(target_id);
             shot["data"].clone()
         }
         _ => Value::Null,

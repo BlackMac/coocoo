@@ -156,7 +156,7 @@ fn build(sys: &System, host_id: String, roots: Vec<(String, u32)>) -> HostStats 
                     continue;
                 }
                 if let Some(p) = sys.process(pid) {
-                    rss += p.memory();
+                    rss += proportional_memory(pid.as_u32()).unwrap_or_else(|| p.memory());
                     cpu += p.cpu_usage();
                 }
                 if let Some(kids) = children.get(&pid) {
@@ -177,4 +177,19 @@ fn build(sys: &System, host_id: String, roots: Vec<(String, u32)>) -> HostStats 
         load: [load.one, load.five, load.fifteen],
         procs,
     }
+}
+
+/// Proportional set size in bytes (Linux): shared pages are split between the processes mapping
+/// them. Summing RSS over a multi-process tree (Chromium: browser, GPU, network, renderers)
+/// counts every shared library once per process and overstates usage roughly 3×.
+#[cfg(target_os = "linux")]
+fn proportional_memory(pid: u32) -> Option<u64> {
+    let rollup = std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup")).ok()?;
+    let kib: u64 = rollup.lines().find_map(|l| l.strip_prefix("Pss:"))?.trim().trim_end_matches("kB").trim().parse().ok()?;
+    Some(kib * 1024)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn proportional_memory(_pid: u32) -> Option<u64> {
+    None
 }

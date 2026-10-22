@@ -48,7 +48,8 @@ pub struct ProcStat {
     /// Agent id, or `browser:<profile>`, or `daemon`.
     pub key: String,
     pub pid: u32,
-    /// Resident memory of the whole process tree, bytes.
+    /// Memory of the whole process tree in bytes: proportional set size (shared pages split
+    /// between processes) on Linux, resident set size elsewhere.
     pub rss: u64,
     /// CPU usage of the whole process tree, percent of one core.
     pub cpu: f32,

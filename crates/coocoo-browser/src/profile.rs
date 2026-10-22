@@ -25,6 +25,8 @@ const CONSOLE_CAP: usize = 500;
 const UPDATE_DEBOUNCE: Duration = Duration::from_millis(150);
 /// How long to wait for a screencast frame after a viewport change before forcing one.
 const FRAME_KICK_AFTER: Duration = Duration::from_millis(400);
+/// Second screencast restart after a scaled capture, once late zoomed frames have drained.
+const REFRESH_SETTLE: Duration = Duration::from_millis(200);
 
 /// A live Chromium process with its browser-level CDP connection.
 pub(crate) struct Running {
@@ -605,6 +607,24 @@ impl Profile {
                 if w.seq != seq || w.held.is_some() {
                     return;
                 }
+                let (Some(run), Some(params)) = (st.run.as_ref(), w.applied) else { return };
+                run.cdp.send("Page.startScreencast", params.request(), Some(&w.session_id));
+            }
+        });
+    }
+
+    /// Re-render watchers' view after an operation that briefly changes the page's rendering
+    /// (a clipped/scaled `Page.captureScreenshot` produces screencast frames of the zoomed clip).
+    /// Restarts the screencast now and once more shortly after, so the last frame watchers keep
+    /// is the normal viewport even when the page is static afterwards.
+    pub fn refresh_frame(self: &Arc<Self>, target_id: &str) {
+        let (weak, target_id) = (Arc::downgrade(self), target_id.to_owned());
+        tokio::spawn(async move {
+            for wait in [Duration::ZERO, REFRESH_SETTLE] {
+                tokio::time::sleep(wait).await;
+                let Some(p) = weak.upgrade() else { return };
+                let st = p.state.lock();
+                let Some(w) = st.watches.get(&target_id) else { return };
                 let (Some(run), Some(params)) = (st.run.as_ref(), w.applied) else { return };
                 run.cdp.send("Page.startScreencast", params.request(), Some(&w.session_id));
             }

@@ -14,8 +14,8 @@ It is in the same category as Paseo, Superset, Conductor and Orca, built around 
 
 | Priority | How Coocoo does it |
 |---|---|
-| **Project overview** | One overview across every host: a needs-you queue (questions, approvals, errors, finished turns) with inline answers and j/k triage, agents grouped by state with diff stat, todo progress, context use and cost, live per-host CPU/RAM broken down into daemon, omp and Chromium, and a projects grid with git state. |
-| **Low resource use** | A Rust daemon (5.4 MB binary with the web UI embedded, about 7 MB RSS idle) instead of Node and Electron. A Tauri 2 shell on the system webview. Nothing polls while nobody is watching, idle agents hibernate, Chromium starts on first use and stops when idle, and the UI's initial bundle is 91 KB gzipped. |
+| **Project overview** | One overview across every host: a needs-you queue (questions, approvals, errors, finished turns) with inline answers and j/k triage, agents grouped by state with diff stat, todo progress, context use and cost, live per-host CPU/RAM broken down into Coocoo, omp and Chromium, and a projects grid with git state. |
+| **Low resource use** | A Rust daemon (5.4 MB binary with the web UI embedded, ~7 MB RSS and no measurable CPU when idle) instead of Node and Electron. A Tauri 2 shell on the system webview. Nothing polls while nobody is watching, idle agents hibernate, Chromium starts on first use and stops when idle, and the UI's initial bundle is 91 KB gzipped. |
 | **Multiple devices** | The same daemon runs on desktops and headless servers. A client connects to one daemon, which links to peers directly (LAN, Tailscale, WireGuard) or through an SSH tunnel it starts and supervises itself. It can install itself on the server over SSH. Requests are routed per host and events are relayed, so one window, or one phone browser, shows the whole fleet. |
 | **omp only** | No lowest common denominator across harnesses. Coocoo uses omp's RPC protocol directly through the official Rust client: structured `ask` dialogs, todos, subagent counts, `session_settled`-accurate status, session resume, and orchestration host tools (spawn, message and wait for agents on any host) injected without MCP. |
 | **Browser use** | Each project gets a Chromium owned by the daemon on the host where the code runs. omp's own browser tool attaches to it, and every client watches the same tab through a screencast and can take over with mouse and keyboard. That includes a phone, and a headless server. Design mode turns a clicked element into prompt context (screenshot, selector, computed styles, HTML). |
@@ -23,9 +23,15 @@ It is in the same category as Paseo, Superset, Conductor and Orca, built around 
 
 ## Screenshots
 
-| Agent, changes | Agent, live browser |
+Real session: a workstation agent drove the project's Chromium (live view on the right, taken
+over by hand mid-run), restyled an element picked in design mode, then spawned and awaited an
+agent on another host through the `coocoo_*` tools.
+
+![real session](docs/screenshots/real-agent-browser.png)
+
+| Fleet overview (real, two hosts) | Agent, changes |
 |---|---|
-| ![changes](docs/screenshots/agent-changes-dark.png) | ![browser](docs/screenshots/agent-browser-dark.png) |
+| ![fleet](docs/screenshots/real-fleet-overview.png) | ![changes](docs/screenshots/agent-changes-dark.png) |
 | **Hosts & settings** | **Phone** |
 | ![settings](docs/screenshots/settings-dark.png) | ![phone](docs/screenshots/phone-overview-dark.png) |
 
@@ -77,23 +83,25 @@ ui                       Svelte 5 web UI (desktop, web, phone)
 
 ## Resource use
 
-Measured on Linux x86_64 (release builds):
+Measured on Linux x86_64 (Ubuntu 24.04, release builds, 2026-10-22). Memory is PSS (shared pages
+split between processes) unless noted; summing RSS over multi-process trees overstates Chromium
+about 3×.
 
 | | |
 |---|---|
 | `coocoo` binary, web UI included | 5.4 MB |
-| Daemon RSS, idle | ~6.6 MB, 5 threads |
-| Daemon RSS while streaming stats to a client | ~9 MB |
+| `coocoo-desktop` binary | 11.6 MB |
+| Daemon, idle, peered, with a project and a hibernated agent | 7.6 MB RSS / 3.2 MB PSS, 6 threads, 0 CPU ticks in 30 s |
+| Daemon while streaming stats to a client | ~9–13 MB RSS |
+| Desktop app, idle on the overview (Xvfb, software rendering) | 248 MB total: shell + embedded daemon 90 MB, WebKit network process 20 MB, WebKit web process 138 MB |
 | UI initial JS / CSS (gzip) | 91 KB / 12 KB; diff and browser panels lazy-loaded (+5 KB / +6 KB) |
-| Desktop app | see [Desktop memory](#desktop-memory) |
+| One omp agent (busy) | 150–210 MB |
+| One project Chromium with one tab (headless) | ~350 MB (1.1 GB if you sum RSS) |
 
-Most of the memory goes to the agents themselves (`omp` processes) and Chromium. Coocoo keeps
-them short-lived: idle agents hibernate after 15 minutes (configurable), and a project's Chromium
-stops 10 minutes after its last tab, watcher or CDP client goes away.
-
-### Desktop memory
-
-<!-- filled from measurements -->
+Most of the memory goes to the agents themselves and Chromium, and Coocoo keeps both short-lived:
+idle agents hibernate after 15 minutes (configurable) and resume their omp session on the next
+prompt, and a project's Chromium stops 10 minutes after its last watcher or CDP client leaves.
+The host cards in the overview show this breakdown live.
 
 ## Configuration
 
@@ -129,6 +137,22 @@ cargo test --workspace
 # desktop (Linux needs webkit2gtk-4.1 + gtk3 dev packages)
 cd src-tauri && npm install && npm run build   # deb / AppImage / dmg / nsis bundles
 ```
+
+## Status and known limitations
+
+- Verified end to end on Linux: daemon, web UI, real omp agents, the browser live view with
+  human takeover, design mode, two-host fleet with cross-host orchestration, and the desktop app
+  under Xvfb. macOS and Windows builds have not been produced yet.
+- SSH peers (tunnel, token fetch, install over SSH) are covered by tests that use fake
+  `ssh`/`scp`; they have not been run against a real remote host yet.
+- Direct peer links are plain `ws://` with a bearer token. Use them on a LAN or VPN (Tailscale,
+  WireGuard), or use SSH peers. Each daemon has a single shared token; there are no per-device
+  tokens and no way to revoke one device.
+- Installing over SSH needs the same OS and architecture on both ends, because it copies the
+  running binary.
+- An agent working in a worktree can't see its changes on a dev server that runs from the main
+  checkout. It has to start its own server for the worktree.
+- `crates/omp-rpc` tracks omp v18.12.3. Frames it doesn't know decode to `Unknown` and are ignored.
 
 ## License
 
