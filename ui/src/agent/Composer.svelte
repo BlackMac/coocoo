@@ -1,12 +1,12 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { fleet, key } from '../lib/fleet.svelte';
-  import { modelGroups } from '../lib/format';
   import { ui, type Draft } from '../lib/ui.svelte';
   import type { AgentDetail, AgentSummary, ImageInput, ModelInfo } from '../lib/protocol';
   import { ArrowUp, Image, MousePointerClick, Paperclip, Square, X } from '../lib/icons';
   import { slashMenu } from '../lib/slash';
   import UsageMeter from './UsageMeter.svelte';
+  import ModelPicker from '../components/ModelPicker.svelte';
   import SlashMenu from './SlashMenu.svelte';
 
   let { agent: a, detail }: { agent: AgentSummary; detail?: AgentDetail } = $props();
@@ -278,14 +278,7 @@
     <div class="bar">
       <button class="btn ghost icon sm" title="Attach image" aria-label="Attach image" onclick={() => fileInput?.click()}><Paperclip size={14} /></button>
       <input type="file" accept="image/*" multiple hidden bind:this={fileInput} onchange={(e) => [...(e.currentTarget.files ?? [])].forEach(readFile)} />
-      <select class="mini" value={a.model ?? ''} onchange={(e) => setModel(e.currentTarget.value)} title={a.model ?? 'Model'} aria-label="Model">
-        {#if !models.some((m) => `${m.provider}/${m.id}` === a.model)}<option value={a.model ?? ''}>{a.model ?? 'Default model'}</option>{/if}
-        {#each modelGroups(models) as g (g.provider)}
-          <optgroup label={g.provider}>
-            {#each g.options as o (o.value)}<option value={o.value}>{o.label}</option>{/each}
-          </optgroup>
-        {/each}
-      </select>
+      <ModelPicker {models} value={a.model ?? ''} onselect={setModel} loading={!models.length} />
       <select class="mini think" value={a.thinking ?? ''} onchange={(e) => setThinking(e.currentTarget.value)} title="Thinking level" aria-label="Thinking level">
         {#if !a.thinking}<option value="">Thinking: default</option>{/if}
         {#each THINKING as t (t)}<option value={t}>Thinking: {t}</option>{/each}

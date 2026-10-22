@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { fleet } from '../lib/fleet.svelte';
-  import { modelGroups } from '../lib/format';
+  import ModelPicker from './ModelPicker.svelte';
   import { router } from '../lib/router.svelte';
   import { ui } from '../lib/ui.svelte';
   import type { ModelInfo } from '../lib/protocol';
@@ -155,18 +155,11 @@
     </div>
 
     <div class="row2">
-      <label class="field">
+      <div class="field">
         <span>Model</span>
-        <select class="select" bind:value={model}>
-          <option value="">Default</option>
-          {#each modelGroups(models) as g (g.provider)}
-            <optgroup label={g.provider}>
-              {#each g.options as o (o.value)}<option value={o.value}>{o.label}</option>{/each}
-            </optgroup>
-          {/each}
-        </select>
+        <ModelPicker {models} value={model} onselect={(v) => (model = v)} defaultLabel="Default" variant="field" />
         {#if modelsError}<span class="hint">{modelsError}</span>{/if}
-      </label>
+      </div>
       <label class="field">
         <span>Thinking</span>
         <select class="select" bind:value={thinking}>

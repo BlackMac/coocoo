@@ -1,35 +1,5 @@
 // Small display formatters shared across views.
 
-import type { ModelInfo } from './protocol';
-
-/**
- * Model dropdown entries grouped by provider. A closed `<select>` shows only the option label, so
- * labels stay unique: a name offered by several providers gets the provider, a name used twice
- * within one provider (alias and dated id) gets the id.
- */
-export function modelGroups(models: ModelInfo[]): { provider: string; options: { value: string; label: string }[] }[] {
-  const providersByName = new Map<string, Set<string>>();
-  const countByProviderName = new Map<string, number>();
-  for (const m of models) {
-    const name = m.name || m.id;
-    const providers = providersByName.get(name) ?? new Set<string>();
-    providersByName.set(name, providers.add(m.provider));
-    const k = `${m.provider}\0${name}`;
-    countByProviderName.set(k, (countByProviderName.get(k) ?? 0) + 1);
-  }
-  const groups = new Map<string, { value: string; label: string }[]>();
-  for (const m of models) {
-    const name = m.name || m.id;
-    let label = name;
-    if ((countByProviderName.get(`${m.provider}\0${name}`) ?? 0) > 1) label += ` · ${m.id}`;
-    if ((providersByName.get(name)?.size ?? 0) > 1) label += ` · ${m.provider}`;
-    const options = groups.get(m.provider) ?? [];
-    groups.set(m.provider, options);
-    options.push({ value: `${m.provider}/${m.id}`, label });
-  }
-  return [...groups].map(([provider, options]) => ({ provider, options }));
-}
-
 const UNITS: [number, string][] = [
   [60, 's'],
   [60, 'm'],
