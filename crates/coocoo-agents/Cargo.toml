@@ -1,0 +1,15 @@
+[package]
+name = "coocoo-agents"
+description = "Coocoo agent supervisor: omp RPC processes, timelines, hibernation, orchestration host tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+coocoo-proto.workspace = true
+omp-rpc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true

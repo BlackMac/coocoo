@@ -1,0 +1,60 @@
+[workspace]
+resolver = "3"
+members = [
+  "crates/omp-rpc",
+  "crates/coocoo-proto",
+  "crates/coocoo-agents",
+  "crates/coocoo-browser",
+  "crates/coocoo-workspace",
+  "crates/coocoo-core",
+  "crates/coocoo-cli",
+]
+default-members = ["crates/coocoo-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/coocoo-dev/coocoo"
+
+[workspace.dependencies]
+omp-rpc = { path = "crates/omp-rpc" }
+coocoo-proto = { path = "crates/coocoo-proto" }
+coocoo-agents = { path = "crates/coocoo-agents" }
+coocoo-browser = { path = "crates/coocoo-browser" }
+coocoo-workspace = { path = "crates/coocoo-workspace" }
+coocoo-core = { path = "crates/coocoo-core" }
+
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "net", "fs", "signal"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "ws", "json", "query"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"] }
+anyhow = "1"
+thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
+dirs = "6"
+parking_lot = "0.12"
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
+notify = { version = "8", default-features = false }
+rust-embed = { version = "8", features = ["interpolate-folder-path"] }
+mime_guess = "2"
+clap = { version = "4", features = ["derive"] }
+qrcode = { version = "0.14", default-features = false }
+base64 = "0.22"
+libc = "0.2"
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+strip = true
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
