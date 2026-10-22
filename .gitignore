@@ -3,3 +3,5 @@ node_modules
 /ui/dist
 /src-tauri/gen
 *.tmp*
+.DS_Store
+._*
