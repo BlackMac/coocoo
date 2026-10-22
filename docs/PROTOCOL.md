@@ -31,7 +31,7 @@ Params marked `?` are optional. Return types refer to `types.rs`.
 | `system.hello` | – | `{ protocol: u32, host: HostInfo, hosts: HostInfo[] }` (`hosts` = local + peers) |
 | `system.subscribe` | `{ scope: "all" \| "local" }` | `{}` — peer links use `local` (only events originating on this daemon) |
 | `hosts.list` | – | `HostInfo[]` |
-| `hosts.add` | `{ kind: "direct", url, token, name? }` or `{ kind: "ssh", target: "user@host", sshPort?, remotePort? (7777), token?, install?: bool, name? }` | `HostInfo` |
+| `hosts.add` | `{ kind: "direct", url, token, name? }` or `{ kind: "ssh", target: "user@host", sshPort?, remotePort? (7421), token?, install?: bool, name? }` | `HostInfo` |
 | `hosts.remove` | `{ id }` | `{}` |
 | `hosts.rename` | `{ id, name }` | `HostInfo` (`id` = local renames this daemon) |
 | `stats.watch` | `{ enabled: bool }` | `{}` — while ≥1 connection watches, `host.stats` every 2 s |
