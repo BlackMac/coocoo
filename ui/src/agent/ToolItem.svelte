@@ -1,10 +1,11 @@
 <script lang="ts">
   import type { Component } from 'svelte';
   import { duration } from '../lib/format';
-  import type { TimelineItem } from '../lib/protocol';
+  import type { Subagent, TimelineItem } from '../lib/protocol';
   import { Check, ChevronRight, FileText, Globe, Pencil, Search, Terminal, Users, Wrench, X, Link, ListTodo, MessageSquareText } from '../lib/icons';
+  import SubagentList from './SubagentList.svelte';
 
-  let { item }: { item: TimelineItem } = $props();
+  let { item, onsubagent }: { item: TimelineItem; onsubagent?: (s: Subagent) => void } = $props();
   let open = $state(false);
 
   const ICONS: Record<string, Component<{ size?: number }>> = {
@@ -72,6 +73,7 @@
       {/if}
     </div>
   {/if}
+  {#if tool.subagents?.length}<SubagentList subagents={tool.subagents} {onsubagent} />{/if}
 </div>
 
 <style>

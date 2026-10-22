@@ -12,6 +12,7 @@
   import AddHostDialog from './components/AddHostDialog.svelte';
   import AddProjectDialog from './components/AddProjectDialog.svelte';
   import ConfirmDialog from './components/ConfirmDialog.svelte';
+  import SubagentDialog from './components/SubagentDialog.svelte';
   import Overview from './views/Overview.svelte';
   import ProjectView from './views/ProjectView.svelte';
   import AgentView from './views/AgentView.svelte';
@@ -122,6 +123,8 @@
     <AddHostDialog />
   {:else if ui.dialog?.kind === 'addProject'}
     <AddProjectDialog hostId={ui.dialog.hostId} />
+  {:else if ui.dialog?.kind === 'subagent'}
+    <SubagentDialog hostId={ui.dialog.hostId} agentId={ui.dialog.agentId} subagentId={ui.dialog.subagentId} sessionFile={ui.dialog.sessionFile} />
   {:else if ui.dialog?.kind === 'confirm'}
     <ConfirmDialog dialog={ui.dialog} />
   {/if}

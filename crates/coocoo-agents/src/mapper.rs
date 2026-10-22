@@ -2,29 +2,43 @@
 //!
 //! Pure with respect to I/O: every output goes through a [`Sink`], so the mapping is unit
 //! tested with recorded frames. Streaming text deltas are coalesced into at most one
-//! `agent.delta` per [`DELTA_WINDOW`].
+//! `agent.delta` per [`DELTA_WINDOW`]; subagent progress into one unpersisted tool item update
+//! per [`PROGRESS_WINDOW`].
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use coocoo_proto::util::{now_ms, truncate};
-use coocoo_proto::{ItemKind, TimelineItem, ToolCall, ToolStatus};
+use coocoo_proto::{ItemKind, Subagent, TimelineItem, ToolCall, ToolStatus};
 use omp_rpc::{
     AgentMessage, AssistantContent, AssistantMessageEvent, ExtensionUiRequest, MessageContent, NotifyType, PromptStatus,
-    RpcAgentEvent, RpcNotification, StopReason, SubagentLifecycleStatus, UserContent,
+    RpcAgentEvent, RpcNotification, StopReason, SubagentLifecyclePayload, SubagentLifecycleStatus, SubagentProgressPayload,
+    UserContent,
 };
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 /// Coalescing window for streaming text.
 pub(crate) const DELTA_WINDOW: Duration = Duration::from_millis(50);
-const MAX_ARGS: usize = 4 * 1024;
-const MAX_OUTPUT: usize = 8 * 1024;
+/// Subagents report progress on every tool step; clients see at most one update per window.
+pub(crate) const PROGRESS_WINDOW: Duration = Duration::from_secs(1);
+pub(crate) const MAX_ARGS: usize = 4 * 1024;
+pub(crate) const MAX_OUTPUT: usize = 8 * 1024;
+const MAX_ACTIVITY: usize = 160;
+/// Finished tool calls kept for subagent frames that arrive after the call returned.
+const RECENT_TOOLS: usize = 16;
+
+fn has_running(item: &TimelineItem) -> bool {
+    item.tool.as_ref().is_some_and(|t| t.subagents.iter().any(|s| s.status == "running"))
+}
 
 /// A state change derived from an omp frame.
 #[derive(Debug, Clone)]
 pub(crate) enum Effect {
     /// Insert or replace a timeline item (persisted + `agent.timeline`).
     Upsert(TimelineItem),
+    /// Replace a tool item's live subagent progress (`agent.timeline`, memory only; the next
+    /// `Upsert` of the item persists the state at that point).
+    Progress(TimelineItem),
     /// Streaming text for a partial item (`agent.delta`, memory only).
     Delta { item_id: String, text: String },
     /// A run started (`agent_start`).
@@ -81,8 +95,15 @@ pub(crate) struct Mapper {
     /// Streaming assistant/thinking blocks by `(messageId, contentIndex)`.
     blocks: HashMap<(String, i64), Block>,
     tools: HashMap<String, RunningTool>,
+    /// Recently finished tool calls, oldest first: async `task` calls return before their
+    /// subagents report, and detached subagents outlive the call. Calls with running subagents
+    /// are never evicted.
+    finished: Vec<(String, TimelineItem)>,
     pending_delta: Option<(String, String)>,
     delta_since: Option<Instant>,
+    /// Tool calls with subagent progress not yet sent, and when the first of it arrived.
+    progress_dirty: Vec<String>,
+    progress_since: Option<Instant>,
     compaction: Option<TimelineItem>,
     retry: Option<TimelineItem>,
     /// An error item was already shown for the current run.
@@ -114,18 +135,31 @@ impl Mapper {
         Self::default()
     }
 
-    /// When buffered streaming text must be flushed.
+    /// When buffered streaming text or subagent progress must be flushed.
     pub fn deadline(&self) -> Option<Instant> {
-        self.delta_since.map(|since| since + DELTA_WINDOW)
+        let delta = self.delta_since.map(|since| since + DELTA_WINDOW);
+        let progress = self.progress_since.map(|since| since + PROGRESS_WINDOW);
+        match (delta, progress) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
-    /// Emit buffered streaming text.
+    /// Emit buffered streaming text, and subagent progress once its window has passed.
     pub fn flush(&mut self, sink: &mut dyn Sink) {
         self.delta_since = None;
         if let Some((item_id, text)) = self.pending_delta.take()
             && !text.is_empty()
         {
             sink.effect(Effect::Delta { item_id, text });
+        }
+        if self.progress_since.is_some_and(|since| since.elapsed() >= PROGRESS_WINDOW) {
+            self.progress_since = None;
+            for call in std::mem::take(&mut self.progress_dirty) {
+                if let Some(item) = self.owner(&call) {
+                    sink.effect(Effect::Progress(item.clone()));
+                }
+            }
         }
     }
 
@@ -144,6 +178,15 @@ impl Mapper {
             crate::timeline::settle(&mut tool.item);
             sink.effect(Effect::Upsert(tool.item));
         }
+        let finished = std::mem::take(&mut self.finished);
+        for (_, mut item) in finished {
+            if has_running(&item) {
+                crate::timeline::settle(&mut item);
+                sink.effect(Effect::Upsert(item));
+            }
+        }
+        self.progress_dirty.clear();
+        self.progress_since = None;
         for mut item in [self.compaction.take(), self.retry.take()].into_iter().flatten() {
             item.partial = false;
             sink.effect(Effect::Upsert(item));
@@ -178,17 +221,90 @@ impl Mapper {
                 format!("Extension error ({}) in {}: {}", err.event, err.extension_path, err.error),
             ),
             RpcNotification::SubagentLifecycle(event) => {
-                let id = event.payload.id;
+                let id = event.payload.id.clone();
                 sink.effect(match event.payload.status {
                     SubagentLifecycleStatus::Started => Effect::SubagentStarted(id),
                     _ => Effect::SubagentEnded(id),
                 });
+                self.subagent_lifecycle(event.payload, sink);
             }
+            RpcNotification::SubagentProgress(event) => self.subagent_progress(event.payload),
             RpcNotification::RpcFrameError(err) => {
                 tracing::warn!(error = %err.error, original = ?err.original_type, "omp dropped an oversized frame");
             }
             _ => {}
         }
+    }
+
+    /// The tool item a subagent belongs to: a running tool call, or a recently finished one.
+    fn owner(&mut self, call_id: &str) -> Option<&mut TimelineItem> {
+        match self.tools.get_mut(call_id) {
+            Some(tool) => Some(&mut tool.item),
+            None => self.finished.iter_mut().rev().find(|(id, _)| id == call_id).map(|(_, item)| item),
+        }
+    }
+
+    /// Started/finished subagents change the tool item persistently.
+    fn subagent_lifecycle(&mut self, p: SubagentLifecyclePayload, sink: &mut dyn Sink) {
+        let Some(call) = p.parent_tool_call_id else { return };
+        let Some(item) = self.owner(&call) else { return };
+        let Some(tool) = item.tool.as_mut() else { return };
+        let done = p.status != SubagentLifecycleStatus::Started;
+        let status = if done { p.status.as_str() } else { "running" }.to_owned();
+        let sub = match tool.subagents.iter().position(|s| s.id == p.id) {
+            Some(i) => &mut tool.subagents[i],
+            None => {
+                tool.subagents.push(new_subagent(p.id, p.agent, now_ms()));
+                tool.subagents.last_mut().expect("pushed")
+            }
+        };
+        sub.status = status;
+        if p.description.is_some() {
+            sub.description = p.description;
+        }
+        if p.session_file.is_some() {
+            sub.session_file = p.session_file;
+        }
+        if done {
+            sub.ended_at = Some(now_ms());
+            sub.activity = None;
+        }
+        let item = item.clone();
+        self.progress_dirty.retain(|c| *c != call);
+        sink.effect(Effect::Upsert(item));
+    }
+
+    /// Progress (current tool, counts, cost) only updates memory; [`Self::flush`] sends it.
+    fn subagent_progress(&mut self, p: SubagentProgressPayload) {
+        let Some(call) = p.parent_tool_call_id else { return };
+        let progress = &p.progress;
+        let Some(id) = progress.get("id").and_then(Value::as_str) else { return };
+        let Some(item) = self.owner(&call) else { return };
+        let Some(tool) = item.tool.as_mut() else { return };
+        let sub = match tool.subagents.iter().position(|s| s.id == id) {
+            Some(i) => &mut tool.subagents[i],
+            None => {
+                tool.subagents.push(new_subagent(id.to_owned(), p.agent, now_ms()));
+                tool.subagents.last_mut().expect("pushed")
+            }
+        };
+        if sub.status != "running" {
+            return;
+        }
+        if sub.description.is_none() {
+            sub.description = progress.get("description").and_then(Value::as_str).map(str::to_owned);
+        }
+        if sub.session_file.is_none() {
+            sub.session_file = p.session_file;
+        }
+        sub.activity = activity(progress);
+        sub.tool_count = progress.get("toolCount").and_then(Value::as_u64).map(|n| n as u32);
+        sub.cost_usd = progress.get("cost").and_then(Value::as_f64);
+        sub.model = progress.get("resolvedModelIdentity").or_else(|| progress.get("resolvedModel")).and_then(Value::as_str).map(str::to_owned);
+        if !self.progress_dirty.contains(&call) {
+            self.progress_dirty.push(call);
+        }
+        self.progress_since.get_or_insert_with(Instant::now);
     }
 
     fn ui_request(&mut self, request: ExtensionUiRequest, sink: &mut dyn Sink) {
@@ -266,6 +382,7 @@ impl Mapper {
                     status: ToolStatus::Running,
                     output: None,
                     duration_ms: None,
+                    subagents: Vec::new(),
                 });
                 sink.effect(Effect::Upsert(item.clone()));
                 self.tools.insert(start.tool_call_id, RunningTool { item, started: Instant::now() });
@@ -283,6 +400,7 @@ impl Mapper {
                             status: ToolStatus::Running,
                             output: None,
                             duration_ms: None,
+                            subagents: Vec::new(),
                         });
                         (item, None)
                     }
@@ -292,6 +410,12 @@ impl Mapper {
                     tool.status = if end.is_error == Some(true) { ToolStatus::Error } else { ToolStatus::Ok };
                     tool.output = end.result.as_ref().map(|r| truncate(&tool_output(r), MAX_OUTPUT));
                     tool.duration_ms = duration;
+                }
+                self.finished.push((end.tool_call_id.clone(), item.clone()));
+                if self.finished.len() > RECENT_TOOLS
+                    && let Some(oldest) = self.finished.iter().position(|(_, item)| !has_running(item))
+                {
+                    self.finished.remove(oldest);
                 }
                 sink.effect(Effect::Upsert(item));
                 if end.tool_name == "todo" {
@@ -499,8 +623,38 @@ impl Mapper {
     }
 }
 
+fn new_subagent(id: String, agent: String, started_at: i64) -> Subagent {
+    Subagent {
+        id,
+        agent,
+        description: None,
+        status: "running".to_owned(),
+        started_at,
+        ended_at: None,
+        activity: None,
+        tool_count: None,
+        cost_usd: None,
+        model: None,
+        session_file: None,
+    }
+}
+
+/// One line on what a subagent is doing, from omp's `AgentProgress`: the running tool with its
+/// intent (or its argument preview), else the last intent it stated.
+fn activity(progress: &Map<String, Value>) -> Option<String> {
+    let text = |key: &str| progress.get(key).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
+    let line = match text("currentTool") {
+        Some(tool) => match text("currentToolIntent").or_else(|| text("currentToolArgs")) {
+            Some(detail) => format!("{tool} · {detail}"),
+            None => tool.to_owned(),
+        },
+        None => text("lastIntent")?.to_owned(),
+    };
+    Some(truncate(&line.replace('\n', " "), MAX_ACTIVITY))
+}
+
 /// Visible text of user/custom content; images are summarized.
-fn content_text(content: MessageContent) -> String {
+pub(crate) fn content_text(content: MessageContent) -> String {
     match content {
         MessageContent::String(text) => text,
         MessageContent::UserContentList(parts) => {
@@ -531,7 +685,7 @@ fn content_text(content: MessageContent) -> String {
 }
 
 /// Text of a tool result (`{content: [{type:"text", text}], details}`), or its JSON.
-fn tool_output(result: &Value) -> String {
+pub(crate) fn tool_output(result: &Value) -> String {
     if let Some(text) = result.as_str() {
         return text.to_owned();
     }
@@ -715,5 +869,60 @@ mod tests {
         assert_eq!(tool.intent.as_deref(), Some("Sleeping"));
         assert_eq!(tool.status, ToolStatus::Error);
         assert!(!items[1].partial);
+    }
+
+    #[test]
+    fn subagents_live_on_their_task_call() {
+        let (mut mapper, mut rec) = (Mapper::new(), Recorder::default());
+        let progress = |tool: &str| {
+            format!(
+                r#"{{"type":"subagent_progress","payload":{{"index":0,"agent":"task","agentSource":"bundled","task":"t","parentToolCallId":"c1","sessionFile":"/s/A.jsonl","progress":{{"id":"A","status":"running","currentTool":"{tool}","currentToolIntent":"Reading docs","toolCount":3,"cost":0.02,"resolvedModel":"anthropic/x"}}}}}}"#
+            )
+        };
+        let frames = format!(
+            r#"
+{{"type":"tool_execution_start","toolCallId":"c1","toolName":"task","args":{{"tasks":[]}}}}
+{{"type":"subagent_lifecycle","payload":{{"id":"A","agent":"task","agentSource":"bundled","status":"started","index":0,"description":"Docs","parentToolCallId":"c1"}}}}
+{{"type":"subagent_lifecycle","payload":{{"id":"B","agent":"scout","agentSource":"bundled","status":"started","index":1,"parentToolCallId":"c1","detached":true}}}}
+{}
+{}
+"#,
+            progress("grep"),
+            progress("read")
+        );
+        for line in frames.lines().filter(|l| !l.trim().is_empty()) {
+            mapper.handle(RpcNotification::from_value(serde_json::from_str(line).unwrap()).unwrap(), &mut rec);
+        }
+        // Progress is held back for the window, then sent once with the latest state, unpersisted.
+        assert!(!rec.effects.iter().any(|e| matches!(e, Effect::Progress(_))));
+        mapper.progress_since = Some(Instant::now() - PROGRESS_WINDOW);
+        mapper.flush(&mut rec);
+        let live: Vec<&TimelineItem> = rec.effects.iter().filter_map(|e| if let Effect::Progress(i) = e { Some(i) } else { None }).collect();
+        assert_eq!(live.len(), 1);
+        let a = &live[0].tool.as_ref().unwrap().subagents[0];
+        assert_eq!(
+            (a.description.as_deref(), a.activity.as_deref(), a.tool_count, a.model.as_deref(), a.session_file.as_deref()),
+            (Some("Docs"), Some("read · Reading docs"), Some(3), Some("anthropic/x"), Some("/s/A.jsonl"))
+        );
+
+        // The call returns while B (detached) still runs, and an async C only reports afterwards;
+        // both still update the call's item.
+        let rest = r#"
+{"type":"subagent_lifecycle","payload":{"id":"A","agent":"task","agentSource":"bundled","status":"completed","index":0,"parentToolCallId":"c1"}}
+{"type":"tool_execution_end","toolCallId":"c1","toolName":"task","result":{"content":[{"type":"text","text":"ok"}]},"isError":false}
+{"type":"subagent_lifecycle","payload":{"id":"C","agent":"task","agentSource":"bundled","status":"started","index":2,"parentToolCallId":"c1"}}
+{"type":"subagent_lifecycle","payload":{"id":"B","agent":"scout","agentSource":"bundled","status":"failed","index":1,"parentToolCallId":"c1"}}
+"#;
+        feed(&mut mapper, &mut rec, rest);
+        let items = rec.items();
+        let tool = items[0].tool.as_ref().unwrap();
+        let states: Vec<(&str, &str, bool, bool)> =
+            tool.subagents.iter().map(|s| (s.id.as_str(), s.status.as_str(), s.ended_at.is_some(), s.activity.is_some())).collect();
+        assert_eq!(states, [("A", "completed", true, false), ("B", "failed", true, false), ("C", "running", false, false)]);
+        assert_eq!(tool.status, ToolStatus::Ok);
+        assert!(has_running(&items[0]), "C still runs");
+        mapper.finish(&mut rec);
+        let c = rec.items()[0].tool.as_ref().unwrap().subagents[2].clone();
+        assert_eq!(c.status, "aborted", "the process went away");
     }
 }

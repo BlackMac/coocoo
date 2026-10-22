@@ -217,6 +217,24 @@ export interface ToolCall {
   status: ToolStatus;
   output?: string;
   durationMs?: number;
+  /** Subagents this call (omp's `task` tool) started. */
+  subagents?: Subagent[];
+}
+
+export interface Subagent {
+  id: string;
+  /** Agent type (`task`, `scout`, …). */
+  agent: string;
+  description?: string;
+  status: 'running' | 'completed' | 'failed' | 'aborted';
+  startedAt: number;
+  endedAt?: number;
+  /** Current tool and intent, while running. */
+  activity?: string;
+  toolCount?: number;
+  costUsd?: number;
+  model?: string;
+  sessionFile?: string;
 }
 
 export interface TimelineItem {
@@ -546,6 +564,7 @@ export interface Methods {
   'agents.setThinking': [{ id: string; level: string }, AgentSummary];
   'agents.models': [Empty | undefined, ModelInfo[]];
   'agents.usage': [{ provider: string; model?: string }, ProviderUsage];
+  'agents.subagentTimeline': [{ id: string; sessionFile: string; live?: boolean }, TimelinePage];
   'agents.hibernate': [{ id: string }, AgentSummary];
   'agents.archive': [{ id: string }, AgentSummary];
   'agents.delete': [{ id: string; removeWorktree?: boolean }, Ok];

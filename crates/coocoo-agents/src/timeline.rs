@@ -67,6 +67,12 @@ impl Timeline {
         Ok(())
     }
 
+    /// Replace a tail item without persisting it (live subagent progress; the next upsert does).
+    pub fn overlay(&mut self, item: TimelineItem) {
+        self.ensure_loaded();
+        self.remember(item);
+    }
+
     /// Append streaming text to a tail item without persisting it (the final upsert does).
     pub fn append_text(&mut self, item_id: &str, text: &str) {
         if let Some(item) = self.tail.iter_mut().rev().find(|i| i.id == item_id) {
@@ -164,8 +170,14 @@ pub(crate) fn page(path: &Path, tail: Vec<TimelineItem>, before: Option<u64>, li
     TimelinePage { items, has_more }
 }
 
-/// Mark a streaming item as finished because its process is gone.
+/// Mark a streaming item as finished because its process is gone; its subagents went with it.
 pub(crate) fn settle(item: &mut TimelineItem) {
+    if let Some(tool) = &mut item.tool {
+        for sub in tool.subagents.iter_mut().filter(|s| s.status == "running") {
+            sub.status = "aborted".to_owned();
+            sub.activity = None;
+        }
+    }
     if !item.partial {
         return;
     }
@@ -257,6 +269,7 @@ mod tests {
             status: ToolStatus::Running,
             output: None,
             duration_ms: None,
+            subagents: Vec::new(),
         });
         tl.upsert(&tool).unwrap();
 

@@ -329,6 +329,39 @@ pub struct ToolCall {
     pub output: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    /// Subagents this call (omp's `task` tool) started, in start order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subagents: Vec<Subagent>,
+}
+
+/// One omp subagent started by a tool call.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Subagent {
+    /// omp's subagent id (also its name, e.g. `CoreSlice`).
+    pub id: String,
+    /// Agent type (`task`, `scout`, …).
+    pub agent: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// `running`, `completed`, `failed` or `aborted`.
+    pub status: String,
+    pub started_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<i64>,
+    /// What it is doing right now (current tool and its intent); only while running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    /// `provider/model` it runs on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Its omp session file: read the transcript with `agents.subagentTimeline`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_file: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

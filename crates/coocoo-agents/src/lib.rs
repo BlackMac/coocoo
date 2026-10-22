@@ -14,6 +14,7 @@ mod process;
 mod state;
 mod timeline;
 mod tools;
+mod transcript;
 mod usage;
 
 use std::collections::HashMap;

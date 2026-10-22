@@ -581,6 +581,10 @@ impl Sink for LiveSink<'_> {
                 }
                 agents.emit_item(&agent.id, item);
             }
+            Effect::Progress(item) => {
+                agent.timeline.lock().overlay(item.clone());
+                agents.emit_item(&agent.id, item);
+            }
             Effect::Delta { item_id, text } => {
                 agent.timeline.lock().append_text(&item_id, &text);
                 agents.emitter.emit(events::AGENT_DELTA, &TimelineDelta { agent_id: agent.id.clone(), item_id, text });

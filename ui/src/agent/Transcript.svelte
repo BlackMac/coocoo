@@ -1,12 +1,10 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import type { Timeline } from '../lib/fleet.svelte';
-  import type { AgentSummary, TimelineItem } from '../lib/protocol';
+  import type { AgentSummary } from '../lib/protocol';
+  import { ui } from '../lib/ui.svelte';
   import { ArrowDown } from '../lib/icons';
-  import UserItem from './UserItem.svelte';
-  import AssistantItem from './AssistantItem.svelte';
-  import ThinkingItem from './ThinkingItem.svelte';
-  import ToolItem from './ToolItem.svelte';
+  import ItemList from './ItemList.svelte';
 
   let { timeline, agent }: { timeline: Timeline; agent: AgentSummary } = $props();
 
@@ -16,20 +14,6 @@
   let stick = $state(true);
 
   const working = $derived(agent.status === 'running' || agent.status === 'starting');
-
-  /** Groups consecutive tool calls so they render as one compact block. */
-  type Block = { kind: 'tools'; items: TimelineItem[]; id: string } | { kind: 'item'; item: TimelineItem; id: string };
-  const blocks = $derived.by<Block[]>(() => {
-    const out: Block[] = [];
-    for (const it of timeline.items) {
-      const last = out.at(-1);
-      if (it.kind === 'tool') {
-        if (last?.kind === 'tools') last.items.push(it);
-        else out.push({ kind: 'tools', items: [it], id: `t:${it.id}` });
-      } else out.push({ kind: 'item', item: it, id: it.id });
-    }
-    return out;
-  });
 
   // Keep pinned to the bottom as content grows (new items, streaming text, expanding rows).
   $effect(() => {
@@ -99,23 +83,10 @@
       {:else if timeline.loaded && !timeline.items.length}
         <div class="empty"><strong>No messages yet</strong><span>Send the first prompt below.</span></div>
       {/if}
-      {#each blocks as b (b.id)}
-        {#if b.kind === 'tools'}
-          <div class="tools">
-            {#each b.items as it (it.id)}<ToolItem item={it} />{/each}
-          </div>
-        {:else if b.item.kind === 'user'}
-          <UserItem item={b.item} />
-        {:else if b.item.kind === 'assistant'}
-          <AssistantItem item={b.item} />
-        {:else if b.item.kind === 'thinking'}
-          <ThinkingItem item={b.item} />
-        {:else if b.item.kind === 'notice'}
-          <div class="notice"><span>{b.item.text}</span></div>
-        {:else}
-          <div class="error">{b.item.text}</div>
-        {/if}
-      {/each}
+      <ItemList
+        items={timeline.items}
+        onsubagent={(s) => s.sessionFile && (ui.dialog = { kind: 'subagent', hostId: agent.hostId, agentId: agent.id, subagentId: s.id, sessionFile: s.sessionFile })}
+      />
       {#if working}
         <div class="working"><span class="dots"><i></i><i></i><i></i></span>{agent.todos?.current ?? 'Working…'}</div>
       {/if}
@@ -160,36 +131,6 @@
     display: grid;
     place-items: center;
     padding: 48px;
-  }
-  .tools {
-    display: flex;
-    flex-direction: column;
-    border: 1px solid var(--border);
-    border-radius: var(--r-lg);
-    background: var(--bg-1);
-    overflow: hidden;
-  }
-  .notice {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    color: var(--text-3);
-    font-size: var(--fs-xs);
-  }
-  .notice::before,
-  .notice::after {
-    content: '';
-    flex: 1;
-    border-top: 1px solid var(--border);
-  }
-  .error {
-    padding: 9px 12px;
-    border: 1px solid color-mix(in srgb, var(--red) 30%, var(--border));
-    border-radius: var(--r-lg);
-    background: var(--red-soft);
-    color: var(--red);
-    font-size: var(--fs-sm);
-    white-space: pre-wrap;
   }
   .working {
     display: flex;

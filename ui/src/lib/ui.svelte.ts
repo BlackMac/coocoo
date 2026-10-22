@@ -35,6 +35,7 @@ export type Dialog =
   | { kind: 'newAgent'; hostId?: string; projectId?: string }
   | { kind: 'addHost' }
   | { kind: 'addProject'; hostId?: string }
+  | { kind: 'subagent'; hostId: string; agentId: string; subagentId: string; sessionFile: string }
   | { kind: 'confirm'; title: string; message: string; action: string; danger?: boolean; run: () => void | Promise<void> };
 
 const THEME_KEY = 'coocoo.theme';

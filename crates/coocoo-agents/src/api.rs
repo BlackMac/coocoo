@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 use crate::process::{call, client_error};
 use crate::state::{Agent, Life, PendingPrompt, State};
 use crate::timeline;
-use crate::{Agents, usage, write_meta};
+use crate::{Agents, transcript, usage, write_meta};
 
 /// `agents.models` cache lifetime.
 const MODELS_TTL: Duration = Duration::from_secs(600);
@@ -127,6 +127,17 @@ struct UsageParams {
     model: Option<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SubagentTimelineParams {
+    id: String,
+    /// `Subagent.sessionFile` from the agent's timeline.
+    session_file: String,
+    /// The subagent still runs: unanswered tool calls are in progress, not interrupted.
+    #[serde(default)]
+    live: bool,
+}
+
 /// Default title: first non-empty prompt line, at most [`TITLE_CHARS`] characters.
 fn default_title(prompt: Option<&str>, id: &str) -> String {
     let line = prompt.and_then(|p| p.lines().map(str::trim).find(|l| !l.is_empty()));
@@ -198,6 +209,7 @@ impl Agents {
             "agents.setThinking" => self.set_thinking(params(p)?).await,
             "agents.models" => ok(self.models().await?),
             "agents.usage" => ok(self.usage(params(p)?).await?),
+            "agents.subagentTimeline" => self.subagent_timeline(params(p)?).await,
             "agents.hibernate" => {
                 let IdParams { id } = params(p)?;
                 let agent = self.get(&id)?;
@@ -515,6 +527,19 @@ impl Agents {
         };
         usage::mark_gating(&mut report, model.as_deref());
         Ok(report)
+    }
+
+    async fn subagent_timeline(&self, p: SubagentTimelineParams) -> ApiResult<Value> {
+        let agent = self.get(&p.id)?;
+        let parent = agent.state.lock().summary.session_file.clone();
+        let parent = parent.ok_or_else(|| ApiError::not_found(format_args!("session of agent {}", p.id)))?;
+        let page = tokio::task::spawn_blocking(move || {
+            let file = transcript::resolve(std::path::Path::new(&parent), std::path::Path::new(&p.session_file))?;
+            transcript::read(&file, p.live)
+        })
+        .await
+        .map_err(ApiError::internal)??;
+        ok(page)
     }
 
     async fn delete(&self, p: DeleteParams) -> ApiResult<Value> {
