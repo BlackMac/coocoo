@@ -25,21 +25,30 @@
     }
   }
 
+  /** A card is a new task: never queue it behind a running answer. */
+  const isBusy = (x: AgentSummary) => x.status === 'starting' || x.status === 'running' || x.status === 'waiting';
+  const inAgent = (x: AgentSummary): MenuItem => ({
+    label: isBusy(x) ? `In ${x.title} (busy)` : `In ${x.title}`,
+    icon: Bot,
+    disabled: isBusy(x),
+    run: () => start({ agentId: x.id }),
+  });
   const items = $derived<MenuItem[]>([
-    ...(agent && agent.status !== 'stopped' ? [{ label: `In ${agent.title}`, icon: Bot, run: () => start({ agentId: agent.id }) }] : []),
-    ...others.map((x) => ({ label: `In ${x.title}`, icon: Bot, run: () => start({ agentId: x.id }) })),
+    ...(agent && agent.status !== 'stopped' ? [inAgent(agent)] : []),
+    ...others.map(inAgent),
     { label: 'New agent', icon: Plus, run: () => start({}) },
     ...(project?.git ? [{ label: 'New agent in a worktree', icon: GitBranch, run: () => start({ worktree: true }) }] : []),
   ]);
   const here = $derived(agent && agent.status !== 'stopped' ? agent : undefined);
+  const hereBusy = $derived(!!here && isBusy(here));
 </script>
 
 <div class="split">
   <button
     class="btn sm go"
     class:primary
-    disabled={busy}
-    title={here ? `Hand it to ${here.title}` : 'Start a new agent for it'}
+    disabled={busy || hereBusy}
+    title={hereBusy ? `${here!.title} is still answering` : here ? `Hand it to ${here.title}` : 'Start a new agent for it'}
     onclick={() => start(here ? { agentId: here.id } : {})}
   >
     {#if busy}<span class="spinner"></span>{:else}<Play size={11} fill="currentColor" />{/if}{here ? 'Start' : 'Start new'}

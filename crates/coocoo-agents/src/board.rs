@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use coocoo_proto::error::{ok, params};
 use coocoo_proto::util::{new_id, now_ms, read_json, truncate, write_json_atomic};
-use coocoo_proto::{ApiError, ApiResult, Board, BoardEvent, BoardSource, Card, CardColumn, CommitInfo, Project, events};
+use coocoo_proto::{AgentStatus, ApiError, ApiResult, Board, BoardEvent, BoardSource, Card, CardColumn, CommitInfo, Project, events};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -562,6 +562,10 @@ impl Agents {
                 }
                 if agent.state.lock().life == Life::Stopped {
                     return Err(ApiError::conflict(format!("agent “{}” is archived", summary.title)));
+                }
+                // A card is a new task: it must not be queued behind (or steer) a running turn.
+                if matches!(summary.status, AgentStatus::Starting | AgentStatus::Running | AgentStatus::Waiting) {
+                    return Err(ApiError::conflict(format!("agent “{}” is still busy; wait until its answer is finished", summary.title)));
                 }
                 self.prompt_text(&agent_id, card_prompt(&card)).await?;
                 summary
