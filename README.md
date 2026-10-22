@@ -19,7 +19,7 @@ It is in the same category as Paseo, Superset, Conductor and Orca, built around 
 | **Multiple devices** | The same daemon runs on desktops and headless servers. A client connects to one daemon, which links to peers directly (LAN, Tailscale, WireGuard) or through an SSH tunnel it starts and supervises itself. It can install itself on the server over SSH. Requests are routed per host and events are relayed, so one window, or one phone browser, shows the whole fleet. |
 | **omp only** | No lowest common denominator across harnesses. Coocoo uses omp's RPC protocol directly through the official Rust client: structured `ask` dialogs, todos, subagent counts, `session_settled`-accurate status, session resume, and orchestration host tools (spawn, message and wait for agents on any host) injected without MCP. The composer shows the model provider's subscription quota the way that provider meters it (5-hour and weekly windows, extra usage, several accounts), read from `omp usage`. |
 | **Browser use** | Each project gets a Chromium owned by the daemon on the host where the code runs. omp's own browser tool attaches to it, and every client watches the same tab through a screencast and can take over with mouse and keyboard. That includes a phone, and a headless server. Design mode turns a clicked element into prompt context (screenshot, selector, computed styles, HTML). |
-| **Clean UI** | Svelte 5, hand-written design tokens, dense and quiet, in dark and light, responsive down to phone width, with a ⌘K palette and keyboard navigation. |
+| **Clean UI** | Svelte 5, hand-written design tokens, dense and quiet, in dark and light, responsive down to phone width, with a ⌘K palette and keyboard navigation. A terminal in the agent's or project's directory on its host (the shell keeps running when you close the panel) is one tab away. |
 
 ## Screenshots
 
@@ -74,7 +74,7 @@ crates/coocoo-proto      wire types, event bus, Orchestrator trait (the contract
 crates/coocoo-core       daemon: config, HTTP/WS server, routing, peers (direct + SSH), embedded UI
 crates/coocoo-agents     omp supervisor: RPC processes, timelines, hibernation, host tools
 crates/coocoo-browser    Chromium per project over raw CDP: discovery, screencast, input, design mode
-crates/coocoo-workspace  projects, git (status/diff/worktrees/commit/merge), fs, host stats
+crates/coocoo-workspace  projects, git (status/diff/worktrees/commit/merge), fs, host stats, terminals
 crates/coocoo-cli        the `coocoo` binary
 crates/omp-rpc           official omp RPC client (vendored, MIT)
 src-tauri                Tauri 2 desktop shell (tray, notifications, embedded daemon)
