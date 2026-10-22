@@ -37,6 +37,8 @@
     <ThinkingItem item={b.item} />
   {:else if b.item.kind === 'notice'}
     <div class="notice"><span>{b.item.text}</span></div>
+  {:else if b.item.kind === 'command'}
+    <pre class="command mono">{b.item.text}</pre>
   {:else}
     <div class="error">{b.item.text}</div>
   {/if}
@@ -72,5 +74,18 @@
     color: var(--red);
     font-size: var(--fs-sm);
     white-space: pre-wrap;
+  }
+  .command {
+    margin: 0;
+    max-height: 420px;
+    overflow: auto;
+    padding: 9px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--r-lg);
+    background: var(--code-bg);
+    color: var(--text-2);
+    font-size: 11.5px;
+    line-height: 1.5;
+    white-space: pre;
   }
 </style>

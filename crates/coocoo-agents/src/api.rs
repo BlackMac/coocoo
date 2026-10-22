@@ -6,12 +6,12 @@ use std::time::{Duration, Instant};
 use coocoo_proto::error::{ok, params};
 use coocoo_proto::util::{new_id, now_ms};
 use coocoo_proto::{
-    AgentStatus, AgentSummary, ApiError, ApiResult, ImageInput, ItemKind, ModelInfo, Project, ProviderUsage, WorktreeRef,
-    events,
+    AgentStatus, AgentSummary, ApiError, ApiResult, ImageInput, ItemKind, ModelInfo, Project, ProviderUsage, SlashCommand,
+    WorktreeRef, events,
 };
 use omp_rpc::{
-    AbortCommand, Client, ClientOptions, ExtensionUiResponse, GetAvailableModelsCommand, ImageContent, LitImage,
-    RpcInbound, SetModelCommand, SetThinkingLevelCommand, StreamingBehavior, ThinkingLevel,
+    AbortCommand, Client, ClientOptions, ExtensionUiResponse, GetAvailableCommandsCommand, GetAvailableModelsCommand,
+    ImageContent, LitImage, RpcInbound, SetModelCommand, SetThinkingLevelCommand, StreamingBehavior, ThinkingLevel,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -208,6 +208,10 @@ impl Agents {
             "agents.setModel" => self.set_model(params(p)?).await,
             "agents.setThinking" => self.set_thinking(params(p)?).await,
             "agents.models" => ok(self.models().await?),
+            "agents.commands" => {
+                let IdParams { id } = params(p)?;
+                ok(self.commands(&id).await?)
+            }
             "agents.usage" => ok(self.usage(params(p)?).await?),
             "agents.subagentTimeline" => self.subagent_timeline(params(p)?).await,
             "agents.hibernate" => {
@@ -471,6 +475,51 @@ impl Agents {
         ok(agent.summary())
     }
 
+    /// Run one RPC command on a throwaway `omp --mode rpc` process in `cwd` (for data only a
+    /// process can answer while no agent runs).
+    async fn one_shot<C>(&self, cwd: std::path::PathBuf, command: C) -> ApiResult<C::Output>
+    where
+        C: omp_rpc::Command + Send + 'static,
+        C::Output: Send + 'static,
+    {
+        let (omp, extra) = (self.omp.clone(), self.config.extra_args.clone());
+        tokio::task::spawn_blocking(move || -> ApiResult<C::Output> {
+            std::fs::create_dir_all(&cwd)?;
+            let mut process = std::process::Command::new(omp);
+            process
+                .args(["--mode", "rpc", "--no-session", "--allow-home", "--cwd"])
+                .arg(&cwd)
+                .args(extra)
+                .current_dir(&cwd)
+                .stderr(std::process::Stdio::null());
+            let (client, _events) = Client::spawn(process, ClientOptions::default()).map_err(client_error)?;
+            let output = client.call(&command).map_err(client_error);
+            // Dropping the client tears the process group down.
+            drop(client);
+            output
+        })
+        .await
+        .map_err(ApiError::internal)?
+    }
+
+    /// `agents.commands`: the agent's slash-command catalog. Comes from its omp process (kept
+    /// current by `available_commands_update`); an agent that never reported one gets it from a
+    /// throwaway process in its directory, since skills and custom commands depend on it.
+    async fn commands(&self, id: &str) -> ApiResult<Vec<SlashCommand>> {
+        let agent = self.get(id)?;
+        if let Some(commands) = agent.state.lock().commands.clone() {
+            return Ok(commands);
+        }
+        let raw = match agent.client() {
+            Some(client) => call(client, GetAvailableCommandsCommand {}).await?,
+            None => self.one_shot(agent.summary().cwd.into(), GetAvailableCommandsCommand {}).await?,
+        };
+        let commands = crate::mapper::slash_commands(raw);
+        agent.state.lock().commands = Some(commands.clone());
+        self.changed(&agent);
+        Ok(commands)
+    }
+
     async fn models(&self) -> ApiResult<Vec<ModelInfo>> {
         let mut cache = self.models.lock().await;
         if let Some((at, models)) = cache.as_ref()
@@ -481,26 +530,7 @@ impl Agents {
         let live = self.agents.read().values().find_map(|a| a.client());
         let raw = match live {
             Some(client) => call(client, GetAvailableModelsCommand {}).await?,
-            None => {
-                let (omp, cwd, extra) = (self.omp.clone(), self.root.clone(), self.config.extra_args.clone());
-                tokio::task::spawn_blocking(move || -> ApiResult<Vec<omp_rpc::ModelInfo>> {
-                    std::fs::create_dir_all(&cwd)?;
-                    let mut process = std::process::Command::new(omp);
-                    process
-                        .args(["--mode", "rpc", "--no-session", "--allow-home", "--cwd"])
-                        .arg(&cwd)
-                        .args(extra)
-                        .current_dir(&cwd)
-                        .stderr(std::process::Stdio::null());
-                    let (client, _events) = Client::spawn(process, ClientOptions::default()).map_err(client_error)?;
-                    let models = client.call(&GetAvailableModelsCommand {}).map_err(client_error);
-                    // Dropping the client tears the process group down.
-                    drop(client);
-                    models
-                })
-                .await
-                .map_err(ApiError::internal)??
-            }
+            None => self.one_shot(self.root.clone(), GetAvailableModelsCommand {}).await?,
         };
         let models: Vec<ModelInfo> = raw
             .into_iter()

@@ -304,6 +304,45 @@ pub enum ItemKind {
     /// Informational (compaction, retry, model change, hibernation…).
     Notice,
     Error,
+    /// Output of a slash command omp ran itself (`/context`, `/todo`…), plain text.
+    Command,
+}
+
+/// One entry of omp's slash-command catalog (`agents.commands`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SlashCommand {
+    /// Without the leading `/`.
+    pub name: String,
+    /// `builtin`, `skill`, `extension`, `custom`, `mcp_prompt` or `file`.
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Argument hint, e.g. `[on|off|status]` or `<path>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subcommands: Vec<SlashSubcommand>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SlashSubcommand {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<String>,
+}
+
+/// Payload of `agent.commands`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandsEvent {
+    pub agent_id: String,
+    pub commands: Vec<SlashCommand>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

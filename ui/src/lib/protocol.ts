@@ -206,7 +206,21 @@ export interface ImageInput {
   data: string;
 }
 
-export type ItemKind = 'user' | 'assistant' | 'thinking' | 'tool' | 'notice' | 'error';
+/** `command`: output of a slash command omp ran itself (plain text). */
+export type ItemKind = 'user' | 'assistant' | 'thinking' | 'tool' | 'notice' | 'error' | 'command';
+
+/** One entry of omp's slash-command catalog. */
+export interface SlashCommand {
+  /** Without the leading `/`. */
+  name: string;
+  source: 'builtin' | 'skill' | 'extension' | 'custom' | 'mcp_prompt' | 'file';
+  aliases?: string[];
+  description?: string;
+  /** Argument hint, e.g. `[on|off|status]`. */
+  hint?: string;
+  subcommands?: { name: string; description?: string; usage?: string }[];
+}
+
 export type ToolStatus = 'running' | 'ok' | 'error';
 
 export interface ToolCall {
@@ -596,6 +610,7 @@ export interface Methods {
   'agents.setModel': [{ id: string; model: string }, AgentSummary];
   'agents.setThinking': [{ id: string; level: string }, AgentSummary];
   'agents.models': [Empty | undefined, ModelInfo[]];
+  'agents.commands': [{ id: string }, SlashCommand[]];
   'agents.usage': [{ provider: string; model?: string }, ProviderUsage];
   'agents.subagentTimeline': [{ id: string; sessionFile: string; live?: boolean }, TimelinePage];
   'agents.board': [{ id: string }, Board];
@@ -648,6 +663,7 @@ export interface Events {
   'agent.request': UiRequest;
   'agent.requestResolved': { agentId: string; requestId: string };
   'agent.board': { agentId: string; board: Board };
+  'agent.commands': { agentId: string; commands: SlashCommand[] };
   'browser.updated': BrowserProfileInfo;
   'browser.frame': BrowserFrame;
   'browser.console': BrowserConsoleEntry;

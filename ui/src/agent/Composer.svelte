@@ -5,7 +5,9 @@
   import { ui, type Draft } from '../lib/ui.svelte';
   import type { AgentDetail, AgentSummary, ImageInput, ModelInfo } from '../lib/protocol';
   import { ArrowUp, Image, MousePointerClick, Paperclip, Square, X } from '../lib/icons';
+  import { slashMenu } from '../lib/slash';
   import UsageMeter from './UsageMeter.svelte';
+  import SlashMenu from './SlashMenu.svelte';
 
   let { agent: a, detail }: { agent: AgentSummary; detail?: AgentDetail } = $props();
 
@@ -31,6 +33,37 @@
       .then((m) => (models = m))
       .catch(() => {});
   });
+
+  // ─── Slash commands: omp's catalog for this agent, loaded when the first `/` is typed ──────
+  const commands = $derived(fleet.commands[k]);
+  let commandsLoading = $state(false);
+  /** Draft text the menu was dismissed (Esc) for; it reopens once the text changes. */
+  let dismissedFor = $state<string | null>(null);
+  let slashActive = $state(0);
+  const typingSlash = $derived(draft.text.startsWith('/') && !draft.text.includes('\n'));
+  const menu = $derived(typingSlash && dismissedFor !== draft.text ? slashMenu(draft.text, commands ?? []) : undefined);
+  const menuOpen = $derived(!!menu && (menu.options.length > 0 || commandsLoading || menu.stage === 'command'));
+
+  $effect(() => {
+    if (!typingSlash || commands || commandsLoading) return;
+    commandsLoading = true;
+    fleet
+      .loadCommands(a.hostId, a.id)
+      .catch((err) => ui.error('Could not load slash commands', err))
+      .finally(() => (commandsLoading = false));
+  });
+  // A new query starts at the best match.
+  $effect(() => {
+    void draft.text;
+    slashActive = 0;
+  });
+
+  function pick(index: number) {
+    const option = menu?.options[index];
+    if (!option) return;
+    draft.text = option.insert;
+    ta?.focus();
+  }
 
   // Auto-grow the textarea up to ~40% of the viewport.
   $effect(() => {
@@ -102,6 +135,34 @@
   }
 
   function onkeydown(e: KeyboardEvent) {
+    if (menuOpen && menu && !e.isComposing) {
+      const n = menu.options.length;
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (n) slashActive = (slashActive + (e.key === 'ArrowDown' ? 1 : n - 1)) % n;
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        dismissedFor = draft.text;
+        return;
+      }
+      const option = menu.options[slashActive];
+      if (e.key === 'Tab' && option) {
+        e.preventDefault();
+        pick(slashActive);
+        return;
+      }
+      // Enter completes; it runs the command once nothing is left to type.
+      if (e.key === 'Enter' && !e.shiftKey && option && !(option.complete && option.insert === draft.text.trimEnd())) {
+        e.preventDefault();
+        if (option.complete) {
+          draft.text = option.insert;
+          void send();
+        } else pick(slashActive);
+        return;
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       void send();
@@ -200,11 +261,17 @@
         {/each}
       </div>
     {/if}
+    {#if menuOpen}<SlashMenu {menu} active={slashActive} loading={commandsLoading} onpick={pick} />{/if}
     <textarea
       bind:this={ta}
       bind:value={draft.text}
       rows="1"
-      placeholder={running ? (mode === 'steer' ? 'Steer the agent mid-turn…' : 'Queue a follow-up for after this turn…') : 'Message the agent…  (Enter to send, Shift+Enter for a newline)'}
+      placeholder={running ? (mode === 'steer' ? 'Steer the agent mid-turn…' : 'Queue a follow-up for after this turn…') : 'Message the agent…  (/ for commands, Enter to send, Shift+Enter for a newline)'}
+      role="combobox"
+      aria-expanded={menuOpen}
+      aria-controls={menuOpen ? 'slash-menu' : undefined}
+      aria-activedescendant={menuOpen && menu?.options.length ? `slash-opt-${slashActive}` : undefined}
+      aria-autocomplete="list"
       {onkeydown}
       {onpaste}
     ></textarea>

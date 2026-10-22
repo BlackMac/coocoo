@@ -100,6 +100,7 @@ keeps running while nobody is attached and ends when the shell exits or on `term
 | `agents.setModel` | `{ id, model: "provider/id" }` | `AgentSummary` |
 | `agents.setThinking` | `{ id, level }` | `AgentSummary` |
 | `agents.models` | – | `ModelInfo[]` (cached per host) |
+| `agents.commands` | `{ id }` | `SlashCommand[]` — the agent's slash-command catalog from omp (`name`, `source` builtin/skill/extension/custom/mcp_prompt/file, `aliases`, `description`, `hint`, `subcommands`), as reported by its process; an agent that never ran one gets it from a throwaway omp in its directory. Sending `/name args` with `agents.prompt` runs the command: omp-local ones answer with a `command` timeline item (plain text) after an echoed `user` item; skills and custom commands start a turn |
 | `agents.usage` | `{ provider, model? }` | `ProviderUsage` — the provider's subscription quota on this host from `omp usage --json --provider <provider>`: `windows` (one per window and quota pool, summed over all logged-in accounts: `used` in accounts' worth, earliest `resetsAt`; `name` labels a pool only some models draw from, such as an Anthropic tier, Codex Spark or an Antigravity counter like `Gemini`; `gating` marks the windows `model`, the model id within the provider, draws from) and per-account `limits` (`unit` percent/usd/tokens/…, `usedFraction`, `status`, `resetsAt`; a quota omp reports once per routing family is listed once). Empty for pay-per-token providers. Cached 60 s per provider; `unavailable` if omp fails or takes over 20 s |
 | `agents.subagentTimeline` | `{ id, sessionFile, live? }` | `TimelinePage` — read-only transcript of one of the agent's subagents, read from its omp session file (`Subagent.sessionFile`; only files below the agent's own session directory, else `forbidden`); newest 500 items. `live`: the subagent still runs, so unanswered tool calls show as running instead of interrupted |
 | `agents.board` | `{ id }` | `Board` — the agent's Kanban board (`<agent dir>/board.json`): `cards` (`column` inbox/todo/doing/done; a column's order is the order of its cards, first = top) and `sources` |
@@ -147,6 +148,7 @@ keeps running while nobody is attached and ends when the shell exits or on `term
 | `agent.delta` | `TimelineDelta` (append to partial item text) | all |
 | `agent.request` / `agent.requestResolved` | `UiRequest` / `{ agentId, requestId }` | all |
 | `agent.board` | `BoardEvent` (`{ agentId, board }`, the whole board after every change) | all |
+| `agent.commands` | `{ agentId, commands: SlashCommand[] }` — the catalog changed (startup, skills/plugins reloaded) | all |
 | `browser.updated` | `BrowserProfileInfo` | all |
 | `browser.frame` | `BrowserFrame` | watching connection only |
 | `browser.console` | `BrowserConsoleEntry` | watching connection only |

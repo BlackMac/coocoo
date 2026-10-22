@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8};
 use std::time::Instant;
 
 use coocoo_proto::util::now_ms;
-use coocoo_proto::{AgentDetail, AgentStatus, AgentSummary, TodoPhase, TodoSummary, UiRequest};
+use coocoo_proto::{AgentDetail, AgentStatus, AgentSummary, SlashCommand, TodoPhase, TodoSummary, UiRequest};
 use omp_rpc::{Client, ImageContent, PromptStatus, StreamingBehavior};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -56,6 +56,9 @@ pub(crate) struct Meta {
     pub todos: Vec<TodoPhase>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
+    /// Last slash-command catalog omp reported (offered while the agent sleeps).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commands: Option<Vec<SlashCommand>>,
 }
 
 pub(crate) struct State {
@@ -66,6 +69,7 @@ pub(crate) struct State {
     pub queued_follow_up: Vec<String>,
     pub requests: Vec<UiRequest>,
     pub context_window: Option<u64>,
+    pub commands: Option<Vec<SlashCommand>>,
     pub life: Life,
     pub proc: Option<Proc>,
     /// Incremented per spawn; the event thread of an older process must not touch the state.
@@ -90,6 +94,7 @@ impl State {
             queued_follow_up: Vec::new(),
             requests: Vec::new(),
             context_window: None,
+            commands: None,
             life,
             proc: None,
             generation: 0,
@@ -115,6 +120,7 @@ impl State {
         state.last_output = meta.last_output;
         state.todos = meta.todos;
         state.context_window = meta.context_window;
+        state.commands = meta.commands;
         state.sync();
         state
     }
@@ -125,6 +131,7 @@ impl State {
             last_output: self.last_output.clone(),
             todos: self.todos.clone(),
             context_window: self.context_window,
+            commands: self.commands.clone(),
         }
     }
 
@@ -438,7 +445,7 @@ mod tests {
         ] {
             let mut s = summary(before);
             s.pending_requests = 2;
-            let st = State::from_meta(Meta { summary: s, last_output: None, todos: Vec::new(), context_window: None });
+            let st = State::from_meta(Meta { summary: s, last_output: None, todos: Vec::new(), context_window: None, commands: None });
             assert_eq!(st.summary.status, after);
             assert_eq!(st.summary.pending_requests, 0);
         }

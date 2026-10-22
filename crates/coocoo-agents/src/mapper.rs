@@ -9,11 +9,11 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use coocoo_proto::util::{now_ms, truncate};
-use coocoo_proto::{ItemKind, Subagent, TimelineItem, ToolCall, ToolStatus};
+use coocoo_proto::{ItemKind, SlashCommand, SlashSubcommand, Subagent, TimelineItem, ToolCall, ToolStatus};
 use omp_rpc::{
-    AgentMessage, AssistantContent, AssistantMessageEvent, ExtensionUiRequest, MessageContent, NotifyType, PromptStatus,
-    RpcAgentEvent, RpcNotification, StopReason, SubagentLifecyclePayload, SubagentLifecycleStatus, SubagentProgressPayload,
-    UserContent,
+    AgentMessage, AssistantContent, AssistantMessageEvent, AvailableSlashCommand, ExtensionUiRequest, MessageContent, NotifyType,
+    PromptStatus, RpcAgentEvent, RpcNotification, StopReason, SubagentLifecyclePayload, SubagentLifecycleStatus,
+    SubagentProgressPayload, UserContent,
 };
 use serde_json::{Map, Value};
 
@@ -29,6 +29,58 @@ const RECENT_TOOLS: usize = 16;
 
 fn has_running(item: &TimelineItem) -> bool {
     item.tool.as_ref().is_some_and(|t| t.subagents.iter().any(|s| s.status == "running"))
+}
+
+/// omp's catalog in Coocoo's wire shape.
+pub(crate) fn slash_commands(commands: Vec<AvailableSlashCommand>) -> Vec<SlashCommand> {
+    commands
+        .into_iter()
+        .map(|c| SlashCommand {
+            name: c.name,
+            source: c.source.as_str().to_owned(),
+            aliases: c.aliases.unwrap_or_default(),
+            description: c.description.filter(|d| !d.trim().is_empty()),
+            hint: c.input.and_then(|i| i.hint).filter(|h| !h.trim().is_empty()),
+            subcommands: c
+                .subcommands
+                .unwrap_or_default()
+                .into_iter()
+                .map(|s| SlashSubcommand { name: s.name, description: s.description, usage: s.usage })
+                .collect(),
+        })
+        .collect()
+}
+
+/// Text without ANSI escape sequences (omp formats command output for a terminal).
+fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            // CSI: parameters and intermediates, then one final byte in @..~.
+            Some('[') => {
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            // OSC: up to BEL or ST (ESC \).
+            Some(']') => {
+                while let Some(c) = chars.next() {
+                    if c == '\u{7}' || (c == '\u{1b}' && chars.next_if_eq(&'\\').is_some()) {
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// A state change derived from an omp frame.
@@ -60,6 +112,8 @@ pub(crate) enum Effect {
     /// Session state changed in a way only `get_state` reports (todos, model).
     Refresh,
     TodosCleared,
+    /// omp's slash-command catalog (`available_commands_update`).
+    Commands(Vec<SlashCommand>),
 }
 
 /// Tests compare effects structurally; `TimelineItem` itself has no `PartialEq`.
@@ -229,6 +283,16 @@ impl Mapper {
                 self.subagent_lifecycle(event.payload, sink);
             }
             RpcNotification::SubagentProgress(event) => self.subagent_progress(event.payload),
+            RpcNotification::AvailableCommandsUpdate(update) => sink.effect(Effect::Commands(slash_commands(update.commands))),
+            RpcNotification::CommandOutput(out) => {
+                self.flush(sink);
+                let text = strip_ansi(&out.text);
+                if !text.trim().is_empty() {
+                    notice(sink, ItemKind::Command, truncate(text.trim_end(), MAX_OUTPUT));
+                }
+            }
+            // `/switch`, `/effort`… changed the model or thinking level.
+            RpcNotification::ConfigUpdate(_) => sink.effect(Effect::Refresh),
             RpcNotification::RpcFrameError(err) => {
                 tracing::warn!(error = %err.error, original = ?err.original_type, "omp dropped an oversized frame");
             }
@@ -924,5 +988,21 @@ mod tests {
         mapper.finish(&mut rec);
         let c = rec.items()[0].tool.as_ref().unwrap().subagents[2].clone();
         assert_eq!(c.status, "aborted", "the process went away");
+    }
+
+    #[test]
+    fn slash_command_catalog_and_output() {
+        let (mut mapper, mut rec) = (Mapper::new(), Recorder::default());
+        let frames = "{\"type\":\"available_commands_update\",\"commands\":[{\"name\":\"fast\",\"source\":\"builtin\",\"description\":\"Toggle fast mode\",\"input\":{\"hint\":\"[on|off]\"},\"subcommands\":[{\"name\":\"on\"},{\"name\":\"off\"}]},{\"name\":\"review\",\"source\":\"skill\",\"aliases\":[\"r\"],\"description\":\"\"}]}\n\
+{\"type\":\"command_output\",\"text\":\"Context: \\u001b[1m\\u001b[38;5;39m42%\\u001b[22m\\u001b[39m used\\u001b]8;;http://x\\u0007link\\u001b]8;;\\u0007\\n\"}\n\
+{\"type\":\"command_output\",\"text\":\"\\u001b[0m  \"}\n";
+        feed(&mut mapper, &mut rec, frames);
+        let commands = rec.effects.iter().find_map(|e| if let Effect::Commands(c) = e { Some(c.clone()) } else { None }).unwrap();
+        assert_eq!(commands.len(), 2);
+        assert_eq!((commands[0].hint.as_deref(), commands[0].subcommands.len()), (Some("[on|off]"), 2));
+        assert_eq!((commands[1].source.as_str(), commands[1].aliases.as_slice(), commands[1].description.as_deref()), ("skill", &["r".to_owned()][..], None));
+        let items = rec.items();
+        assert_eq!(items.len(), 1, "blank output adds nothing");
+        assert_eq!((items[0].kind, items[0].text.as_deref()), (ItemKind::Command, Some("Context: 42% usedlink")));
     }
 }

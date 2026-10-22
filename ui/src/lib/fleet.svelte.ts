@@ -16,6 +16,7 @@ import type {
   Project,
   ProviderUsage,
   ResultOf,
+  SlashCommand,
   TimelineItem,
   UiRequest,
 } from './protocol';
@@ -104,7 +105,8 @@ export class Timeline {
       this.items.push(item);
       return;
     }
-    if (item.seq < this.items[0].seq) return; // older than the loaded window; paging will fetch it
+    // Older than the loaded window: paging fetches it (unless everything is loaded already).
+    if (item.seq < this.items[0].seq && this.hasMore) return;
     const at = this.items.findIndex((i) => i.seq > item.seq);
     this.items.splice(at, 0, item);
     this.#reindex();
@@ -151,6 +153,8 @@ export class Fleet {
   models = $state<Record<string, ModelInfo[]>>({});
   /** Kanban boards per `host:agentId`, loaded on demand and kept current by `agent.board`. */
   boards = $state<Record<string, Board>>({});
+  /** Slash-command catalogs per `host:agentId`, loaded on demand and kept current by `agent.commands`. */
+  commands = $state<Record<string, SlashCommand[]>>({});
   /** `agents.usage` per `host:provider`. */
   usage = $state<Record<string, ProviderUsage>>({});
   /** Local receipt time per `usage` key (hosts' clocks may differ). */
@@ -280,6 +284,16 @@ export class Fleet {
     } catch (err) {
       console.warn('agents.get failed', err);
     }
+  }
+
+  /** An agent's slash commands, fetched once; updates arrive as `agent.commands` events. */
+  async loadCommands(host: string, agentId: string): Promise<SlashCommand[]> {
+    const k = key(host, agentId);
+    const cached = this.commands[k];
+    if (cached) return cached;
+    const list = await this.call('agents.commands', { id: agentId }, host, 30_000);
+    this.commands[k] = list;
+    return list;
   }
 
   /** Load an agent's board once; later changes arrive as `agent.board` events. */
@@ -513,6 +527,9 @@ export class Fleet {
     });
     c.on('agent.board', ({ agentId, board }, host) => {
       this.boards[key(host, agentId)] = board;
+    });
+    c.on('agent.commands', ({ agentId, commands }, host) => {
+      this.commands[key(host, agentId)] = commands;
     });
     c.on('system.resync', () => void this.#hello());
   }

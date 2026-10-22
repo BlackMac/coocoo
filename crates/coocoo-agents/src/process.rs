@@ -11,7 +11,8 @@ use std::time::Instant;
 
 use coocoo_proto::util::{now_ms, preview};
 use coocoo_proto::{
-    ApiError, ApiResult, DiffStat, ItemKind, Orchestrator, TimelineDelta, TodoPhase, TodoTask, UiRequest, events,
+    ApiError, ApiResult, CommandsEvent, DiffStat, ItemKind, Orchestrator, TimelineDelta, TimelineItem, TodoPhase, TodoTask,
+    UiRequest, events,
 };
 use omp_rpc::{
     Client, ClientOptions, Command, Event, GetSessionStatsCommand, GetStateCommand, PromptCommand, SessionState,
@@ -388,7 +389,12 @@ impl Agents {
     }
 
     /// Send one prompt whose `outstanding` slot was already reserved (`State::begin_prompt`).
+    ///
+    /// A slash command omp runs itself (`/context`) never reaches the transcript as a user
+    /// message, so it is echoed here; its seq is reserved before sending so the echo sorts before
+    /// the `command_output` that arrives ahead of the response.
     pub(crate) async fn send_prompt(&self, agent: &Arc<Agent>, client: Arc<Client>, prompt: PendingPrompt) -> ApiResult<()> {
+        let slash = prompt.message.trim_start().starts_with('/').then(|| (agent.timeline.lock().alloc(), prompt.message.trim().to_owned()));
         let command = PromptCommand {
             message: prompt.message,
             images: prompt.images,
@@ -396,7 +402,16 @@ impl Agents {
         };
         let result = call(client, command).await;
         match &result {
-            Ok(ack) if ack.agent_invoked == Some(false) => agent.state.lock().cancel_prompt(),
+            Ok(ack) if ack.agent_invoked == Some(false) => {
+                agent.state.lock().cancel_prompt();
+                if let Some((seq, text)) = slash {
+                    let item = TimelineItem { seq, id: seq.to_string(), ts: now_ms(), kind: ItemKind::User, text: Some(text), tool: None, partial: false };
+                    if let Err(err) = agent.timeline.lock().upsert(&item) {
+                        tracing::warn!(agent = %agent.id, %err, "timeline write failed");
+                    }
+                    self.emit_item(&agent.id, item);
+                }
+            }
             Ok(_) => {}
             Err(_) => agent.state.lock().cancel_prompt(),
         }
@@ -690,6 +705,15 @@ impl Sink for LiveSink<'_> {
                     st.sync();
                     true
                 }) {
+                    agents.changed(agent);
+                }
+            }
+            Effect::Commands(commands) => {
+                if self.update(|st| {
+                    st.commands = Some(commands.clone());
+                    true
+                }) {
+                    agents.emitter.emit(events::AGENT_COMMANDS, &CommandsEvent { agent_id: agent.id.clone(), commands });
                     agents.changed(agent);
                 }
             }
