@@ -298,7 +298,7 @@ export interface TodoPhase {
   tasks: TodoTask[];
 }
 
-/** An agent's Kanban board: a column's order is the order of its cards (first = top). */
+/** A project's Kanban board: a column's order is the order of its cards (first = top). */
 export interface Board {
   cards: Card[];
   sources: BoardSource[];
@@ -319,6 +319,10 @@ export interface Card {
   /** The agent's closing note. */
   note?: string;
   commit?: CommitInfo;
+  /** Agent the card was handed to, or that finished it. */
+  agentId?: string;
+  /** That agent's title at the time (it may have been deleted since). */
+  agentTitle?: string;
 }
 
 export interface BoardSource {
@@ -613,15 +617,16 @@ export interface Methods {
   'agents.commands': [{ id: string }, SlashCommand[]];
   'agents.usage': [{ provider: string; model?: string }, ProviderUsage];
   'agents.subagentTimeline': [{ id: string; sessionFile: string; live?: boolean }, TimelinePage];
-  'agents.board': [{ id: string }, Board];
-  'agents.cardAdd': [{ id: string; title: string; body?: string; column?: CardColumn; top?: boolean }, Card];
-  'agents.cardUpdate': [{ id: string; cardId: string; title?: string; body?: string; column?: CardColumn; index?: number }, Card];
-  'agents.cardDelete': [{ id: string; cardId: string }, Ok];
-  'agents.cardStart': [{ id: string; cardId: string }, Card];
-  'agents.cardDone': [{ id: string; cardId: string; commitMessage?: string; note?: string }, { card: Card; commit?: CommitInfo; commitSkipped?: string }];
-  'agents.boardSourceAdd': [{ id: string; kind: 'feed' | 'command'; target: string; intervalMins?: number }, Board];
-  'agents.boardSourceRemove': [{ id: string; sourceId: string }, Board];
-  'agents.boardSourceRefresh': [{ id: string; sourceId: string }, Board];
+  'boards.get': [{ projectId: string }, Board];
+  'boards.cardAdd': [{ projectId: string; title: string; body?: string; column?: CardColumn; top?: boolean }, Card];
+  'boards.cardUpdate': [{ projectId: string; cardId: string; title?: string; body?: string; column?: CardColumn; index?: number }, Card];
+  'boards.cardDelete': [{ projectId: string; cardId: string }, Ok];
+  /** Without `agentId` a new agent is created for the card (optionally in a worktree). */
+  'boards.cardStart': [{ projectId: string; cardId: string; agentId?: string; worktree?: boolean; model?: string }, Card];
+  'boards.cardDone': [{ projectId: string; cardId: string; agentId?: string; commitMessage?: string; note?: string }, { card: Card; commit?: CommitInfo; commitSkipped?: string }];
+  'boards.sourceAdd': [{ projectId: string; kind: 'feed' | 'command'; target: string; intervalMins?: number }, Board];
+  'boards.sourceRemove': [{ projectId: string; sourceId: string }, Board];
+  'boards.sourceRefresh': [{ projectId: string; sourceId: string }, Board];
   'agents.hibernate': [{ id: string }, AgentSummary];
   'agents.archive': [{ id: string }, AgentSummary];
   'agents.delete': [{ id: string; removeWorktree?: boolean }, Ok];
@@ -662,7 +667,7 @@ export interface Events {
   'agent.delta': TimelineDelta;
   'agent.request': UiRequest;
   'agent.requestResolved': { agentId: string; requestId: string };
-  'agent.board': { agentId: string; board: Board };
+  'project.board': { projectId: string; board: Board };
   'agent.commands': { agentId: string; commands: SlashCommand[] };
   'browser.updated': BrowserProfileInfo;
   'browser.frame': BrowserFrame;

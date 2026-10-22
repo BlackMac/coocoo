@@ -3,12 +3,17 @@
   import { ago } from '../lib/format';
   import { now } from '../lib/clock.svelte';
   import { ui } from '../lib/ui.svelte';
+  import { href } from '../lib/router.svelte';
+  import { agentState } from '../lib/status';
   import type { AgentSummary, Card, CardColumn } from '../lib/protocol';
-  import { ArrowUp, ExternalLink, GitCommitHorizontal, Inbox, Play, Plus, RotateCw, Rss, Terminal, Trash2, X } from '../lib/icons';
+  import { ArrowUp, ExternalLink, GitCommitHorizontal, Inbox, Plus, RotateCw, Rss, Terminal, Trash2, X } from '../lib/icons';
+  import StartCard from '../agent/StartCard.svelte';
+  import StatusDot from '../components/StatusDot.svelte';
 
-  // An agent's Kanban board: inbox (from sources) → todo → doing → done. Cards move by drag and
-  // drop or by the actions of an opened card; starting a card prompts the agent with it.
-  let { agent: a }: { agent: AgentSummary } = $props();
+  // A project's Kanban board: inbox (from sources) → todo → doing → done. Cards move by drag and
+  // drop or by the actions of an opened card; starting one hands it to an agent, which is then
+  // shown on the card. `agent`: the agent view the board is shown in (Start goes to it).
+  let { host, projectId, agent }: { host: string; projectId: string; agent?: AgentSummary } = $props();
 
   const COLUMNS: { id: CardColumn; label: string }[] = [
     { id: 'inbox', label: 'Inbox' },
@@ -17,19 +22,17 @@
     { id: 'done', label: 'Done' },
   ];
 
-  const k = $derived(key(a.hostId, a.id));
-  const board = $derived(fleet.boards[k]);
+  const board = $derived(fleet.boards[key(host, projectId)]);
   const byColumn = $derived.by(() => {
     const out: Record<CardColumn, Card[]> = { inbox: [], todo: [], doing: [], done: [] };
     for (const c of board?.cards ?? []) out[c.column].push(c);
     return out;
   });
-  const readonly = $derived(a.status === 'stopped');
 
   let error = $state('');
   $effect(() => {
     if (fleet.conn !== 'open') return;
-    fleet.loadBoard(a.hostId, a.id).then(
+    fleet.loadBoard(host, projectId).then(
       () => (error = ''),
       (err) => (error = err instanceof Error ? err.message : String(err)),
     );
@@ -51,13 +54,12 @@
     const title = newTitle.trim();
     if (!title) return;
     newTitle = '';
-    await run('Could not add the card', () => fleet.call('agents.cardAdd', { id: a.id, title }, a.hostId));
+    await run('Could not add the card', () => fleet.call('boards.cardAdd', { projectId, title }, host));
   }
 
   const move = (card: Card, column: CardColumn, index?: number) =>
-    run('Could not move the card', () => fleet.call('agents.cardUpdate', { id: a.id, cardId: card.id, column, index }, a.hostId));
-  const start = (card: Card) => run('Could not start the card', () => fleet.call('agents.cardStart', { id: a.id, cardId: card.id }, a.hostId));
-  const remove = (card: Card) => run('Could not delete the card', () => fleet.call('agents.cardDelete', { id: a.id, cardId: card.id }, a.hostId));
+    run('Could not move the card', () => fleet.call('boards.cardUpdate', { projectId, cardId: card.id, column, index }, host));
+  const remove = (card: Card) => run('Could not delete the card', () => fleet.call('boards.cardDelete', { projectId, cardId: card.id }, host));
 
   let openId = $state<string | null>(null);
   let editTitle = $state('');
@@ -69,7 +71,7 @@
   }
   async function save(card: Card) {
     const ok = await run('Could not save the card', () =>
-      fleet.call('agents.cardUpdate', { id: a.id, cardId: card.id, title: editTitle, body: editBody }, a.hostId),
+      fleet.call('boards.cardUpdate', { projectId, cardId: card.id, title: editTitle, body: editBody }, host),
     );
     if (ok) openId = null;
   }
@@ -117,7 +119,7 @@
     if (!srcTarget.trim()) return;
     srcBusy = true;
     const ok = await run('Could not add the source', () =>
-      fleet.call('agents.boardSourceAdd', { id: a.id, kind: srcKind, target: srcTarget.trim(), intervalMins: srcInterval }, a.hostId, 60_000),
+      fleet.call('boards.sourceAdd', { projectId, kind: srcKind, target: srcTarget.trim(), intervalMins: srcInterval }, host, 60_000),
     );
     srcBusy = false;
     if (ok) srcTarget = '';
@@ -125,10 +127,10 @@
   let refreshing = $state<string | null>(null);
   async function refreshSource(id: string) {
     refreshing = id;
-    await run('Could not refresh the source', () => fleet.call('agents.boardSourceRefresh', { id: a.id, sourceId: id }, a.hostId, 60_000));
+    await run('Could not refresh the source', () => fleet.call('boards.sourceRefresh', { projectId, sourceId: id }, host, 60_000));
     refreshing = null;
   }
-  const removeSource = (id: string) => run('Could not remove the source', () => fleet.call('agents.boardSourceRemove', { id: a.id, sourceId: id }, a.hostId));
+  const removeSource = (id: string) => run('Could not remove the source', () => fleet.call('boards.sourceRemove', { projectId, sourceId: id }, host));
   const sourceName = (id?: string) => {
     const s = board?.sources.find((x) => x.id === id);
     if (!s) return undefined;
@@ -152,7 +154,7 @@
               {#if col.id === 'inbox'}<Inbox size={12} />{/if}
               {col.label}<span class="count num">{cards.length}</span>
             </h3>
-            {#if col.id === 'todo' && !readonly}
+            {#if col.id === 'todo'}
               <form class="add" onsubmit={add}>
                 <Plus size={13} />
                 <input class="input" bind:value={newTitle} placeholder="Add a card…" />
@@ -166,7 +168,7 @@
                 class="card"
                 class:open
                 class:ghost={dragId === card.id}
-                draggable={!readonly && !open}
+                draggable={!open}
                 ondragstart={(e) => {
                   dragId = card.id;
                   e.dataTransfer?.setData('text/plain', card.title);
@@ -180,45 +182,39 @@
               >
                 <div class="ctop">
                   <button class="title" onclick={() => toggle(card)} aria-expanded={open}>{card.title}</button>
-                  {#if !readonly}
-                    {#if col.id === 'inbox'}
-                      <button class="btn sm" title="Move to Todo" onclick={() => move(card, 'todo')}>Todo</button>
-                    {:else if col.id === 'todo' && i === 0}
-                      <button class="btn primary sm" title="Let the agent work on it" onclick={() => start(card)}><Play size={11} fill="currentColor" />Start</button>
-                    {/if}
+                  {#if col.id === 'inbox'}
+                    <button class="btn sm" title="Move to Todo" onclick={() => move(card, 'todo')}>Todo</button>
+                  {:else if col.id === 'todo' && i === 0}
+                    <StartCard {host} {projectId} {card} {agent} primary />
                   {/if}
                 </div>
-                {#if !open && (card.source || card.commit || card.note)}
+                {#if !open && (card.agentId || card.source || card.commit || card.note)}
                   <div class="sub faint">
+                    {#if card.agentId}{@render agentChip(card)}{/if}
                     {#if card.commit}<span class="mono"><GitCommitHorizontal size={11} />{card.commit.sha.slice(0, 7)}</span>{/if}
                     {#if card.note}<span class="ellipsis">{card.note}</span>{:else if card.source}<span class="ellipsis">{sourceName(card.source)}</span>{/if}
                   </div>
                 {/if}
                 {#if open}
                   <div class="detail">
-                    {#if readonly}
-                      {#if card.body}<p class="body">{card.body}</p>{/if}
-                    {:else}
-                      <input class="input" bind:value={editTitle} aria-label="Title" />
-                      <textarea class="textarea" bind:value={editBody} rows="4" placeholder="Details for the agent (optional)"></textarea>
-                    {/if}
+                    <input class="input" bind:value={editTitle} aria-label="Title" />
+                    <textarea class="textarea" bind:value={editBody} rows="4" placeholder="Details for the agent (optional)"></textarea>
+                    {#if card.agentId}<div class="faint">{col.id === 'done' ? 'Done by' : 'Agent:'} {@render agentChip(card)}</div>{/if}
                     {#if card.url}<a class="link" href={card.url} target="_blank" rel="noopener noreferrer"><ExternalLink size={11} />{card.url}</a>{/if}
-                    {#if card.note}<div class="note"><span class="faint">Agent:</span> {card.note}</div>{/if}
+                    {#if card.note}<div class="note"><span class="faint">Note:</span> {card.note}</div>{/if}
                     {#if card.commit}<div class="faint mono">{card.commit.sha.slice(0, 7)} {card.commit.summary}</div>{/if}
                     <div class="faint meta">Added {ago(card.createdAt, now.value)} ago{card.source ? ` from ${sourceName(card.source) ?? 'a removed source'}` : ''}</div>
-                    {#if !readonly}
-                      <div class="acts">
-                        <button class="btn primary sm" onclick={() => save(card)}>Save</button>
-                        {#if col.id === 'inbox' || col.id === 'todo'}<button class="btn sm" onclick={() => start(card)}><Play size={11} fill="currentColor" />Start</button>{/if}
-                        {#if i > 0}<button class="btn ghost sm" title="Move to top" onclick={() => move(card, col.id, 0)}><ArrowUp size={12} />Top</button>{/if}
-                        <select class="select mini" value="" aria-label="Move to column" onchange={(e) => { const c = e.currentTarget.value as CardColumn; if (c) void move(card, c); e.currentTarget.value = ''; }}>
-                          <option value="">Move to…</option>
-                          {#each COLUMNS.filter((c) => c.id !== col.id) as c (c.id)}<option value={c.id}>{c.label}</option>{/each}
-                        </select>
-                        <span class="grow"></span>
-                        <button class="btn ghost icon sm danger" title="Delete card" aria-label="Delete card" onclick={() => remove(card)}><Trash2 size={13} /></button>
-                      </div>
-                    {/if}
+                    <div class="acts">
+                      <button class="btn primary sm" onclick={() => save(card)}>Save</button>
+                      {#if col.id === 'inbox' || col.id === 'todo'}<StartCard {host} {projectId} {card} {agent} />{/if}
+                      {#if i > 0}<button class="btn ghost sm" title="Move to top" onclick={() => move(card, col.id, 0)}><ArrowUp size={12} />Top</button>{/if}
+                      <select class="select mini" value="" aria-label="Move to column" onchange={(e) => { const c = e.currentTarget.value as CardColumn; if (c) void move(card, c); e.currentTarget.value = ''; }}>
+                        <option value="">Move to…</option>
+                        {#each COLUMNS.filter((c) => c.id !== col.id) as c (c.id)}<option value={c.id}>{c.label}</option>{/each}
+                      </select>
+                      <span class="grow"></span>
+                      <button class="btn ghost icon sm danger" title="Delete card" aria-label="Delete card" onclick={() => remove(card)}><Trash2 size={13} /></button>
+                    </div>
                   </div>
                 {/if}
               </div>
@@ -245,15 +241,12 @@
               </span>
               {#if s.error}<span class="serr">{s.error}</span>{/if}
             </div>
-            {#if !readonly}
-              <button class="btn ghost icon sm" title="Check now" aria-label="Check now" disabled={refreshing === s.id} onclick={() => refreshSource(s.id)}>
-                <span class:spin={refreshing === s.id}><RotateCw size={12} /></span>
-              </button>
-              <button class="btn ghost icon sm" title="Remove source" aria-label="Remove source" onclick={() => removeSource(s.id)}><X size={13} /></button>
-            {/if}
+            <button class="btn ghost icon sm" title="Check now" aria-label="Check now" disabled={refreshing === s.id} onclick={() => refreshSource(s.id)}>
+              <span class:spin={refreshing === s.id}><RotateCw size={12} /></span>
+            </button>
+            <button class="btn ghost icon sm" title="Remove source" aria-label="Remove source" onclick={() => removeSource(s.id)}><X size={13} /></button>
           </div>
         {/each}
-        {#if !readonly}
           <form class="sadd" onsubmit={addSource}>
             <input class="input mono target" bind:value={srcTarget} placeholder={srcKind === 'feed' ? 'https://example.com/feed.xml' : 'gh issue list --json title -q ".[].title"'} spellcheck="false" aria-label={srcKind === 'feed' ? 'Feed URL' : 'Command'} />
             <select class="select" bind:value={srcKind} aria-label="Source kind">
@@ -266,13 +259,22 @@
           <p class="hint">
             {srcKind === 'feed'
               ? 'New feed items become inbox cards (the 20 newest when you add it).'
-              : "Runs in the agent's directory; each output line becomes an inbox card once."}
+              : 'Runs in the project directory; each output line becomes an inbox card once.'}
           </p>
-        {/if}
       {/if}
     </section>
   {/if}
 </div>
+
+<!-- The agent a card was handed to: live status and title, or the remembered title once deleted. -->
+{#snippet agentChip(card: Card)}
+  {@const live = fleet.agents[key(host, card.agentId!)]}
+  {#if live}
+    <a class="agent" href={href({ name: 'agent', host, id: live.id })} title="Open agent"><StatusDot state={agentState(live)} size={6} />{live.title}</a>
+  {:else}
+    <span class="agent gone" title="Agent deleted">{card.agentTitle ?? 'Deleted agent'}</span>
+  {/if}
+{/snippet}
 
 <style>
   .board {
@@ -385,6 +387,24 @@
     min-width: 0;
     font-size: var(--fs-xs);
   }
+  .agent {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex: none;
+    max-width: 60%;
+    overflow: hidden;
+    color: var(--text-2);
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  a.agent:hover {
+    color: var(--text);
+    text-decoration: underline;
+  }
+  .agent.gone {
+    font-style: italic;
+  }
   .sub .mono {
     display: inline-flex;
     align-items: center;
@@ -401,11 +421,6 @@
   .textarea {
     height: auto;
     padding: 6px 9px;
-  }
-  .body {
-    margin: 0;
-    white-space: pre-wrap;
-    color: var(--text-2);
   }
   .link {
     display: inline-flex;

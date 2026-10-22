@@ -78,14 +78,24 @@ pub struct Agents {
     usage: tokio::sync::Mutex<HashMap<String, (Instant, ProviderUsage)>>,
     /// The hibernation sweep task is running.
     hibernator: AtomicBool,
+    /// `<data_dir>/boards`: one Kanban board per project.
+    boards_dir: PathBuf,
+    /// Boards loaded so far, by project id.
+    boards: parking_lot::Mutex<HashMap<String, coocoo_proto::Board>>,
 }
 
 impl Agents {
     /// Loads persisted agents from `<data_dir>/agents/`; previously live agents come back as
-    /// `hibernated` (no process is spawned until they are prompted).
+    /// `hibernated` (no process is spawned until they are prompted). Boards of earlier versions,
+    /// kept per agent, move to their projects here.
     pub fn new(emitter: Emitter, paths: &Paths, config: AgentsConfig) -> Arc<Self> {
         let root = paths.data_dir.join("agents");
         let agents = load_agents(&root);
+        let boards_dir = paths.data_dir.join("boards");
+        board::migrate_agent_boards(&root, &boards_dir, |id| {
+            let summary = agents.get(id)?.summary();
+            Some((summary.project_id?, summary.title))
+        });
         let omp = process::resolve_omp(config.omp_path.as_deref());
         Arc::new_cyclic(|me| Self {
             me: me.clone(),
@@ -99,6 +109,8 @@ impl Agents {
             models: tokio::sync::Mutex::new(None),
             usage: tokio::sync::Mutex::new(HashMap::new()),
             hibernator: AtomicBool::new(false),
+            boards_dir,
+            boards: parking_lot::Mutex::new(HashMap::new()),
         })
     }
 
@@ -112,7 +124,7 @@ impl Agents {
         }
     }
 
-    /// `agents.*`.
+    /// `agents.*` and `boards.*`.
     pub async fn dispatch(self: &Arc<Self>, method: &str, params: Value) -> ApiResult<Value> {
         self.runtime.get_or_init(Handle::current);
         self.handle_method(method, params).await

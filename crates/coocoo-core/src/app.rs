@@ -212,7 +212,7 @@ impl App {
             "stats" => self.stats.dispatch(method, params, &caller.sink).await,
             "terminal" => self.terminals.dispatch(method, params, &caller.sink).await,
             "projects" | "git" | "fs" => self.workspace.dispatch(method, params).await,
-            "agents" => self.agents.dispatch(method, params).await,
+            "agents" | "boards" => self.agents.dispatch(method, params).await,
             "browser" => self.browser.dispatch(method, params, &caller.sink).await,
             _ => Err(ApiError::unknown_method(method)),
         }

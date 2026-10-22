@@ -1,23 +1,24 @@
-//! Per-agent Kanban board (`agents.board*`, `agents.card*`): inbox → todo → doing → done.
+//! Per-project Kanban board (`boards.*`): inbox → todo → doing → done.
 //!
 //! The user fills `todo` (and pulls cards over from the inbox, where external sources drop new
-//! entries). Starting a card moves it to `doing` and prompts the agent with it; the agent closes
-//! it with the `kanban_done` host tool, which commits the work when the directory is a git
-//! repository. Stored in `<agent dir>/board.json`.
+//! entries). Starting a card hands it to one of the project's agents, or to a new one, and moves
+//! it to `doing` with that agent noted on the card; the agent closes it with the `kanban_done`
+//! host tool, which commits the work when its directory is a git repository. Stored in
+//! `<data_dir>/boards/<project id>.json`.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use coocoo_proto::error::{ok, params};
 use coocoo_proto::util::{new_id, now_ms, read_json, truncate, write_json_atomic};
-use coocoo_proto::{ApiError, ApiResult, Board, BoardEvent, BoardSource, Card, CardColumn, CommitInfo, events};
+use coocoo_proto::{ApiError, ApiResult, Board, BoardEvent, BoardSource, Card, CardColumn, CommitInfo, Project, events};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::Agents;
-use crate::state::Agent;
+use crate::state::Life;
 
-const FILE: &str = "board.json";
 const MAX_TITLE: usize = 300;
 const MAX_BODY: usize = 8 * 1024;
 /// Remembered entry keys per source.
@@ -30,16 +31,19 @@ const MIN_INTERVAL_MINS: u32 = 5;
 const POLL_TICK: Duration = Duration::from_secs(60);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_FEED_BYTES: &str = "5000000";
+/// Per-agent board of earlier versions, moved into the project board on startup.
+const LEGACY_FILE: &str = "board.json";
 
 #[derive(Deserialize)]
-struct IdParams {
-    id: String,
+#[serde(rename_all = "camelCase")]
+struct ProjectParams {
+    project_id: String,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CardAddParams {
-    id: String,
+    project_id: String,
     title: String,
     body: Option<String>,
     column: Option<CardColumn>,
@@ -51,7 +55,7 @@ struct CardAddParams {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CardUpdateParams {
-    id: String,
+    project_id: String,
     card_id: String,
     title: Option<String>,
     /// `""` clears it.
@@ -64,15 +68,31 @@ struct CardUpdateParams {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CardParams {
-    id: String,
+    project_id: String,
     card_id: String,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct CardDoneParams {
-    id: String,
+struct CardStartParams {
+    project_id: String,
     card_id: String,
+    /// One of the project's agents; without it a new agent is created for the card.
+    agent_id: Option<String>,
+    /// New agent only: run it in its own git worktree.
+    #[serde(default)]
+    worktree: bool,
+    /// New agent only: `provider/modelId`.
+    model: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CardDoneParams {
+    project_id: String,
+    card_id: String,
+    /// The agent that did the work: its directory is committed (default: the card's agent).
+    agent_id: Option<String>,
     commit_message: Option<String>,
     note: Option<String>,
 }
@@ -80,7 +100,7 @@ struct CardDoneParams {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SourceAddParams {
-    id: String,
+    project_id: String,
     kind: String,
     target: String,
     interval_mins: Option<u32>,
@@ -89,7 +109,7 @@ struct SourceAddParams {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SourceParams {
-    id: String,
+    project_id: String,
     source_id: String,
 }
 
@@ -113,6 +133,24 @@ fn clean_title(title: &str) -> ApiResult<String> {
 
 fn clean_body(body: Option<String>) -> Option<String> {
     body.map(|b| b.trim().to_owned()).filter(|b| !b.is_empty()).map(|b| truncate(&b, MAX_BODY))
+}
+
+fn new_card(title: String, body: Option<String>, column: CardColumn) -> Card {
+    let now = now_ms();
+    Card {
+        id: new_id(),
+        title,
+        body,
+        column,
+        url: None,
+        source: None,
+        created_at: now,
+        updated_at: now,
+        note: None,
+        commit: None,
+        agent_id: None,
+        agent_title: None,
+    }
 }
 
 /// Vec index at which a card lands at `index` within `column` (cards in other columns keep
@@ -141,7 +179,7 @@ fn move_card(board: &mut Board, card_id: &str, column: CardColumn, index: usize)
 
 /// Prompt for a started card.
 fn card_prompt(card: &Card) -> String {
-    let mut text = format!("Work on this card from your Kanban board (card id `{}`):\n\n**{}**", card.id, card.title);
+    let mut text = format!("Work on this card from the project's Kanban board (card id `{}`):\n\n**{}**", card.id, card.title);
     if let Some(body) = &card.body {
         text.push_str("\n\n");
         text.push_str(body);
@@ -157,40 +195,72 @@ fn card_prompt(card: &Card) -> String {
     text
 }
 
+/// Merge legacy per-agent boards (`<agent dir>/board.json`) into their projects' boards. Cards
+/// in doing/done keep the agent that had them. A migrated file is renamed, not deleted.
+pub(crate) fn migrate_agent_boards(agents_root: &Path, boards_dir: &Path, project_of: impl Fn(&str) -> Option<(String, String)>) {
+    let Ok(entries) = std::fs::read_dir(agents_root) else { return };
+    for entry in entries.flatten() {
+        let legacy = entry.path().join(LEGACY_FILE);
+        if !legacy.is_file() {
+            continue;
+        }
+        let agent_id = entry.file_name().to_string_lossy().into_owned();
+        let Some((project_id, agent_title)) = project_of(&agent_id) else {
+            tracing::warn!(agent = %agent_id, "board of an agent without project left in place");
+            continue;
+        };
+        let old: Board = match read_json(&legacy) {
+            Ok(Some(board)) => board,
+            Ok(None) => continue,
+            Err(err) => {
+                tracing::warn!(agent = %agent_id, "unreadable {LEGACY_FILE}: {err}");
+                continue;
+            }
+        };
+        let file = boards_dir.join(format!("{project_id}.json"));
+        let mut board: Board = read_json(&file).ok().flatten().unwrap_or_default();
+        for mut card in old.cards {
+            if matches!(card.column, CardColumn::Doing | CardColumn::Done) && card.agent_id.is_none() {
+                card.agent_id = Some(agent_id.clone());
+                card.agent_title = Some(agent_title.clone());
+            }
+            board.cards.push(card);
+        }
+        board.sources.extend(old.sources);
+        if let Err(err) = write_json_atomic(&file, &board) {
+            tracing::warn!(project = %project_id, "cannot write board: {err}");
+            continue;
+        }
+        let _ = std::fs::rename(&legacy, legacy.with_extension("json.migrated"));
+        tracing::info!(agent = %agent_id, project = %project_id, "moved the agent's board to its project");
+    }
+}
+
 impl Agents {
     pub(crate) async fn board_method(self: &Arc<Self>, method: &str, p: Value) -> ApiResult<Value> {
         match method {
-            "agents.board" => {
-                let IdParams { id } = params(p)?;
-                ok(self.edit_board(&*self.get(&id)?, |b| Ok((b.clone(), false)))?)
+            "boards.get" => {
+                let ProjectParams { project_id } = params(p)?;
+                self.project(&project_id).await?;
+                ok(self.edit_board(&project_id, |b| Ok((b.clone(), false)))?)
             }
-            "agents.cardAdd" => {
+            "boards.cardAdd" => {
                 let p: CardAddParams = params(p)?;
                 let (title, body) = (clean_title(&p.title)?, clean_body(p.body));
+                self.project(&p.project_id).await?;
                 let column = p.column.unwrap_or(CardColumn::Todo);
-                ok(self.edit_board(&*self.get(&p.id)?, |b| {
-                    let now = now_ms();
-                    let card = Card {
-                        id: new_id(),
-                        title,
-                        body,
-                        column,
-                        url: None,
-                        source: None,
-                        created_at: now,
-                        updated_at: now,
-                        note: None,
-                        commit: None,
-                    };
+                ok(self.edit_board(&p.project_id, |b| {
+                    let card = new_card(title, body, column);
                     let at = insert_at(&b.cards, column, if p.top { 0 } else { usize::MAX });
                     b.cards.insert(at, card.clone());
                     Ok((card, true))
                 })?)
             }
-            "agents.cardUpdate" => {
+            "boards.cardUpdate" => {
                 let p: CardUpdateParams = params(p)?;
                 let title = p.title.as_deref().map(clean_title).transpose()?;
-                ok(self.edit_board(&*self.get(&p.id)?, |b| {
+                self.project(&p.project_id).await?;
+                ok(self.edit_board(&p.project_id, |b| {
                     let card = card_mut(b, &p.card_id)?;
                     if let Some(title) = title {
                         card.title = title;
@@ -207,9 +277,10 @@ impl Agents {
                     Ok((card, true))
                 })?)
             }
-            "agents.cardDelete" => {
+            "boards.cardDelete" => {
                 let p: CardParams = params(p)?;
-                self.edit_board(&*self.get(&p.id)?, |b| {
+                self.project(&p.project_id).await?;
+                self.edit_board(&p.project_id, |b| {
                     let before = b.cards.len();
                     b.cards.retain(|c| c.id != p.card_id);
                     if b.cards.len() == before {
@@ -219,19 +290,9 @@ impl Agents {
                 })?;
                 Ok(json!({}))
             }
-            "agents.cardStart" => {
-                let p: CardParams = params(p)?;
-                let agent = self.get(&p.id)?;
-                let card = self.edit_board(&agent, |b| Ok((card_mut(b, &p.card_id)?.clone(), false)))?;
-                if card.column == CardColumn::Doing || card.column == CardColumn::Done {
-                    let column = if card.column == CardColumn::Doing { "Doing" } else { "Done" };
-                    return Err(ApiError::conflict(format!("card “{}” is already in {column}", card.title)));
-                }
-                self.prompt_text(&p.id, card_prompt(&card)).await?;
-                ok(self.edit_board(&agent, |b| Ok((move_card(b, &p.card_id, CardColumn::Doing, 0)?, true)))?)
-            }
-            "agents.cardDone" => self.card_done(params(p)?).await,
-            "agents.boardSourceAdd" => {
+            "boards.cardStart" => self.card_start(params(p)?).await,
+            "boards.cardDone" => self.card_done(params(p)?).await,
+            "boards.sourceAdd" => {
                 let p: SourceAddParams = params(p)?;
                 let target = p.target.trim().to_owned();
                 match p.kind.as_str() {
@@ -241,7 +302,7 @@ impl Agents {
                     "command" => return Err(ApiError::invalid("the command must not be empty")),
                     other => return Err(ApiError::invalid(format!("unknown source kind `{other}` (feed, command)"))),
                 }
-                let agent = self.get(&p.id)?;
+                self.project(&p.project_id).await?;
                 let source = BoardSource {
                     id: new_id(),
                     kind: p.kind,
@@ -252,56 +313,97 @@ impl Agents {
                     seen: Vec::new(),
                 };
                 let source_id = source.id.clone();
-                self.edit_board(&agent, |b| {
+                self.edit_board(&p.project_id, |b| {
                     b.sources.push(source);
                     Ok(((), true))
                 })?;
-                self.refresh_source(&agent, &source_id).await;
-                ok(self.edit_board(&agent, |b| Ok((b.clone(), false)))?)
+                self.refresh_source(&p.project_id, &source_id).await;
+                ok(self.edit_board(&p.project_id, |b| Ok((b.clone(), false)))?)
             }
-            "agents.boardSourceRemove" => {
+            "boards.sourceRemove" => {
                 let p: SourceParams = params(p)?;
-                ok(self.edit_board(&*self.get(&p.id)?, |b| {
+                self.project(&p.project_id).await?;
+                ok(self.edit_board(&p.project_id, |b| {
                     b.sources.retain(|s| s.id != p.source_id);
                     Ok((b.clone(), true))
                 })?)
             }
-            "agents.boardSourceRefresh" => {
+            "boards.sourceRefresh" => {
                 let p: SourceParams = params(p)?;
-                let agent = self.get(&p.id)?;
-                self.refresh_source(&agent, &p.source_id).await;
-                ok(self.edit_board(&agent, |b| Ok((b.clone(), false)))?)
+                self.project(&p.project_id).await?;
+                self.refresh_source(&p.project_id, &p.source_id).await;
+                ok(self.edit_board(&p.project_id, |b| Ok((b.clone(), false)))?)
             }
             _ => Err(ApiError::unknown_method(method)),
         }
     }
 
-    /// Run `f` on the agent's board (loaded on first use); persist and announce it when `f`
-    /// reports a change.
-    fn edit_board<R>(&self, agent: &Agent, f: impl FnOnce(&mut Board) -> ApiResult<(R, bool)>) -> ApiResult<R> {
-        let mut slot = agent.board.lock();
-        let board = slot.get_or_insert_with(|| match read_json::<Board>(&agent.dir.join(FILE)) {
+    /// The project (on this host); `not_found` when unknown, so no board file is made for it.
+    async fn project(&self, project_id: &str) -> ApiResult<Project> {
+        let value = self.orch()?.call(None, "projects.get".into(), json!({ "id": project_id })).await?;
+        Ok(serde_json::from_value(value)?)
+    }
+
+    fn board_file(&self, project_id: &str) -> PathBuf {
+        self.boards_dir.join(format!("{project_id}.json"))
+    }
+
+    /// Run `f` on the project's board (loaded on first use); persist and announce it when `f`
+    /// reports a change. Callers check the project exists first.
+    pub(crate) fn edit_board<R>(&self, project_id: &str, f: impl FnOnce(&mut Board) -> ApiResult<(R, bool)>) -> ApiResult<R> {
+        let mut boards = self.boards.lock();
+        let board = boards.entry(project_id.to_owned()).or_insert_with(|| match read_json::<Board>(&self.board_file(project_id)) {
             Ok(board) => board.unwrap_or_default(),
             Err(err) => {
-                tracing::warn!(agent = %agent.id, "unreadable {FILE}: {err}");
+                tracing::warn!(project = %project_id, "unreadable board: {err}");
                 Board::default()
             }
         });
         let (result, changed) = f(board)?;
         if changed {
-            write_json_atomic(&agent.dir.join(FILE), &*board)?;
-            self.emitter.emit(events::AGENT_BOARD, &BoardEvent { agent_id: agent.id.clone(), board: board.clone() });
+            write_json_atomic(&self.board_file(project_id), &*board)?;
+            self.emitter.emit(events::PROJECT_BOARD, &BoardEvent { project_id: project_id.to_owned(), board: board.clone() });
         }
         Ok(result)
     }
 
+    async fn card_start(self: &Arc<Self>, p: CardStartParams) -> ApiResult<Value> {
+        self.project(&p.project_id).await?;
+        let card = self.edit_board(&p.project_id, |b| Ok((card_mut(b, &p.card_id)?.clone(), false)))?;
+        if card.column == CardColumn::Doing || card.column == CardColumn::Done {
+            let column = if card.column == CardColumn::Doing { "Doing" } else { "Done" };
+            return Err(ApiError::conflict(format!("card “{}” is already in {column}", card.title)));
+        }
+        let summary = match p.agent_id.filter(|a| !a.is_empty()) {
+            Some(agent_id) => {
+                let agent = self.get(&agent_id)?;
+                let summary = agent.summary();
+                if summary.project_id.as_deref() != Some(p.project_id.as_str()) {
+                    return Err(ApiError::invalid(format!("agent “{}” does not belong to this project", summary.title)));
+                }
+                if agent.state.lock().life == Life::Stopped {
+                    return Err(ApiError::conflict(format!("agent “{}” is archived", summary.title)));
+                }
+                self.prompt_text(&agent_id, card_prompt(&card)).await?;
+                summary
+            }
+            None => self.create_for_card(&p.project_id, &card.title, card_prompt(&card), p.worktree, p.model).await?,
+        };
+        ok(self.edit_board(&p.project_id, |b| {
+            let c = card_mut(b, &p.card_id)?;
+            c.agent_id = Some(summary.id.clone());
+            c.agent_title = Some(summary.title.clone());
+            Ok((move_card(b, &p.card_id, CardColumn::Doing, 0)?, true))
+        })?)
+    }
+
     async fn card_done(self: &Arc<Self>, p: CardDoneParams) -> ApiResult<Value> {
-        let agent = self.get(&p.id)?;
-        let card = self.edit_board(&agent, |b| Ok((card_mut(b, &p.card_id)?.clone(), false)))?;
-        let cwd = agent.summary().cwd;
+        let project = self.project(&p.project_id).await?;
+        let card = self.edit_board(&p.project_id, |b| Ok((card_mut(b, &p.card_id)?.clone(), false)))?;
+        let agent = p.agent_id.or(card.agent_id.clone()).and_then(|id| self.get(&id).ok());
+        let cwd = agent.as_ref().map_or(project.path, |a| a.summary().cwd);
         let message = p.commit_message.map(|m| m.trim().to_owned()).filter(|m| !m.is_empty()).unwrap_or_else(|| card.title.clone());
-        let orchestrator = self.orchestrator.get().cloned().ok_or_else(|| ApiError::unavailable("daemon is starting"))?;
-        let (commit, skipped) = match orchestrator.call(None, "git.commit".into(), json!({ "cwd": cwd, "message": message })).await {
+        let (commit, skipped) = match self.orch()?.call(None, "git.commit".into(), json!({ "cwd": cwd, "message": message })).await {
             Ok(value) => (Some(serde_json::from_value::<CommitInfo>(value)?), None),
             Err(err) if err.code == "invalid_params" && err.message.contains("not a git repository") => (None, Some("not a git repository")),
             Err(err) if err.code == "conflict" => (None, Some("nothing to commit")),
@@ -309,25 +411,33 @@ impl Agents {
             Err(err) => return Err(ApiError::new(err.code, format!("commit failed: {}", err.message))),
         };
         let note = clean_body(p.note);
-        let card = self.edit_board(&agent, |b| {
-            let card = card_mut(b, &p.card_id)?;
-            card.note = note;
-            card.commit = commit.clone();
+        let card = self.edit_board(&p.project_id, |b| {
+            let c = card_mut(b, &p.card_id)?;
+            c.note = note;
+            c.commit = commit.clone();
+            if let Some(agent) = &agent {
+                let summary = agent.summary();
+                c.agent_id = Some(summary.id);
+                c.agent_title = Some(summary.title);
+            }
             move_card(b, &p.card_id, CardColumn::Done, 0).map(|c| (c, true))
         })?;
         Ok(json!({ "card": card, "commit": commit, "commitSkipped": skipped }))
     }
 
-    /// Fetch one source and drop its new entries at the top of the inbox.
-    async fn refresh_source(&self, agent: &Agent, source_id: &str) {
-        let source = self.edit_board(agent, |b| Ok((b.sources.iter().find(|s| s.id == source_id).cloned(), false)));
+    /// Fetch one source and drop its new entries at the top of the inbox. Commands run in the
+    /// project directory.
+    async fn refresh_source(&self, project_id: &str, source_id: &str) {
+        let source = self.edit_board(project_id, |b| Ok((b.sources.iter().find(|s| s.id == source_id).cloned(), false)));
         let Ok(Some(source)) = source else { return };
-        let cwd = agent.summary().cwd;
         let fetched = match source.kind.as_str() {
             "feed" => fetch_feed(&source.target).await,
-            _ => run_command(&source.target, &cwd).await,
+            _ => match self.project(project_id).await {
+                Ok(project) => run_command(&source.target, &project.path).await,
+                Err(err) => Err(err.message),
+            },
         };
-        let _ = self.edit_board(agent, |b| {
+        let _ = self.edit_board(project_id, |b| {
             let Some(source) = b.sources.iter_mut().find(|s| s.id == source_id) else { return Ok(((), false)) };
             source.checked_at = Some(now_ms());
             let entries = match fetched {
@@ -346,22 +456,12 @@ impl Agents {
             let excess = source.seen.len().saturating_sub(MAX_SEEN);
             source.seen.drain(..excess);
             let take = if first { FIRST_IMPORT } else { usize::MAX };
-            let now = now_ms();
             let source_id = source.id.clone();
             for (i, entry) in fresh.into_iter().take(take).enumerate() {
                 let Ok(title) = clean_title(&entry.title) else { continue };
-                let card = Card {
-                    id: new_id(),
-                    title,
-                    body: clean_body(entry.body),
-                    column: CardColumn::Inbox,
-                    url: entry.url,
-                    source: Some(source_id.clone()),
-                    created_at: now,
-                    updated_at: now,
-                    note: None,
-                    commit: None,
-                };
+                let mut card = new_card(title, clean_body(entry.body), CardColumn::Inbox);
+                card.url = entry.url;
+                card.source = Some(source_id.clone());
                 let at = insert_at(&b.cards, CardColumn::Inbox, i);
                 b.cards.insert(at, card);
             }
@@ -369,7 +469,7 @@ impl Agents {
         });
     }
 
-    /// Check due sources every [`POLL_TICK`] while the daemon runs.
+    /// Check due sources of every board every [`POLL_TICK`] while the daemon runs.
     pub(crate) fn start_board_poller(self: &Arc<Self>) {
         let me = Arc::downgrade(self);
         self.handle().spawn(async move {
@@ -378,20 +478,26 @@ impl Agents {
             loop {
                 tick.tick().await;
                 let Some(agents) = me.upgrade() else { return };
-                let all: Vec<Arc<Agent>> = agents.agents.read().values().cloned().collect();
-                for agent in all {
-                    if agent.state.lock().deleted || agent.summary().status == coocoo_proto::AgentStatus::Stopped {
+                let projects: Vec<String> = std::fs::read_dir(&agents.boards_dir)
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .filter_map(|e| e.file_name().to_str()?.strip_suffix(".json").map(str::to_owned))
+                    .collect();
+                for project_id in projects {
+                    // Boards of removed projects stay on disk but are not polled.
+                    if agents.project(&project_id).await.is_err() {
                         continue;
                     }
                     let now = now_ms();
                     let due: Vec<String> = agents
-                        .edit_board(&agent, |b| {
+                        .edit_board(&project_id, |b| {
                             let due = b.sources.iter().filter(|s| s.checked_at.is_none_or(|t| now - t >= s.interval_mins as i64 * 60_000));
                             Ok((due.map(|s| s.id.clone()).collect(), false))
                         })
                         .unwrap_or_default();
                     for id in due {
-                        agents.refresh_source(&agent, &id).await;
+                        agents.refresh_source(&project_id, &id).await;
                     }
                 }
             }
@@ -562,7 +668,7 @@ mod tests {
     use super::*;
 
     fn card(id: &str, column: CardColumn) -> Card {
-        Card { id: id.into(), title: id.into(), body: None, column, url: None, source: None, created_at: 0, updated_at: 0, note: None, commit: None }
+        Card { id: id.into(), ..new_card(id.into(), None, column) }
     }
 
     fn columns(board: &Board, column: CardColumn) -> Vec<&str> {
@@ -579,6 +685,27 @@ mod tests {
         move_card(&mut b, "b", CardColumn::Done, usize::MAX).unwrap();
         assert_eq!(columns(&b, CardColumn::Done), ["x", "b"]);
         assert!(move_card(&mut b, "nope", CardColumn::Done, 0).is_err());
+    }
+
+    #[test]
+    fn agent_boards_move_into_their_projects() {
+        let root = std::env::temp_dir().join(format!("coocoo-boards-{}", new_id()));
+        let (agents_dir, boards_dir) = (root.join("agents"), root.join("boards"));
+        let legacy = |agent: &str, cards: Vec<Card>| {
+            std::fs::create_dir_all(agents_dir.join(agent)).unwrap();
+            write_json_atomic(&agents_dir.join(agent).join(LEGACY_FILE), &Board { cards, sources: vec![] }).unwrap();
+        };
+        legacy("a1", vec![card("t1", CardColumn::Todo), card("d1", CardColumn::Done)]);
+        legacy("a2", vec![card("g2", CardColumn::Doing)]);
+        legacy("loose", vec![card("l", CardColumn::Todo)]);
+        migrate_agent_boards(&agents_dir, &boards_dir, |id| (id != "loose").then(|| ("p1".to_owned(), format!("Agent {id}"))));
+        let board: Board = read_json(&boards_dir.join("p1.json")).unwrap().unwrap();
+        let cards: Vec<(&str, Option<&str>)> = board.cards.iter().map(|c| (c.id.as_str(), c.agent_id.as_deref())).collect();
+        assert_eq!(cards, [("t1", None), ("d1", Some("a1")), ("g2", Some("a2"))], "only doing/done cards keep their agent");
+        assert_eq!(board.cards[1].agent_title.as_deref(), Some("Agent a1"));
+        assert!(!agents_dir.join("a1").join(LEGACY_FILE).exists() && agents_dir.join("a1/board.json.migrated").exists());
+        assert!(agents_dir.join("loose").join(LEGACY_FILE).exists(), "no project: left alone");
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]

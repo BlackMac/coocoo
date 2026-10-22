@@ -32,7 +32,7 @@
   const detail = $derived(fleet.details[k]);
   const requests = $derived(fleet.requests[k] ?? []);
   const project = $derived(a ? fleet.project(host, a.projectId) : undefined);
-  const todoCount = $derived(fleet.boards[k]?.cards.filter((c) => c.column === 'todo').length ?? 0);
+  const todoCount = $derived(a?.projectId ? (fleet.boards[key(host, a.projectId)]?.cards.filter((c) => c.column === 'todo').length ?? 0) : 0);
 
   $effect(() => {
     void fleet.loadDetail(host, id);
@@ -53,6 +53,8 @@
     { id: 'plan', label: 'Plan', icon: ListChecks },
     { id: 'info', label: 'Info', icon: Info },
   ];
+  /** The board belongs to the project: agents without one have none. */
+  const tabs = $derived(a?.projectId ? TABS : TABS.filter((t) => t.id !== 'board'));
 
   const loadChanges = () => (changesMod ??= import('../panels/ChangesPanel.svelte'));
   const loadBrowser = () => (browserMod ??= import('../panels/BrowserPanel.svelte'));
@@ -133,7 +135,7 @@
       </header>
       <nav class="mtabs" aria-label="Agent panes">
         <button class:on={ui.mobilePane === 'chat'} onclick={() => (ui.mobilePane = 'chat')}><MessageSquareText size={14} />Chat</button>
-        {#each TABS as t (t.id)}
+        {#each tabs as t (t.id)}
           <button class:on={ui.mobilePane === t.id} onclick={() => ui.showPanel(t.id)}><t.icon size={14} />{t.label}</button>
         {/each}
       </nav>
@@ -155,7 +157,7 @@
       <div class="resizer" onpointerdown={startResize} title="Drag to resize"></div>
       <aside class="panel">
         <div class="tabs" role="tablist">
-          {#each TABS as t (t.id)}
+          {#each tabs as t (t.id)}
             <button role="tab" class:on={ui.panel.tab === t.id} aria-selected={ui.panel.tab === t.id} onclick={() => ui.showPanel(t.id)}>
               <t.icon size={14} />{t.label}
               {#if t.id === 'changes' && a.diff?.files}<span class="cnt num">{a.diff.files}</span>{/if}
@@ -171,8 +173,8 @@
             {#await loadBrowser() then m}<m.default agent={a} {project} />{/await}
           {:else if ui.panel.tab === 'terminal'}
             {#await loadTerminal() then m}<m.default {host} cwd={a.cwd} />{/await}
-          {:else if ui.panel.tab === 'board'}
-            <BoardPanel agent={a} />
+          {:else if ui.panel.tab === 'board' && a.projectId}
+            <BoardPanel {host} projectId={a.projectId} agent={a} />
           {:else if ui.panel.tab === 'plan'}
             <PlanPanel {detail} agent={a} />
           {:else}

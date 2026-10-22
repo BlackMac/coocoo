@@ -227,7 +227,7 @@ impl Agents {
                 ok(agent.summary())
             }
             "agents.delete" => self.delete(params(p)?).await,
-            m if m.starts_with("agents.card") || m.starts_with("agents.board") => self.board_method(m, p).await,
+            m if m.starts_with("boards.") => self.board_method(m, p).await,
             _ => Err(ApiError::unknown_method(method)),
         }
     }
@@ -242,6 +242,28 @@ impl Agents {
             .collect();
         list.sort_by_key(|s| std::cmp::Reverse(s.last_activity_at));
         ok(list)
+    }
+
+    /// A new agent in `project_id` that starts on `prompt` right away (a board card).
+    pub(crate) async fn create_for_card(
+        self: &Arc<Self>,
+        project_id: &str,
+        title: &str,
+        prompt: String,
+        worktree: bool,
+        model: Option<String>,
+    ) -> ApiResult<AgentSummary> {
+        self.create(CreateParams {
+            project_id: Some(project_id.to_owned()),
+            cwd: None,
+            title: Some(title.chars().take(TITLE_CHARS).collect()),
+            prompt: Some(prompt),
+            worktree: worktree.then_some(WorktreeParam::Enabled(true)),
+            model,
+            thinking: None,
+            parent_id: None,
+        })
+        .await
     }
 
     async fn create(self: &Arc<Self>, p: CreateParams) -> ApiResult<AgentSummary> {

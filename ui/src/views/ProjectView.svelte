@@ -11,6 +11,7 @@
   import type { CommitInfo } from '../lib/protocol';
   import { Copy, ExternalLink, GitBranch, GitCommitHorizontal, Plus, RefreshCw, Terminal, Trash2, X, Globe, Ellipsis } from '../lib/icons';
   import AgentRow from '../components/AgentRow.svelte';
+  import BoardPanel from '../panels/BoardPanel.svelte';
   import HostDot from '../components/HostDot.svelte';
   import Menu from '../components/Menu.svelte';
   import InlineEdit from '../components/InlineEdit.svelte';
@@ -189,6 +190,11 @@
             <div class="card list">{#each archived as a (a.id)}<AgentRow agent={a} showProject={false} />{/each}</div>
           {/if}
         {/if}
+      </section>
+
+      <section class="board-sec">
+        <h2 class="section-title">Board</h2>
+        <div class="card board-card"><BoardPanel {host} projectId={id} /></div>
       </section>
 
       <div class="cols">
@@ -370,6 +376,9 @@
   }
   .agents-sec {
     container-type: inline-size;
+  }
+  .board-card {
+    padding: 0;
   }
   .list {
     padding: 4px;

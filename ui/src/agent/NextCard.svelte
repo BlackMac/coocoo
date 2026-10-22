@@ -2,48 +2,32 @@
   import { fleet, key } from '../lib/fleet.svelte';
   import { ui } from '../lib/ui.svelte';
   import type { AgentSummary } from '../lib/protocol';
-  import { Play, SquareKanban } from '../lib/icons';
+  import { SquareKanban } from '../lib/icons';
+  import StartCard from './StartCard.svelte';
 
-  // Above the composer: the card the agent works on, else the top of its todo column, which one
-  // tap hands to the agent.
+  // Above the composer: the project card this agent works on, else the top of the project's
+  // todo column, which one tap hands to this agent.
   let { agent: a }: { agent: AgentSummary } = $props();
 
-  const board = $derived(fleet.boards[key(a.hostId, a.id)]);
-  const doing = $derived(board?.cards.find((c) => c.column === 'doing'));
+  const board = $derived(a.projectId ? fleet.boards[key(a.hostId, a.projectId)] : undefined);
+  const doing = $derived(board?.cards.find((c) => c.column === 'doing' && c.agentId === a.id));
   const next = $derived(board?.cards.find((c) => c.column === 'todo'));
   const todoCount = $derived(board?.cards.filter((c) => c.column === 'todo').length ?? 0);
 
   $effect(() => {
-    if (fleet.conn === 'open') fleet.loadBoard(a.hostId, a.id).catch(() => {});
+    if (fleet.conn === 'open' && a.projectId) fleet.loadBoard(a.hostId, a.projectId).catch(() => {});
   });
-
-  let busy = $state(false);
-  async function start() {
-    if (!next || busy) return;
-    busy = true;
-    try {
-      await fleet.call('agents.cardStart', { id: a.id, cardId: next.id }, a.hostId, 60_000);
-    } catch (err) {
-      ui.error('Could not start the card', err);
-    } finally {
-      busy = false;
-    }
-  }
 </script>
 
-{#if a.status !== 'stopped' && (doing || next)}
+{#if a.projectId && a.status !== 'stopped' && (doing || next)}
   <div class="next" class:doing={!!doing}>
-    <button class="open" onclick={() => ui.showPanel('board')} title="Open the board">
+    <button class="open" onclick={() => ui.showPanel('board')} title="Open the project board">
       <SquareKanban size={13} />
       <span class="lbl">{doing ? 'Doing' : 'Next'}</span>
       <span class="ttl ellipsis">{(doing ?? next)!.title}</span>
       {#if !doing && todoCount > 1}<span class="more faint num">+{todoCount - 1}</span>{/if}
     </button>
-    {#if !doing}
-      <button class="btn primary sm go" onclick={start} disabled={busy} title="Let the agent work on this card">
-        {#if busy}<span class="spinner"></span>{:else}<Play size={11} fill="currentColor" />{/if}Start
-      </button>
-    {/if}
+    {#if !doing && next}<StartCard host={a.hostId} projectId={a.projectId} card={next} agent={a} primary />{/if}
   </div>
 {/if}
 
@@ -96,13 +80,5 @@
   .more {
     flex: none;
     font-size: var(--fs-xs);
-  }
-  .go {
-    flex: none;
-    gap: 4px;
-  }
-  .go .spinner {
-    width: 10px;
-    height: 10px;
   }
 </style>

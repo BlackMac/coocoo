@@ -1,0 +1,63 @@
+<script lang="ts">
+  import { fleet } from '../lib/fleet.svelte';
+  import { ui } from '../lib/ui.svelte';
+  import type { AgentSummary, Card } from '../lib/protocol';
+  import { Bot, ChevronDown, GitBranch, Play, Plus } from '../lib/icons';
+  import Menu, { type MenuItem } from '../components/Menu.svelte';
+
+  // Hands a card to an agent. The button starts it in the agent the board is shown for (or a
+  // new agent on the project page); the menu offers the project's other agents and new ones.
+  let { host, projectId, card, agent, primary = false }: { host: string; projectId: string; card: Card; agent?: AgentSummary; primary?: boolean } = $props();
+
+  const project = $derived(fleet.project(host, projectId));
+  const others = $derived(fleet.agentsOf(host, projectId).filter((x) => x.status !== 'stopped' && x.id !== agent?.id));
+  let busy = $state(false);
+
+  async function start(params: { agentId?: string; worktree?: boolean }) {
+    if (busy) return;
+    busy = true;
+    try {
+      await fleet.call('boards.cardStart', { projectId, cardId: card.id, ...params }, host, 120_000);
+    } catch (err) {
+      ui.error('Could not start the card', err);
+    } finally {
+      busy = false;
+    }
+  }
+
+  const items = $derived<MenuItem[]>([
+    ...(agent && agent.status !== 'stopped' ? [{ label: `In ${agent.title}`, icon: Bot, run: () => start({ agentId: agent.id }) }] : []),
+    ...others.map((x) => ({ label: `In ${x.title}`, icon: Bot, run: () => start({ agentId: x.id }) })),
+    { label: 'New agent', icon: Plus, run: () => start({}) },
+    ...(project?.git ? [{ label: 'New agent in a worktree', icon: GitBranch, run: () => start({ worktree: true }) }] : []),
+  ]);
+  const here = $derived(agent && agent.status !== 'stopped' ? agent : undefined);
+</script>
+
+<div class="split">
+  <button
+    class="btn sm go"
+    class:primary
+    disabled={busy}
+    title={here ? `Hand it to ${here.title}` : 'Start a new agent for it'}
+    onclick={() => start(here ? { agentId: here.id } : {})}
+  >
+    {#if busy}<span class="spinner"></span>{:else}<Play size={11} fill="currentColor" />{/if}{here ? 'Start' : 'Start new'}
+  </button>
+  <Menu label="Start in…" {items}>{#snippet trigger()}<ChevronDown size={13} />{/snippet}</Menu>
+</div>
+
+<style>
+  .split {
+    display: flex;
+    align-items: center;
+    flex: none;
+  }
+  .go {
+    gap: 4px;
+  }
+  .go .spinner {
+    width: 10px;
+    height: 10px;
+  }
+</style>

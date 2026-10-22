@@ -151,7 +151,7 @@ export class Fleet {
   profiles = $state<Record<string, BrowserProfileInfo>>({});
   details = $state<Record<string, AgentDetail>>({});
   models = $state<Record<string, ModelInfo[]>>({});
-  /** Kanban boards per `host:agentId`, loaded on demand and kept current by `agent.board`. */
+  /** Kanban boards per `host:projectId`, loaded on demand and kept current by `project.board`. */
   boards = $state<Record<string, Board>>({});
   /** Slash-command catalogs per `host:agentId`, loaded on demand and kept current by `agent.commands`. */
   commands = $state<Record<string, SlashCommand[]>>({});
@@ -296,10 +296,10 @@ export class Fleet {
     return list;
   }
 
-  /** Load an agent's board once; later changes arrive as `agent.board` events. */
-  async loadBoard(host: string, agentId: string): Promise<Board> {
-    const k = key(host, agentId);
-    const board = await this.call('agents.board', { id: agentId }, host);
+  /** Load a project's board; later changes arrive as `project.board` events. */
+  async loadBoard(host: string, projectId: string): Promise<Board> {
+    const k = key(host, projectId);
+    const board = await this.call('boards.get', { projectId }, host);
     this.boards[k] = board;
     return board;
   }
@@ -525,8 +525,8 @@ export class Fleet {
     c.on('browser.updated', (p, host) => {
       this.profiles[key(host, p.id)] = p;
     });
-    c.on('agent.board', ({ agentId, board }, host) => {
-      this.boards[key(host, agentId)] = board;
+    c.on('project.board', ({ projectId, board }, host) => {
+      this.boards[key(host, projectId)] = board;
     });
     c.on('agent.commands', ({ agentId, commands }, host) => {
       this.commands[key(host, agentId)] = commands;

@@ -494,7 +494,7 @@ pub struct AgentDetail {
     pub context_window: Option<u64>,
 }
 
-/// An agent's Kanban board (`agents.board*`, `agents.card*`).
+/// A project's Kanban board (`boards.*`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Board {
@@ -537,6 +537,12 @@ pub struct Card {
     /// Commit made when the agent finished the card.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit: Option<CommitInfo>,
+    /// Agent the card was handed to (`boards.cardStart`) or that finished it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    /// That agent's title at the time, for when it has been deleted since.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_title: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -559,11 +565,11 @@ pub struct BoardSource {
     pub seen: Vec<String>,
 }
 
-/// Payload of `agent.board`.
+/// Payload of `project.board`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BoardEvent {
-    pub agent_id: String,
+    pub project_id: String,
     pub board: Board,
 }
 

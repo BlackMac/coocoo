@@ -260,52 +260,68 @@ impl ToolEnv {
         Ok(text(&report))
     }
 
-    // ─── Kanban board (this agent's own) ──────────────────────────────────────────────────
+    // ─── Kanban board (this agent's project) ──────────────────────────────────────────────
+
+    /// The project whose board these tools work on.
+    fn project_id(&self) -> Result<String, HostToolError> {
+        let agent = self.call(None, "agents.get", json!({ "id": self.agent_id }))?;
+        agent
+            .pointer("/summary/projectId")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| err("you are not working in a Coocoo project, so there is no Kanban board"))
+    }
 
     fn kanban_list(&self) -> ToolResult {
-        let board = self.call(None, "agents.board", json!({ "id": self.agent_id }))?;
+        let board = self.call(None, "boards.get", json!({ "projectId": self.project_id()? }))?;
         let mut columns = Map::new();
-        for column in ["inbox", "todo", "doing", "done"] {
+        for column in COLUMNS {
             let cards: Vec<Value> = board["cards"]
                 .as_array()
                 .into_iter()
                 .flatten()
-                .filter(|c| c["column"] == column)
-                .map(|c| json!({ "id": c["id"], "title": c["title"], "body": c.get("body"), "url": c.get("url") }))
+                .filter(|c| c["column"] == *column)
+                .map(|c| {
+                    let mut card = json!({ "id": c["id"], "title": c["title"], "body": c.get("body"), "url": c.get("url") });
+                    if let Some(agent) = c.get("agentId").and_then(Value::as_str) {
+                        card["agent"] = if agent == self.agent_id { json!("you") } else { c.get("agentTitle").cloned().unwrap_or(json!(agent)) };
+                    }
+                    card
+                })
                 .collect();
-            columns.insert(column.to_owned(), Value::Array(cards));
+            columns.insert((*column).to_owned(), Value::Array(cards));
         }
         Ok(text(&Value::Object(columns)))
     }
 
     fn kanban_add(&self, args: Map<String, Value>) -> ToolResult {
-        let mut params = json!({ "id": self.agent_id, "title": required(&args, "title")? });
+        let mut params = json!({ "projectId": self.project_id()?, "title": required(&args, "title")? });
         for key in ["body", "column"] {
             if let Some(value) = str_arg(&args, key) {
                 params[key] = Value::String(value);
             }
         }
-        let card = self.call(None, "agents.cardAdd", params)?;
+        let card = self.call(None, "boards.cardAdd", params)?;
         Ok(text(&json!({ "id": card["id"], "column": card["column"] })))
     }
 
     fn kanban_move(&self, args: Map<String, Value>) -> ToolResult {
-        let mut params = json!({ "id": self.agent_id, "cardId": required(&args, "cardId")?, "column": required(&args, "column")? });
+        let mut params = json!({ "projectId": self.project_id()?, "cardId": required(&args, "cardId")?, "column": required(&args, "column")? });
         if let Some(index) = args.get("index").and_then(Value::as_u64) {
             params["index"] = json!(index);
         }
-        let card = self.call(None, "agents.cardUpdate", params)?;
+        let card = self.call(None, "boards.cardUpdate", params)?;
         Ok(text(&json!({ "id": card["id"], "column": card["column"] })))
     }
 
     fn kanban_done(&self, args: Map<String, Value>) -> ToolResult {
-        let mut params = json!({ "id": self.agent_id, "cardId": required(&args, "cardId")? });
+        let mut params = json!({ "projectId": self.project_id()?, "cardId": required(&args, "cardId")?, "agentId": self.agent_id });
         for key in ["commitMessage", "note"] {
             if let Some(value) = str_arg(&args, key) {
                 params[key] = Value::String(value);
             }
         }
-        let done = self.call(None, "agents.cardDone", params)?;
+        let done = self.call(None, "boards.cardDone", params)?;
         Ok(text(&json!({ "column": "done", "commit": done.get("commit"), "commitSkipped": done.get("commitSkipped") })))
     }
 }
@@ -432,14 +448,14 @@ pub(crate) fn host_tools(agents: &Arc<Agents>, agent_id: &str, orchestrator: Arc
         tool(
             "kanban_list",
             "Kanban board",
-            "List the cards on your Kanban board by column (inbox: suggestions from external sources the user has not accepted yet; todo: the user's queue, top first; doing; done).",
+            "List the cards on your project's Kanban board by column with the agent working on each (inbox: suggestions from external sources the user has not accepted yet; todo: the user's queue, top first; doing; done).",
             json!({ "type": "object", "properties": {}, "additionalProperties": false }),
             |env, _, _| env.kanban_list(),
         ),
         tool(
             "kanban_add",
             "Add card",
-            "Add a card to your Kanban board, e.g. a follow-up you found. Goes to the bottom of todo unless a column is given.",
+            "Add a card to your project's Kanban board, e.g. a follow-up you found. Goes to the bottom of todo unless a column is given.",
             json!({
                 "type": "object",
                 "properties": {
@@ -455,7 +471,7 @@ pub(crate) fn host_tools(agents: &Arc<Agents>, agent_id: &str, orchestrator: Arc
         tool(
             "kanban_move",
             "Move card",
-            "Move a card on your Kanban board to a column (and position, 0 = top). Use kanban_done, not this, to finish a card.",
+            "Move a card on your project's Kanban board to a column (and position, 0 = top). Use kanban_done, not this, to finish a card.",
             json!({
                 "type": "object",
                 "properties": {
