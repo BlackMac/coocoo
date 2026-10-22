@@ -3,7 +3,7 @@
 import type { ImageInput, InspectResult } from './protocol';
 
 export type ThemePref = 'system' | 'dark' | 'light';
-export type PanelTab = 'changes' | 'browser' | 'terminal' | 'plan' | 'info';
+export type PanelTab = 'changes' | 'browser' | 'terminal' | 'board' | 'plan' | 'info';
 
 export interface Toast {
   id: number;

@@ -284,6 +284,39 @@ export interface TodoPhase {
   tasks: TodoTask[];
 }
 
+/** An agent's Kanban board: a column's order is the order of its cards (first = top). */
+export interface Board {
+  cards: Card[];
+  sources: BoardSource[];
+}
+
+export type CardColumn = 'inbox' | 'todo' | 'doing' | 'done';
+
+export interface Card {
+  id: string;
+  title: string;
+  body?: string;
+  column: CardColumn;
+  url?: string;
+  /** `BoardSource.id` it came from. */
+  source?: string;
+  createdAt: number;
+  updatedAt: number;
+  /** The agent's closing note. */
+  note?: string;
+  commit?: CommitInfo;
+}
+
+export interface BoardSource {
+  id: string;
+  /** `feed` (RSS/Atom URL) or `command` (one card per output line). */
+  kind: 'feed' | 'command';
+  target: string;
+  intervalMins: number;
+  checkedAt?: number;
+  error?: string;
+}
+
 export interface AgentDetail {
   summary: AgentSummary;
   todos: TodoPhase[];
@@ -565,6 +598,15 @@ export interface Methods {
   'agents.models': [Empty | undefined, ModelInfo[]];
   'agents.usage': [{ provider: string; model?: string }, ProviderUsage];
   'agents.subagentTimeline': [{ id: string; sessionFile: string; live?: boolean }, TimelinePage];
+  'agents.board': [{ id: string }, Board];
+  'agents.cardAdd': [{ id: string; title: string; body?: string; column?: CardColumn; top?: boolean }, Card];
+  'agents.cardUpdate': [{ id: string; cardId: string; title?: string; body?: string; column?: CardColumn; index?: number }, Card];
+  'agents.cardDelete': [{ id: string; cardId: string }, Ok];
+  'agents.cardStart': [{ id: string; cardId: string }, Card];
+  'agents.cardDone': [{ id: string; cardId: string; commitMessage?: string; note?: string }, { card: Card; commit?: CommitInfo; commitSkipped?: string }];
+  'agents.boardSourceAdd': [{ id: string; kind: 'feed' | 'command'; target: string; intervalMins?: number }, Board];
+  'agents.boardSourceRemove': [{ id: string; sourceId: string }, Board];
+  'agents.boardSourceRefresh': [{ id: string; sourceId: string }, Board];
   'agents.hibernate': [{ id: string }, AgentSummary];
   'agents.archive': [{ id: string }, AgentSummary];
   'agents.delete': [{ id: string; removeWorktree?: boolean }, Ok];
@@ -605,6 +647,7 @@ export interface Events {
   'agent.delta': TimelineDelta;
   'agent.request': UiRequest;
   'agent.requestResolved': { agentId: string; requestId: string };
+  'agent.board': { agentId: string; board: Board };
   'browser.updated': BrowserProfileInfo;
   'browser.frame': BrowserFrame;
   'browser.console': BrowserConsoleEntry;

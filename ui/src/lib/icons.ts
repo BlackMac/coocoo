@@ -58,3 +58,7 @@ export { default as Trash2 } from '@lucide/svelte/icons/trash-2';
 export { default as Users } from '@lucide/svelte/icons/users';
 export { default as Wrench } from '@lucide/svelte/icons/wrench';
 export { default as X } from '@lucide/svelte/icons/x';
+export { default as SquareKanban } from '@lucide/svelte/icons/square-kanban';
+export { default as Rss } from '@lucide/svelte/icons/rss';
+export { default as Play } from '@lucide/svelte/icons/play';
+export { default as GripVertical } from '@lucide/svelte/icons/grip-vertical';

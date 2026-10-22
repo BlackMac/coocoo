@@ -9,6 +9,7 @@
 //! - State survives daemon restarts: `<data_dir>/agents/<id>/meta.json` + `timeline.jsonl`.
 
 mod api;
+mod board;
 mod mapper;
 mod process;
 mod state;
@@ -101,11 +102,13 @@ impl Agents {
         })
     }
 
-    /// Must be called once before the first `dispatch`.
-    pub fn set_orchestrator(&self, orchestrator: Arc<dyn Orchestrator>) {
+    /// Must be called once before the first `dispatch`, inside the runtime. Also starts the
+    /// board source poller.
+    pub fn set_orchestrator(self: &Arc<Self>, orchestrator: Arc<dyn Orchestrator>) {
         let _ = self.orchestrator.set(orchestrator);
         if let Ok(handle) = Handle::try_current() {
             let _ = self.runtime.set(handle);
+            self.start_board_poller();
         }
     }
 

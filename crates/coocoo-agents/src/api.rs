@@ -223,6 +223,7 @@ impl Agents {
                 ok(agent.summary())
             }
             "agents.delete" => self.delete(params(p)?).await,
+            m if m.starts_with("agents.card") || m.starts_with("agents.board") => self.board_method(m, p).await,
             _ => Err(ApiError::unknown_method(method)),
         }
     }
@@ -376,6 +377,11 @@ impl Agents {
         let images = (!p.images.is_empty()).then(|| p.images.into_iter().map(image_content).collect());
         self.send_prompt(&agent, client, PendingPrompt { message: p.message, images, behavior }).await?;
         Ok(json!({}))
+    }
+
+    /// Prompt (or queue a follow-up for) agent `id` with plain text.
+    pub(crate) async fn prompt_text(self: &Arc<Self>, id: &str, message: String) -> ApiResult<Value> {
+        self.prompt(PromptParams { id: id.to_owned(), message, mode: None, images: Vec::new() }).await
     }
 
     async fn abort(&self, p: IdParams) -> ApiResult<Value> {

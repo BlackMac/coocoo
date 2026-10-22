@@ -11,15 +11,17 @@
   import { router } from '../lib/router.svelte';
   import { agentState, STATE_LABEL } from '../lib/status';
   import { ui, type PanelTab } from '../lib/ui.svelte';
-  import { Archive, Ellipsis, FileDiff, Globe, Info, ListChecks, Moon, PanelRight, Terminal, Trash2, MessageSquareText } from '../lib/icons';
+  import { Archive, Ellipsis, FileDiff, Globe, Info, ListChecks, Moon, PanelRight, SquareKanban, Terminal, Trash2, MessageSquareText } from '../lib/icons';
   import StatusDot from '../components/StatusDot.svelte';
   import InlineEdit from '../components/InlineEdit.svelte';
   import Menu, { type MenuItem } from '../components/Menu.svelte';
   import Transcript from '../agent/Transcript.svelte';
   import Composer from '../agent/Composer.svelte';
+  import NextCard from '../agent/NextCard.svelte';
   import RequestCard from '../components/RequestCard.svelte';
   import PlanPanel from '../panels/PlanPanel.svelte';
   import InfoPanel from '../panels/InfoPanel.svelte';
+  import BoardPanel from '../panels/BoardPanel.svelte';
 
   let { host, id }: { host: string; id: string } = $props();
 
@@ -30,6 +32,7 @@
   const detail = $derived(fleet.details[k]);
   const requests = $derived(fleet.requests[k] ?? []);
   const project = $derived(a ? fleet.project(host, a.projectId) : undefined);
+  const todoCount = $derived(fleet.boards[k]?.cards.filter((c) => c.column === 'todo').length ?? 0);
 
   $effect(() => {
     void fleet.loadDetail(host, id);
@@ -46,6 +49,7 @@
     { id: 'changes', label: 'Changes', icon: FileDiff },
     { id: 'browser', label: 'Browser', icon: Globe },
     { id: 'terminal', label: 'Terminal', icon: Terminal },
+    { id: 'board', label: 'Board', icon: SquareKanban },
     { id: 'plan', label: 'Plan', icon: ListChecks },
     { id: 'info', label: 'Info', icon: Info },
   ];
@@ -141,6 +145,7 @@
         {#if requests.length}
           <div class="reqs">{#each requests as r (r.id)}<RequestCard request={r} {host} />{/each}</div>
         {/if}
+        <NextCard agent={a} />
         <Composer agent={a} {detail} />
       </div>
     </section>
@@ -155,6 +160,7 @@
               <t.icon size={14} />{t.label}
               {#if t.id === 'changes' && a.diff?.files}<span class="cnt num">{a.diff.files}</span>{/if}
               {#if t.id === 'plan' && a.todos?.total}<span class="cnt num">{a.todos.done}/{a.todos.total}</span>{/if}
+              {#if t.id === 'board' && todoCount}<span class="cnt num">{todoCount}</span>{/if}
             </button>
           {/each}
         </div>
@@ -165,6 +171,8 @@
             {#await loadBrowser() then m}<m.default agent={a} {project} />{/await}
           {:else if ui.panel.tab === 'terminal'}
             {#await loadTerminal() then m}<m.default {host} cwd={a.cwd} />{/await}
+          {:else if ui.panel.tab === 'board'}
+            <BoardPanel agent={a} />
           {:else if ui.panel.tab === 'plan'}
             <PlanPanel {detail} agent={a} />
           {:else}

@@ -84,6 +84,8 @@ pub mod events {
     pub const AGENT_REQUEST: &str = "agent.request";
     /// `{ "agentId": String, "requestId": String }` — request answered, cancelled, or expired.
     pub const AGENT_REQUEST_RESOLVED: &str = "agent.requestResolved";
+    /// `BoardEvent` — an agent's Kanban board changed.
+    pub const AGENT_BOARD: &str = "agent.board";
     /// `BrowserProfileInfo` — profile started/stopped or its tab list changed.
     pub const BROWSER_UPDATED: &str = "browser.updated";
     /// `BrowserFrame` — screencast frame; sent only to connections watching that tab.

@@ -291,6 +291,8 @@ pub(crate) struct Agent {
     pub refresh_running: AtomicBool,
     /// Requested refresh kinds (`process::REFRESH_*` bits) not yet picked up by that task.
     pub refresh_pending: AtomicU8,
+    /// Kanban board (`board.json`), loaded on first use.
+    pub board: Mutex<Option<coocoo_proto::Board>>,
 }
 
 impl Agent {
@@ -305,6 +307,7 @@ impl Agent {
             meta_write: Mutex::new(()),
             refresh_running: AtomicBool::new(false),
             refresh_pending: AtomicU8::new(0),
+            board: Mutex::new(None),
         }
     }
 

@@ -455,6 +455,79 @@ pub struct AgentDetail {
     pub context_window: Option<u64>,
 }
 
+/// An agent's Kanban board (`agents.board*`, `agents.card*`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Board {
+    /// Every card; a column's order is the order of its cards here (first = top).
+    pub cards: Vec<Card>,
+    /// External sources whose new entries land in the inbox.
+    #[serde(default)]
+    pub sources: Vec<BoardSource>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CardColumn {
+    /// From external sources; the user picks what moves on to `todo`.
+    Inbox,
+    Todo,
+    Doing,
+    Done,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Card {
+    pub id: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    pub column: CardColumn,
+    /// Link to the source entry (feed item).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// `BoardSource.id` the card came from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    /// The agent's closing note (`kanban_done`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// Commit made when the agent finished the card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<CommitInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoardSource {
+    pub id: String,
+    /// `feed`: RSS/Atom URL; `command`: shell command run in the agent's directory, one card
+    /// per output line.
+    pub kind: String,
+    /// Feed URL or command.
+    pub target: String,
+    pub interval_mins: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Entry keys already imported (feed guid/link, command line), newest last; deleting a card
+    /// does not bring it back.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub seen: Vec<String>,
+}
+
+/// Payload of `agent.board`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoardEvent {
+    pub agent_id: String,
+    pub board: Board,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelInfo {

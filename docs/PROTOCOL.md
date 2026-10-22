@@ -102,6 +102,15 @@ keeps running while nobody is attached and ends when the shell exits or on `term
 | `agents.models` | – | `ModelInfo[]` (cached per host) |
 | `agents.usage` | `{ provider, model? }` | `ProviderUsage` — the provider's subscription quota on this host from `omp usage --json --provider <provider>`: `windows` (one per window and quota pool, summed over all logged-in accounts: `used` in accounts' worth, earliest `resetsAt`; `name` labels a pool only some models draw from, such as an Anthropic tier, Codex Spark or an Antigravity counter like `Gemini`; `gating` marks the windows `model`, the model id within the provider, draws from) and per-account `limits` (`unit` percent/usd/tokens/…, `usedFraction`, `status`, `resetsAt`; a quota omp reports once per routing family is listed once). Empty for pay-per-token providers. Cached 60 s per provider; `unavailable` if omp fails or takes over 20 s |
 | `agents.subagentTimeline` | `{ id, sessionFile, live? }` | `TimelinePage` — read-only transcript of one of the agent's subagents, read from its omp session file (`Subagent.sessionFile`; only files below the agent's own session directory, else `forbidden`); newest 500 items. `live`: the subagent still runs, so unanswered tool calls show as running instead of interrupted |
+| `agents.board` | `{ id }` | `Board` — the agent's Kanban board (`<agent dir>/board.json`): `cards` (`column` inbox/todo/doing/done; a column's order is the order of its cards, first = top) and `sources` |
+| `agents.cardAdd` | `{ id, title, body?, column? (todo), top?: bool }` | `Card` |
+| `agents.cardUpdate` | `{ id, cardId, title?, body? ("" clears), column?, index? }` | `Card` — `index` = position in the (target) column, 0 = top, past the end = bottom |
+| `agents.cardDelete` | `{ id, cardId }` | `{}` |
+| `agents.cardStart` | `{ id, cardId }` | `Card` — prompts the agent with the card (title, body, link, how to finish it) like `agents.prompt` (`auto`), then moves it to the top of `doing`; `conflict` if it is already in doing/done |
+| `agents.cardDone` | `{ id, cardId, commitMessage? (card title), note? }` | `{ card, commit?: CommitInfo, commitSkipped?: "not a git repository" \| "nothing to commit" }` — `git.commit` in the agent's directory, then moves the card to the top of `done`; a failing commit leaves the card in place and returns the error |
+| `agents.boardSourceAdd` | `{ id, kind: "feed" \| "command", target, intervalMins? (15, min 5) }` | `Board` — fetched now and then every interval while the daemon runs. `feed`: RSS/Atom URL fetched with `curl`; `command`: `sh -c target` in the agent's directory, one card per output line. New entries go to the top of `inbox` (the 20 newest on the first fetch); entries are remembered, so deleted cards do not come back. Errors land in `BoardSource.error` |
+| `agents.boardSourceRemove` | `{ id, sourceId }` | `Board` (its cards stay) |
+| `agents.boardSourceRefresh` | `{ id, sourceId }` | `Board` — fetch now |
 | `agents.hibernate` | `{ id }` | `AgentSummary` |
 | `agents.archive` | `{ id }` | `AgentSummary` (status `stopped`, process gone, read-only) |
 | `agents.delete` | `{ id, removeWorktree?: bool }` | `{}` |
@@ -137,6 +146,7 @@ keeps running while nobody is attached and ends when the shell exits or on `term
 | `agent.timeline` | `TimelineEvent` (upsert by `item.id`) — a tool item's `tool.subagents` lists the subagents the call started (`status`, `activity`, `toolCount`, `costUsd`, `model`, `sessionFile`); their live progress arrives as further upserts at most once per second | all |
 | `agent.delta` | `TimelineDelta` (append to partial item text) | all |
 | `agent.request` / `agent.requestResolved` | `UiRequest` / `{ agentId, requestId }` | all |
+| `agent.board` | `BoardEvent` (`{ agentId, board }`, the whole board after every change) | all |
 | `browser.updated` | `BrowserProfileInfo` | all |
 | `browser.frame` | `BrowserFrame` | watching connection only |
 | `browser.console` | `BrowserConsoleEntry` | watching connection only |
@@ -154,6 +164,7 @@ such as `ask`; via the vendored official Rust client `crates/omp-rpc`). The daem
   own browser tool drives the daemon-managed, per-project Chromium that the UI live-views; the
   spawn fails with an agent error if the endpoint cannot be obtained;
 - registers host tools (`coocoo_hosts`, `coocoo_projects`, `coocoo_agents`, `coocoo_spawn`,
-  `coocoo_send`, `coocoo_wait`) so agents orchestrate other agents on any host of the fleet;
+  `coocoo_send`, `coocoo_wait`) so agents orchestrate other agents on any host of the fleet, and
+  `kanban_list`, `kanban_add`, `kanban_move`, `kanban_done` for the agent's own board;
 - enables `set_ask_dialog` and surfaces omp `extension_ui_request`s as `UiRequest`s;
 - hibernates idle agents (process exit, session kept) and resumes them with `--resume <sessionFile>`.

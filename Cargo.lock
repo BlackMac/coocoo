@@ -673,6 +673,7 @@ dependencies = [
  "coocoo-proto",
  "omp-rpc",
  "parking_lot",
+ "quick-xml",
  "serde",
  "serde_json",
  "tokio",

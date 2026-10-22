@@ -6,6 +6,7 @@ import { notify } from './notify';
 import type {
   AgentDetail,
   AgentSummary,
+  Board,
   BrowserProfileInfo,
   HostInfo,
   HostStats,
@@ -148,6 +149,8 @@ export class Fleet {
   profiles = $state<Record<string, BrowserProfileInfo>>({});
   details = $state<Record<string, AgentDetail>>({});
   models = $state<Record<string, ModelInfo[]>>({});
+  /** Kanban boards per `host:agentId`, loaded on demand and kept current by `agent.board`. */
+  boards = $state<Record<string, Board>>({});
   /** `agents.usage` per `host:provider`. */
   usage = $state<Record<string, ProviderUsage>>({});
   /** Local receipt time per `usage` key (hosts' clocks may differ). */
@@ -277,6 +280,14 @@ export class Fleet {
     } catch (err) {
       console.warn('agents.get failed', err);
     }
+  }
+
+  /** Load an agent's board once; later changes arrive as `agent.board` events. */
+  async loadBoard(host: string, agentId: string): Promise<Board> {
+    const k = key(host, agentId);
+    const board = await this.call('agents.board', { id: agentId }, host);
+    this.boards[k] = board;
+    return board;
   }
 
   async loadModels(host: string): Promise<ModelInfo[]> {
@@ -499,6 +510,9 @@ export class Fleet {
     });
     c.on('browser.updated', (p, host) => {
       this.profiles[key(host, p.id)] = p;
+    });
+    c.on('agent.board', ({ agentId, board }, host) => {
+      this.boards[key(host, agentId)] = board;
     });
     c.on('system.resync', () => void this.#hello());
   }

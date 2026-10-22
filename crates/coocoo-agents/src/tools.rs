@@ -259,7 +259,58 @@ impl ToolEnv {
         }
         Ok(text(&report))
     }
+
+    // ─── Kanban board (this agent's own) ──────────────────────────────────────────────────
+
+    fn kanban_list(&self) -> ToolResult {
+        let board = self.call(None, "agents.board", json!({ "id": self.agent_id }))?;
+        let mut columns = Map::new();
+        for column in ["inbox", "todo", "doing", "done"] {
+            let cards: Vec<Value> = board["cards"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|c| c["column"] == column)
+                .map(|c| json!({ "id": c["id"], "title": c["title"], "body": c.get("body"), "url": c.get("url") }))
+                .collect();
+            columns.insert(column.to_owned(), Value::Array(cards));
+        }
+        Ok(text(&Value::Object(columns)))
+    }
+
+    fn kanban_add(&self, args: Map<String, Value>) -> ToolResult {
+        let mut params = json!({ "id": self.agent_id, "title": required(&args, "title")? });
+        for key in ["body", "column"] {
+            if let Some(value) = str_arg(&args, key) {
+                params[key] = Value::String(value);
+            }
+        }
+        let card = self.call(None, "agents.cardAdd", params)?;
+        Ok(text(&json!({ "id": card["id"], "column": card["column"] })))
+    }
+
+    fn kanban_move(&self, args: Map<String, Value>) -> ToolResult {
+        let mut params = json!({ "id": self.agent_id, "cardId": required(&args, "cardId")?, "column": required(&args, "column")? });
+        if let Some(index) = args.get("index").and_then(Value::as_u64) {
+            params["index"] = json!(index);
+        }
+        let card = self.call(None, "agents.cardUpdate", params)?;
+        Ok(text(&json!({ "id": card["id"], "column": card["column"] })))
+    }
+
+    fn kanban_done(&self, args: Map<String, Value>) -> ToolResult {
+        let mut params = json!({ "id": self.agent_id, "cardId": required(&args, "cardId")? });
+        for key in ["commitMessage", "note"] {
+            if let Some(value) = str_arg(&args, key) {
+                params[key] = Value::String(value);
+            }
+        }
+        let done = self.call(None, "agents.cardDone", params)?;
+        Ok(text(&json!({ "column": "done", "commit": done.get("commit"), "commitSkipped": done.get("commitSkipped") })))
+    }
 }
+
+const COLUMNS: &[&str] = &["inbox", "todo", "doing", "done"];
 
 const HOST_PROP: &str = "Host id from coocoo_hosts; omit for this machine.";
 
@@ -377,6 +428,61 @@ pub(crate) fn host_tools(agents: &Arc<Agents>, agent_id: &str, orchestrator: Arc
                 "additionalProperties": false
             }),
             |env, args, _| env.output(args),
+        ),
+        tool(
+            "kanban_list",
+            "Kanban board",
+            "List the cards on your Kanban board by column (inbox: suggestions from external sources the user has not accepted yet; todo: the user's queue, top first; doing; done).",
+            json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+            |env, _, _| env.kanban_list(),
+        ),
+        tool(
+            "kanban_add",
+            "Add card",
+            "Add a card to your Kanban board, e.g. a follow-up you found. Goes to the bottom of todo unless a column is given.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string" },
+                    "body": { "type": "string", "description": "Details." },
+                    "column": { "type": "string", "enum": COLUMNS }
+                },
+                "required": ["title"],
+                "additionalProperties": false
+            }),
+            |env, args, _| env.kanban_add(args),
+        ),
+        tool(
+            "kanban_move",
+            "Move card",
+            "Move a card on your Kanban board to a column (and position, 0 = top). Use kanban_done, not this, to finish a card.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "cardId": { "type": "string" },
+                    "column": { "type": "string", "enum": COLUMNS },
+                    "index": { "type": "integer", "minimum": 0 }
+                },
+                "required": ["cardId", "column"],
+                "additionalProperties": false
+            }),
+            |env, args, _| env.kanban_move(args),
+        ),
+        tool(
+            "kanban_done",
+            "Finish card",
+            "Finish a Kanban card once its work is complete: commits all changes in your working directory with the commit message when it is a git repository (skipped when there is nothing to commit), then moves the card to done. Fails without moving the card if the commit fails.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "cardId": { "type": "string" },
+                    "commitMessage": { "type": "string", "description": "Describes the change; defaults to the card title." },
+                    "note": { "type": "string", "description": "Short summary of what was done, shown on the card." }
+                },
+                "required": ["cardId"],
+                "additionalProperties": false
+            }),
+            |env, args, _| env.kanban_done(args),
         ),
     ]
 }
