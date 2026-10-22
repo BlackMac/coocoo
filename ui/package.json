@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "check": "svelte-check --tsconfig ./tsconfig.json"
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "icons": "node scripts/pwa-icons.mjs"
   },
   "dependencies": {
     "@lucide/svelte": "^1.61.0",
@@ -18,6 +19,7 @@
     "svelte": "^5.57.2"
   },
   "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
     "@sveltejs/vite-plugin-svelte": "^7.3.1",
     "@tsconfig/svelte": "^5.0.8",
     "svelte-check": "^4.7.7",
