@@ -16,7 +16,7 @@ default-members = ["crates/coocoo-cli"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/coocoo-dev/coocoo"
+repository = "https://github.com/blackmac/coocoo"
 
 [workspace.dependencies]
 omp-rpc = { path = "crates/omp-rpc" }
