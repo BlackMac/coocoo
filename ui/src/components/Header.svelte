@@ -34,11 +34,13 @@
 
 <header class="hdr">
   <button class="btn ghost icon menu" aria-label="Open navigation" onclick={() => (ui.drawerOpen = true)}><Menu size={16} /></button>
-  <nav class="crumbs" aria-label="Breadcrumb">
+  <!-- Phones show only one crumb: the page's own title is already in its header, so the parent
+       (project of an agent, host of a project) is shown instead. -->
+  <nav class="crumbs" class:nested={crumbs.length > 1} aria-label="Breadcrumb">
     {#each crumbs as c, i (i)}
       {#if i > 0}<ChevronRight size={13} class="sep" />{/if}
       {#if c.href}
-        <a href={c.href} class="crumb link">
+        <a href={c.href} class="crumb link" class:parent={i === crumbs.length - 2}>
           {#if c.online !== undefined}<HostDot online={c.online} />{/if}
           <span class="ellipsis">{c.label}</span>
         </a>
@@ -157,8 +159,13 @@
     .lbl {
       display: none;
     }
-    .crumb.link {
+    .crumb.link:not(.parent),
+    .nested .crumb.current {
       display: none;
+    }
+    .crumb.parent {
+      color: var(--text);
+      font-weight: 500;
     }
     .crumbs :global(.sep) {
       display: none;
