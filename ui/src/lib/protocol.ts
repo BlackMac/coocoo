@@ -284,8 +284,12 @@ export interface UsageCapacity {
   /** `5h`, `7d`, …; windows without a duration use the provider's label (`extra`). */
   window: string;
   durationMs?: number;
-  /** Separate pool inside the window that only some models draw from (e.g. a model tier). */
-  meter?: string;
+  /** Separate pool only some models draw from (Anthropic tier, Codex Spark, Antigravity counter such as `Gemini`). */
+  name?: string;
+  /** omp's ids of the quota counters this pool covers. */
+  pools?: string[];
+  /** The requested model draws from this window. */
+  gating: boolean;
   accounts: number;
   /** Accounts' worth of quota used (0…accounts). */
   used: number;
@@ -520,7 +524,7 @@ export interface Methods {
   'agents.setModel': [{ id: string; model: string }, AgentSummary];
   'agents.setThinking': [{ id: string; level: string }, AgentSummary];
   'agents.models': [Empty | undefined, ModelInfo[]];
-  'agents.usage': [{ provider: string }, ProviderUsage];
+  'agents.usage': [{ provider: string; model?: string }, ProviderUsage];
   'agents.hibernate': [{ id: string }, AgentSummary];
   'agents.archive': [{ id: string }, AgentSummary];
   'agents.delete': [{ id: string; removeWorktree?: boolean }, Ok];

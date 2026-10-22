@@ -10,8 +10,8 @@
   let { host, model, running }: { host: string; model: string | undefined; running: boolean } = $props();
 
   const provider = $derived(model && model.includes('/') ? model.slice(0, model.indexOf('/')) : undefined);
-  const modelId = $derived(model ? model.slice(model.indexOf('/') + 1).toLowerCase() : '');
-  const usage = $derived(provider ? fleet.usage[key(host, provider)] : undefined);
+  const modelId = $derived(model ? model.slice(model.indexOf('/') + 1) : '');
+  const usage = $derived(provider ? fleet.usage[key(host, `${provider}/${modelId}`)] : undefined);
 
   let open = $state(false);
   let root = $state<HTMLDivElement>();
@@ -22,12 +22,12 @@
   /** Untracked: effects below depend only on what they name, not on the usage store. */
   function load(maxAge?: number) {
     untrack(() => {
-      if (provider) fleet.loadUsage(host, provider, maxAge).catch(() => {});
+      if (provider) fleet.loadUsage(host, provider, modelId, maxAge).catch(() => {});
     });
   }
 
   $effect(() => {
-    void [host, provider];
+    void [host, provider, modelId];
     load();
   });
 
@@ -69,16 +69,17 @@
   const pct = (f: number) => `${Math.round(f * 100)}%`;
   const level = (f: number | undefined, status?: string) =>
     status === 'exhausted' || (f ?? 0) >= 1 ? 'hot' : status === 'warning' || (f ?? 0) >= 0.8 ? 'warm' : '';
-  const windowName = (w: UsageCapacity) => (w.meter ? `${w.window} ${w.meter}` : w.window);
+  const windowName = (w: UsageCapacity) => (w.name ? `${w.name} ${w.window}` : w.window);
 
-  // Time windows that gate this model: the provider-wide ones, plus a separate pool (a model
-  // tier, Codex Spark) when the model id names it; Codex's default pool is `chat`.
-  const gating = $derived.by(() => {
-    const timed = (usage?.windows ?? []).filter((w) => w.durationMs != null && w.accounts > 0);
-    const own = timed.filter((w) => w.meter && w.meter !== 'chat' && modelId.includes(w.meter));
-    return timed.filter((w) => !w.meter || (own.length ? own.includes(w) : w.meter === 'chat'));
-  });
+  // Time windows that gate this model: provider-wide ones plus the separate pool the model draws
+  // from (an Anthropic tier, Codex Spark, the Antigravity counter of its family); the daemon
+  // decides which.
+  const gating = $derived((usage?.windows ?? []).filter((w) => w.gating && w.durationMs != null && w.accounts > 0));
+  /** One pool behind every compact window (Antigravity): named once in front instead of per window. */
+  const poolName = $derived(gating.length && gating.every((w) => w.name === gating[0].name) ? gating[0].name : undefined);
   const tightest = $derived(gating.reduce<UsageCapacity | undefined>((t, w) => (!t || fraction(w) > fraction(t) ? w : t), undefined));
+  /** Limit label with its window when the label alone does not say it (`Gemini` → `Gemini · Weekly`). */
+  const limitLabel = (l: UsageLimit) => (l.window && !l.label.includes(l.window) ? `${l.label} · ${l.window}` : l.label);
 
   function amount(l: UsageLimit): { value: string; left?: string } {
     const f = l.usedFraction;
@@ -98,13 +99,14 @@
       class:active={open}
       aria-haspopup="dialog"
       aria-expanded={open}
-      title="{usage.provider} usage limits"
+      title="{usage.provider} usage limits{poolName ? ` (${poolName} quota, used by this model)` : ''}"
       onclick={() => (open = !open)}
     >
+      {#if poolName}<span class="pn minor">{poolName}</span>{/if}
       {#each gating as w (windowName(w))}
         {@const f = fraction(w)}
         <span class="w" class:minor={w !== tightest}>
-          <span class="wl">{windowName(w)}</span>
+          <span class="wl">{poolName ? w.window : windowName(w)}</span>
           <span class="progress {level(f)}"><i style:width="{Math.min(100, f * 100)}%"></i></span>
           <span class="wv {level(f)}">{pct(f)}</span>
         </span>
@@ -124,7 +126,7 @@
             {#each usage.windows.filter((w) => w.durationMs != null) as w (windowName(w))}
               {@const f = fraction(w)}
               <div class="row">
-                <span class="rl ellipsis">{windowName(w)}</span>
+                <span class="rl">{windowName(w)}</span>
                 <span class="progress {level(f)}"><i style:width="{Math.min(100, f * 100)}%"></i></span>
                 <span class="rv num {level(f)}">{pct(f)}</span>
                 <span class="rs faint num">{[`${w.used.toFixed(2)} of ${w.accounts} accounts used`, w.resetsAt ? `resets in ${until(w.resetsAt, now.value)}` : ''].filter(Boolean).join(' · ')}</span>
@@ -142,7 +144,7 @@
               {@const lv = level(l.usedFraction, l.status)}
               {@const sub = [a.left, l.resetsAt && l.resetsAt > now.value ? `resets in ${until(l.resetsAt, now.value)}` : ''].filter(Boolean).join(' · ')}
               <div class="row">
-                <span class="rl ellipsis" title={l.label}>{l.label}</span>
+                <span class="rl">{limitLabel(l)}</span>
                 <span class="progress {lv}"><i style:width="{Math.min(100, (l.usedFraction ?? 0) * 100)}%"></i></span>
                 <span class="rv num ellipsis {lv}" title={a.value}>{a.value}</span>
                 {#if sub}<span class="rs faint num">{sub}</span>{/if}
@@ -166,8 +168,10 @@
     display: flex;
     align-items: center;
     gap: 10px;
+    max-width: 100%;
     height: 24px;
     padding: 0 6px;
+    overflow: hidden;
     border: 0;
     border-radius: var(--r-sm);
     background: transparent;
@@ -188,6 +192,11 @@
   }
   .wl {
     color: var(--text-3);
+  }
+  .pn {
+    color: var(--text-2);
+    font-weight: 500;
+    white-space: nowrap;
   }
   .w .progress {
     width: 28px;
@@ -261,6 +270,12 @@
   }
   .rs {
     grid-column: 1 / -1;
+  }
+  /* The pool name goes first when space runs short; it stays in the tooltip and popover. */
+  @container (max-width: 760px) {
+    .pn {
+      display: none;
+    }
   }
   @container (max-width: 520px) {
     .minor {

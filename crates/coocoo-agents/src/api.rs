@@ -123,6 +123,8 @@ struct DeleteParams {
 #[serde(rename_all = "camelCase")]
 struct UsageParams {
     provider: String,
+    /// Model id within the provider; marks the windows it draws from.
+    model: Option<String>,
 }
 
 /// Default title: first non-empty prompt line, at most [`TITLE_CHARS`] characters.
@@ -496,18 +498,22 @@ impl Agents {
         Ok(models)
     }
 
-    async fn usage(&self, UsageParams { provider }: UsageParams) -> ApiResult<ProviderUsage> {
+    async fn usage(&self, UsageParams { provider, model }: UsageParams) -> ApiResult<ProviderUsage> {
         if !usage::valid_provider(&provider) {
             return Err(ApiError::invalid(format!("invalid provider id `{provider}`")));
         }
-        let mut cache = self.usage.lock().await;
-        if let Some((at, report)) = cache.get(&provider)
-            && at.elapsed() < usage::USAGE_TTL
-        {
-            return Ok(report.clone());
-        }
-        let report = usage::fetch(&self.omp, &self.root, &provider, now_ms()).await?;
-        cache.insert(provider, (Instant::now(), report.clone()));
+        let mut report = {
+            let mut cache = self.usage.lock().await;
+            match cache.get(&provider) {
+                Some((at, report)) if at.elapsed() < usage::USAGE_TTL => report.clone(),
+                _ => {
+                    let report = usage::fetch(&self.omp, &self.root, &provider, now_ms()).await?;
+                    cache.insert(provider, (Instant::now(), report.clone()));
+                    report
+                }
+            }
+        };
+        usage::mark_gating(&mut report, model.as_deref());
         Ok(report)
     }
 

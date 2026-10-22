@@ -284,14 +284,17 @@ export class Fleet {
     return list;
   }
 
-  /** A provider's quota on `host`, refetched once older than `maxAge` (the daemon caches 60 s). */
-  loadUsage(host: string, provider: string, maxAge = 60_000): Promise<ProviderUsage> {
-    const k = key(host, provider);
+  /**
+   * A provider's quota on `host` with the windows `model` (id within the provider) draws from
+   * marked `gating`; refetched once older than `maxAge` (the daemon caches 60 s per provider).
+   */
+  loadUsage(host: string, provider: string, model: string, maxAge = 60_000): Promise<ProviderUsage> {
+    const k = key(host, `${provider}/${model}`);
     const cached = this.usage[k];
     if (cached && Date.now() - (this.#usageAt.get(k) ?? 0) < maxAge) return Promise.resolve(cached);
     let load = this.#usageLoads.get(k);
     if (!load) {
-      load = this.call('agents.usage', { provider }, host, 40_000)
+      load = this.call('agents.usage', { provider, model }, host, 40_000)
         .then((u) => {
           this.usage[k] = u;
           this.#usageAt.set(k, Date.now());

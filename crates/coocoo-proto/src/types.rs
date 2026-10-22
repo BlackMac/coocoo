@@ -417,12 +417,12 @@ pub struct ProviderUsage {
     pub provider: String,
     /// When the quota was read (ms since epoch).
     pub fetched_at: i64,
-    /// Quota per window summed over the accounts, shortest window first (omp's `capacity`).
+    /// Quota per window and pool summed over the accounts, shortest window first.
     pub windows: Vec<UsageCapacity>,
     pub accounts: Vec<UsageAccount>,
 }
 
-/// Quota left in one window across all accounts of a provider.
+/// Quota left in one window of one pool across all accounts of a provider.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageCapacity {
@@ -430,9 +430,15 @@ pub struct UsageCapacity {
     pub window: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
-    /// Separate pool inside the window that only some models draw from (e.g. a model tier).
+    /// Name of a separate pool that only some models draw from (an Anthropic model tier, Codex
+    /// Spark, an Antigravity counter such as `Gemini`); absent for the provider-wide pool.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub meter: Option<String>,
+    pub name: Option<String>,
+    /// omp's ids of the quota counters this pool covers (`fable`, `spark`, `anthropic`, …).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pools: Vec<String>,
+    /// The requested model draws from this window (always true for provider-wide pools).
+    pub gating: bool,
     /// Accounts reporting a limit in this window.
     pub accounts: u32,
     /// Accounts' worth of quota used: each account adds its binding limit's used fraction.
