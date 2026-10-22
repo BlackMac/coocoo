@@ -7,6 +7,7 @@
 mod diff;
 mod fs;
 mod git;
+mod icon;
 mod projects;
 mod stats;
 mod terminal;

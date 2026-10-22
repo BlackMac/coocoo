@@ -128,13 +128,14 @@
         {@const k = key(p.hostId, p.id)}
         {@const open = !collapsed[k]}
         {@const sum = summaryState(agents)}
+        {@const icon = fleet.projectIcon(p)}
         <div class="project">
           <div class="row prow" class:active={activeProject === k}>
             <button class="caret" class:open aria-label={open ? 'Collapse' : 'Expand'} aria-expanded={open} onclick={() => toggle(k)}>
               <ChevronRight size={13} />
             </button>
             <a class="plink" href={href({ name: 'project', host: p.hostId, id: p.id })}>
-              <FolderGit2 size={14} />
+              {#if icon}<img class="picon" src={icon} alt="" />{:else}<FolderGit2 size={14} />{/if}
               <span class="ellipsis">{p.name}</span>
             </a>
             {#if !open && sum}<StatusDot state={sum} size={6} />{/if}
@@ -358,6 +359,13 @@
   }
   .caret:hover {
     color: var(--text);
+  }
+  .picon {
+    width: 14px;
+    height: 14px;
+    flex: none;
+    object-fit: contain;
+    border-radius: 3px;
   }
   .plink {
     display: flex;

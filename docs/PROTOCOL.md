@@ -59,7 +59,8 @@ Params marked `?` are optional. Return types refer to `types.rs`.
 | `projects.add` | `{ path, name? }` | `Project` (directory must exist; git optional) |
 | `projects.update` | `{ id, name?, devUrls? }` | `Project` |
 | `projects.remove` | `{ id }` | `{}` (never touches files) |
-| `projects.refresh` | `{ id }` | `Project` (recomputes `git`) |
+| `projects.refresh` | `{ id }` | `Project` (recomputes `git` and `icon`) |
+| `projects.icon` | `{ id }` | `{ mime, data: base64 }` — the file named by `Project.icon` (`not_found` without one). `icon` is picked from the project's favicon/app icon/logo at the usual places (root, `public/`, `static/`, `app/`, `src/app/`, `assets/`, `src/assets/`, `src/`, `web/`, `src-tauri/icons/`, `resources/`, `build/`, `.github/`, `docs/`): icons before logos, SVG before PNG before ICO, ≤ 512 KiB; re-detected on every git refresh |
 | `git.diff` | `{ cwd, base? }` | `DiffResult` — working tree (incl. untracked) vs `HEAD`, or vs `merge-base(base, HEAD)` when `base` is given |
 | `git.diffStat` | `{ cwd, base? }` | `DiffStat` — same comparison as `git.diff`, counts only |
 | `git.log` | `{ cwd, limit? (20) }` | `CommitInfo[]` |

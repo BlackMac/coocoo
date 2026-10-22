@@ -100,6 +100,18 @@ pub struct Project {
     /// Commands the user pinned for this project (dev server etc.), shown as quick actions.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dev_urls: Vec<String>,
+    /// Icon file found in the project (favicon, app icon, logo); fetch it with `projects.icon`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<ProjectIcon>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectIcon {
+    /// Path relative to the project directory.
+    pub path: String,
+    /// Modification time (ms since epoch), so clients know when to refetch.
+    pub modified: i64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

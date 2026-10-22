@@ -96,6 +96,8 @@ export interface Project {
   addedAt: number;
   git?: GitInfo;
   devUrls?: string[];
+  /** Favicon/app icon/logo found in the project; fetch with `projects.icon`. */
+  icon?: { path: string; modified: number };
 }
 
 export interface GitInfo {
@@ -508,6 +510,7 @@ export interface Methods {
   'projects.update': [{ id: string; name?: string; devUrls?: string[] }, Project];
   'projects.remove': [{ id: string }, Ok];
   'projects.refresh': [{ id: string }, Project];
+  'projects.icon': [{ id: string }, { mime: string; data: string }];
   'git.diff': [{ cwd: string; base?: string }, DiffResult];
   'git.diffStat': [{ cwd: string; base?: string }, DiffStat];
   'git.log': [{ cwd: string; limit?: number }, CommitInfo[]];

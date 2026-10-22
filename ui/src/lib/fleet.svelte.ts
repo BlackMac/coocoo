@@ -153,6 +153,9 @@ export class Fleet {
   /** Local receipt time per `usage` key (hosts' clocks may differ). */
   #usageAt = new Map<string, number>();
   #usageLoads = new Map<string, Promise<ProviderUsage>>();
+  /** Project icon data URLs per `host:id:path:modified`. */
+  projectIcons = $state<Record<string, string>>({});
+  #iconLoads = new Set<string>();
   /** Sidebar host filter; `null` = all hosts. */
   hostFilter = $state<string | null>(null);
 
@@ -282,6 +285,23 @@ export class Fleet {
     const list = await this.call('agents.models', undefined, host);
     this.models[host] = list;
     return list;
+  }
+
+  /**
+   * Data URL of a project's icon, fetched once per icon file version; `undefined` until loaded or
+   * when it cannot be read. Safe to call while rendering (state is only written asynchronously).
+   */
+  projectIcon(p: Project): string | undefined {
+    if (!p.icon) return undefined;
+    const k = `${key(p.hostId, p.id)}:${p.icon.path}:${p.icon.modified}`;
+    const cached = this.projectIcons[k];
+    if (cached === undefined && !this.#iconLoads.has(k)) {
+      this.#iconLoads.add(k);
+      this.call('projects.icon', { id: p.id }, p.hostId)
+        .then(({ mime, data }) => (this.projectIcons[k] = `data:${mime};base64,${data}`))
+        .catch(() => {});
+    }
+    return cached;
   }
 
   /**

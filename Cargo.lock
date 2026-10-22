@@ -771,6 +771,7 @@ dependencies = [
 name = "coocoo-workspace"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "coocoo-proto",
  "dirs 6.0.0",
  "libc",

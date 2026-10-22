@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 
 use crate::fs::expand;
 use crate::watch::{Queue, Watches};
-use crate::{Workspace, diff, fs, git, watch};
+use crate::{Workspace, diff, fs, git, icon, watch};
 
 #[derive(Default)]
 pub(crate) struct State {
@@ -37,6 +37,7 @@ pub(crate) fn create(emitter: Emitter, paths: &Paths) -> Arc<Workspace> {
     for project in &mut projects {
         project.host_id = emitter.host_id().to_owned();
         project.git = None;
+        project.icon = None;
     }
     let ws = Arc::new(Workspace {
         emitter,
@@ -142,6 +143,11 @@ impl Workspace {
                 ok(json!({}))
             }
             "projects.refresh" => ok(self.refresh(&params::<IdParams>(p)?.id, Emit::IfChanged).await?),
+            "projects.icon" => {
+                let project = self.get(&params::<IdParams>(p)?.id)?;
+                let found = project.icon.as_ref().ok_or_else(|| ApiError::not_found(format!("icon of {}", project.name)))?;
+                ok(icon::read(Path::new(&project.path), found).await?)
+            }
             "git.diff" => {
                 let p: CwdBaseParams = params(p)?;
                 ok(diff::diff(&expand(&p.cwd), p.base.as_deref()).await?)
@@ -200,9 +206,9 @@ impl Workspace {
             .ok_or_else(|| ApiError::not_found(format!("project {id}")))
     }
 
-    /// Persist the registry (git info is runtime state and not stored).
+    /// Persist the registry (git info and icon are runtime state and not stored).
     fn save(&self, projects: &[Project]) -> ApiResult<()> {
-        let stored: Vec<Project> = projects.iter().map(|p| Project { git: None, ..p.clone() }).collect();
+        let stored: Vec<Project> = projects.iter().map(|p| Project { git: None, icon: None, ..p.clone() }).collect();
         write_json_atomic(&self.file, &stored).map_err(ApiError::from)
     }
 
@@ -236,6 +242,7 @@ impl Workspace {
             added_at: now_ms(),
             git: None,
             dev_urls: Vec::new(),
+            icon: None,
         };
         {
             let mut state = self.state.lock();
@@ -292,12 +299,12 @@ impl Workspace {
         self.refresh_locks.lock().entry(id.to_owned()).or_default().clone()
     }
 
-    /// Recompute a project's git info, re-sync its watches and emit when it changed.
+    /// Recompute a project's git info and icon, re-sync its watches and emit when it changed.
     async fn refresh(&self, id: &str, emit: Emit) -> ApiResult<Project> {
         let lock = self.refresh_lock(id);
         let _guard = lock.lock().await;
         let path = PathBuf::from(self.get(id)?.path);
-        let info = git::info(&path).await;
+        let (info, found_icon) = tokio::join!(git::info(&path), icon::find(&path));
         let targets = match &info {
             Some(_) => match git::git_dirs(&path).await {
                 Some((git_dir, common)) => watch::targets(&git_dir, &common),
@@ -313,8 +320,9 @@ impl Workspace {
                 .iter_mut()
                 .find(|p| p.id == id)
                 .ok_or_else(|| ApiError::not_found(format!("project {id}")))?;
-            let changed = !same_json(&project.git, &info);
+            let changed = !same_json(&project.git, &info) || project.icon != found_icon;
             project.git = info;
+            project.icon = found_icon;
             let project = project.clone();
             let current = state.watched.get(id);
             let wanted: Vec<&PathBuf> = targets.iter().map(|(p, _)| p).collect();
