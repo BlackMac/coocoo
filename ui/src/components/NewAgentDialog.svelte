@@ -1,6 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { fleet } from '../lib/fleet.svelte';
+  import { modelGroups } from '../lib/format';
   import { router } from '../lib/router.svelte';
   import { ui } from '../lib/ui.svelte';
   import type { ModelInfo } from '../lib/protocol';
@@ -49,8 +50,6 @@
       })
       .catch((e) => (modelsError = e.message));
   });
-
-  const providers = $derived([...new Set(models.map((m) => m.provider))]);
 
   async function create(e?: SubmitEvent) {
     e?.preventDefault();
@@ -160,11 +159,9 @@
         <span>Model</span>
         <select class="select" bind:value={model}>
           <option value="">Default</option>
-          {#each providers as prov (prov)}
-            <optgroup label={prov}>
-              {#each models.filter((m) => m.provider === prov) as m (m.id)}
-                <option value="{m.provider}/{m.id}">{m.name ?? m.id}</option>
-              {/each}
+          {#each modelGroups(models) as g (g.provider)}
+            <optgroup label={g.provider}>
+              {#each g.options as o (o.value)}<option value={o.value}>{o.label}</option>{/each}
             </optgroup>
           {/each}
         </select>
