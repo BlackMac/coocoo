@@ -368,6 +368,7 @@ export interface BrowserProfileInfo {
   running: boolean;
   pid?: number;
   tabs: BrowserTab[];
+  /** Loopback CDP discovery URL handed to omp (`browser.cdpUrl`); empty until first requested. */
   cdpUrl: string;
 }
 
@@ -497,6 +498,7 @@ export interface Methods {
   'browser.screenshot': [{ profile: string; targetId: string }, { data: string }];
   'browser.inspect': [{ profile: string; targetId: string; x: number; y: number }, InspectResult];
   'browser.highlight': [{ profile: string; targetId: string; x?: number; y?: number }, Ok];
+  'browser.cdpEndpoint': [{ profile: string }, { url: string }];
 }
 
 export type Method = keyof Methods;

@@ -30,8 +30,9 @@
 Each agent is one `omp --mode rpc-ui` process (the RPC protocol with omp's tool dialogs enabled)
 driven by the official Rust client (vendored in `crates/omp-rpc`):
 
-- **Browser:** a per-agent `--config` overlay sets `browser.cdpUrl` to the daemon's
-  `/cdp/<project>` discovery endpoint. omp keeps its full browser tool (aria snapshots with
+- **Browser:** a per-agent `--config` overlay sets `browser.cdpUrl` to the project's loopback
+  CDP discovery root (`browser.cdpEndpoint`, a dedicated `http://127.0.0.1:<port>` per profile,
+  since puppeteer drops any path from `cdpUrl`). omp keeps its full browser tool (aria snapshots with
   delta refs, screenshots with change detection, console, network, emulation…) and drives the
   daemon-owned Chromium for that project — the same tabs every client live-views and can take
   over.

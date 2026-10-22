@@ -25,10 +25,13 @@ daemon → client   {"event": "agent.updated", "host": "<origin hostId>", "data"
   disconnects, and is re-established after a reconnect.
 - Error codes: `invalid_params`, `not_found`, `unknown_method`, `conflict`, `unauthorized`,
   `unavailable`, `forbidden`, `internal`.
-- HTTP (same port): `GET /api/health` (no auth, CORS `*`) → `{ok, hostId, name, version}`;
-  `GET /cdp/<profile>/json/version` (loopback clients and loopback `Host` header only, no token) →
-  Chrome's discovery JSON, launching that profile's Chromium on demand; static UI at `/` (web/phone
-  access, SPA fallback to `index.html`).
+- HTTP (same port): `GET /api/health` (no auth, CORS `*`) → `{ok, hostId, name, version}`; static
+  UI at `/` (web/phone access, SPA fallback to `index.html`).
+- CDP discovery: each browser profile gets its own loopback listener (`browser.cdpEndpoint`), whose
+  root serves `GET /json/version`, `/json/list`, `/json`, `/json/protocol` (loopback `Host` header
+  only, else 403; no token) → Chrome's discovery JSON unchanged, launching that profile's Chromium
+  on demand; errors are `{code, message}` with 404/503/500. A dedicated root is required because
+  puppeteer resolves discovery as `new URL('/json/version', cdpUrl)`, dropping any path.
 
 ## Methods
 
@@ -88,6 +91,7 @@ Params marked `?` are optional. Return types refer to `types.rs`.
 | Method | Params | Result |
 |---|---|---|
 | `browser.profiles` | – | `BrowserProfileInfo[]` |
+| `browser.cdpEndpoint` | `{ profile }` | `{ url }` — `http://127.0.0.1:<port>` discovery root for the profile (bound on first call, stable for the daemon's lifetime; does not start Chromium) |
 | `browser.start` / `browser.stop` | `{ profile }` | `BrowserProfileInfo` |
 | `browser.open` | `{ profile, url }` | `BrowserTab` (starts the profile if needed) |
 | `browser.navigate` | `{ profile, targetId, url? , action?: "back" \| "forward" \| "reload" }` | `{}` |
@@ -124,8 +128,10 @@ Params marked `?` are optional. Return types refer to `types.rs`.
 Each agent is one `omp --mode rpc-ui` process (same wire protocol as `rpc`, plus omp's tool dialogs
 such as `ask`; via the vendored official Rust client `crates/omp-rpc`). The daemon:
 
-- passes `--config <overlay>` setting `browser.cdpUrl = http://127.0.0.1:<port>/cdp/<profile>`, so
-  omp's own browser tool drives the daemon-managed, per-project Chromium that the UI live-views;
+- passes `--config <overlay>` setting `browser.cdpUrl` to the profile's discovery root from
+  `browser.cdpEndpoint` (`http://127.0.0.1:<port>`; profile = project id, or `default`), so omp's
+  own browser tool drives the daemon-managed, per-project Chromium that the UI live-views; the
+  spawn fails with an agent error if the endpoint cannot be obtained;
 - registers host tools (`coocoo_hosts`, `coocoo_projects`, `coocoo_agents`, `coocoo_spawn`,
   `coocoo_send`, `coocoo_wait`) so agents orchestrate other agents on any host of the fleet;
 - enables `set_ask_dialog` and surfaces omp `extension_ui_request`s as `UiRequest`s;

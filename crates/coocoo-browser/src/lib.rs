@@ -4,6 +4,7 @@
 
 mod cdp;
 mod chrome;
+mod discovery;
 mod http;
 mod input;
 mod inspect;
@@ -52,7 +53,8 @@ pub(crate) struct Shared {
     /// `<data_dir>/browser`; one user-data-dir per profile below it.
     root: PathBuf,
     config: BrowserConfig,
-    http_base: String,
+    /// Per-profile CDP discovery listeners, bound on the first `browser.cdpEndpoint`.
+    endpoints: Mutex<HashMap<String, discovery::Endpoint>>,
     generation: AtomicU64,
     shutting_down: AtomicBool,
 }
@@ -60,6 +62,11 @@ pub(crate) struct Shared {
 impl Shared {
     fn next_generation(&self) -> u64 {
         self.generation.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// URL of the profile's discovery listener, or `""` while none is bound.
+    fn cdp_url(&self, profile: &str) -> String {
+        self.endpoints.lock().get(profile).map(discovery::Endpoint::url).unwrap_or_default()
     }
 }
 
@@ -135,14 +142,13 @@ struct PointParams {
 const MAX_VIEWPORT: u32 = 8192;
 
 impl Browser {
-    /// `http_base` = loopback base URL of the daemon (for `BrowserProfileInfo::cdp_url`).
-    pub fn new(emitter: Emitter, paths: &Paths, config: BrowserConfig, http_base: String) -> Arc<Self> {
+    pub fn new(emitter: Emitter, paths: &Paths, config: BrowserConfig) -> Arc<Self> {
         Arc::new(Self {
             shared: Arc::new(Shared {
                 emitter,
                 root: paths.data_dir.join("browser"),
                 config,
-                http_base: http_base.trim_end_matches('/').to_owned(),
+                endpoints: Mutex::new(HashMap::new()),
                 generation: AtomicU64::new(0),
                 shutting_down: AtomicBool::new(false),
             }),
@@ -166,6 +172,10 @@ impl Browser {
     pub async fn dispatch(self: &Arc<Self>, method: &str, params: Value, conn: &ConnSink) -> ApiResult<Value> {
         match method {
             "browser.profiles" => ok(self.list_profiles()),
+            "browser.cdpEndpoint" => {
+                let p: ProfileParams = parse(params)?;
+                ok(json!({ "url": self.cdp_endpoint(&p.profile)? }))
+            }
             "browser.start" => {
                 let p: ProfileParams = parse(params)?;
                 let profile = self.profile(&p.profile)?;
@@ -242,6 +252,7 @@ impl Browser {
                         Some(&session),
                     )
                     .await?;
+                profile.expect_frame(&p.target_id);
                 ok(json!({}))
             }
             "browser.input" => {
@@ -303,9 +314,27 @@ impl Browser {
             .collect()
     }
 
-    /// Serves `GET /cdp/<profile>/<path>` (`json/version`, `json/list`, `json`), launching the
-    /// profile's Chromium on demand. Returns Chrome's JSON unchanged.
-    pub async fn cdp_discovery(self: &Arc<Self>, profile: &str, path: &str) -> ApiResult<Value> {
+    /// Loopback URL (`http://127.0.0.1:<port>`) whose root serves the profile's CDP discovery
+    /// (`/json/version`, …) — what omp gets as `browser.cdpUrl`. Binds the listener on first use;
+    /// Chromium itself launches only on the first discovery request.
+    pub fn cdp_endpoint(self: &Arc<Self>, profile: &str) -> ApiResult<String> {
+        validate_profile_id(profile)?;
+        if self.shared.shutting_down.load(Ordering::Acquire) {
+            return Err(ApiError::unavailable("browser is shutting down"));
+        }
+        let mut endpoints = self.shared.endpoints.lock();
+        if let Some(endpoint) = endpoints.get(profile) {
+            return Ok(endpoint.url());
+        }
+        let endpoint = discovery::bind(self, profile)?;
+        let url = endpoint.url();
+        endpoints.insert(profile.to_owned(), endpoint);
+        Ok(url)
+    }
+
+    /// Chrome's discovery JSON for `path` (`json/version`, `json/list`, `json`, `json/protocol`),
+    /// launching the profile's Chromium on demand.
+    async fn cdp_discovery(self: &Arc<Self>, profile: &str, path: &str) -> ApiResult<Vec<u8>> {
         let path = path.trim_matches('/');
         if !matches!(path, "json" | "json/list" | "json/version" | "json/protocol") {
             return Err(ApiError::not_found(format!("CDP endpoint `/{path}`")));
@@ -314,7 +343,9 @@ impl Browser {
         let run = profile.ensure_running().await?;
         let body = http::get(run.port, &format!("/{path}")).await?;
         profile.touch();
-        serde_json::from_slice(&body).map_err(|e| ApiError::internal(format!("Chromium returned invalid JSON: {e}")))
+        serde_json::from_slice::<serde::de::IgnoredAny>(&body)
+            .map_err(|e| ApiError::internal(format!("Chromium returned invalid JSON: {e}")))?;
+        Ok(body)
     }
 
     /// Stop every screencast owned by the connection.
@@ -333,6 +364,7 @@ impl Browser {
 
     pub async fn shutdown(&self) {
         self.shared.shutting_down.store(true, Ordering::Release);
+        self.shared.endpoints.lock().clear();
         let profiles: Vec<Arc<Profile>> = self.profiles.lock().values().cloned().collect();
         futures_util::future::join_all(profiles.iter().map(|p| p.stop())).await;
     }

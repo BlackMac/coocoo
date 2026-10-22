@@ -66,12 +66,11 @@ impl Daemon {
             Err(err) => return Err(err).with_context(|| format!("binding {listen}")),
         };
         let local_addr = listener.local_addr().context("reading bound address")?;
-        let http_base = format!("http://{}", loopback(local_addr));
 
         let emitter = Emitter::new(config.host_id.clone(), BUS_CAPACITY);
         let workspace = Workspace::new(emitter.clone(), &paths);
         let agents = Agents::new(emitter.clone(), &paths, config.agents.clone());
-        let browser = Browser::new(emitter.clone(), &paths, config.browser.clone(), http_base.clone());
+        let browser = Browser::new(emitter.clone(), &paths, config.browser.clone());
         let pids: PidSource = {
             let (agents, browser) = (agents.clone(), browser.clone());
             Arc::new(move || {
@@ -88,7 +87,6 @@ impl Daemon {
         app.agents.set_orchestrator(Arc::new(Orch {
             app: Arc::downgrade(&app),
             host_id: host_id.clone(),
-            http_base,
         }));
         app.start_peers();
         {

@@ -23,6 +23,8 @@ use crate::tabs::{TabList, TargetInfo};
 
 const CONSOLE_CAP: usize = 500;
 const UPDATE_DEBOUNCE: Duration = Duration::from_millis(150);
+/// How long to wait for a screencast frame after a viewport change before forcing one.
+const FRAME_KICK_AFTER: Duration = Duration::from_millis(400);
 
 /// A live Chromium process with its browser-level CDP connection.
 pub(crate) struct Running {
@@ -56,6 +58,18 @@ pub(crate) struct ScreencastParams {
 }
 
 impl ScreencastParams {
+    /// `Page.startScreencast` parameters.
+    fn request(self) -> Value {
+        let mut req = json!({ "format": "jpeg", "quality": self.quality, "everyNthFrame": 1 });
+        if let Some(w) = self.max_width {
+            req["maxWidth"] = json!(w);
+        }
+        if let Some(h) = self.max_height {
+            req["maxHeight"] = json!(h);
+        }
+        req
+    }
+
     /// Shared screencast satisfying every watcher: the largest requested bounds and quality.
     fn merge(self, other: Self) -> Self {
         let max = |a: Option<u32>, b: Option<u32>| match (a, b) {
@@ -180,13 +194,14 @@ impl Profile {
     }
 
     pub fn info(&self) -> BrowserProfileInfo {
+        let cdp_url = self.shared.cdp_url(&self.id);
         let st = self.state.lock();
         BrowserProfileInfo {
             id: self.id.clone(),
             running: st.run.is_some(),
             pid: st.run.as_ref().map(|r| r.pid),
             tabs: st.tabs.snapshot(),
-            cdp_url: format!("{}/cdp/{}", self.shared.http_base, self.id),
+            cdp_url,
         }
     }
 
@@ -562,16 +577,38 @@ impl Profile {
             run.cdp.call("Log.enable", json!({}), s).await?;
         }
         if let Some(p) = restart {
-            let mut req = json!({ "format": "jpeg", "quality": p.quality, "everyNthFrame": 1 });
-            if let Some(w) = p.max_width {
-                req["maxWidth"] = json!(w);
-            }
-            if let Some(h) = p.max_height {
-                req["maxHeight"] = json!(h);
-            }
-            run.cdp.call("Page.startScreencast", req, s).await?;
+            run.cdp.call("Page.startScreencast", p.request(), s).await?;
         }
         Ok(())
+    }
+
+    /// Make sure watchers see the tab after a viewport change.
+    ///
+    /// Chromium occasionally produces no screencast frame for a viewport-only change of a
+    /// static page (more often under CPU load). Re-issuing `Page.startScreencast` with the
+    /// current parameters forces one; it is only sent when no frame arrived in time.
+    pub fn expect_frame(self: &Arc<Self>, target_id: &str) {
+        let seq = {
+            let st = self.state.lock();
+            match st.watches.get(target_id) {
+                Some(w) => w.seq,
+                None => return,
+            }
+        };
+        let (weak, target_id) = (Arc::downgrade(self), target_id.to_owned());
+        tokio::spawn(async move {
+            for wait in [FRAME_KICK_AFTER, FRAME_KICK_AFTER * 2] {
+                tokio::time::sleep(wait).await;
+                let Some(p) = weak.upgrade() else { return };
+                let st = p.state.lock();
+                let Some(w) = st.watches.get(&target_id) else { return };
+                if w.seq != seq || w.held.is_some() {
+                    return;
+                }
+                let (Some(run), Some(params)) = (st.run.as_ref(), w.applied) else { return };
+                run.cdp.send("Page.startScreencast", params.request(), Some(&w.session_id));
+            }
+        });
     }
 
     pub fn unwatch(&self, conn_id: u64, target_id: &str) {

@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use coocoo_proto::util::{now_ms, preview};
 use coocoo_proto::{
-    ApiError, ApiResult, DiffStat, ItemKind, TimelineDelta, TodoPhase, TodoTask, UiRequest, events,
+    ApiError, ApiResult, DiffStat, ItemKind, Orchestrator, TimelineDelta, TodoPhase, TodoTask, UiRequest, events,
 };
 use omp_rpc::{
     Client, ClientOptions, Command, Event, GetSessionStatsCommand, GetStateCommand, PromptCommand, SessionState,
@@ -265,6 +265,17 @@ fn apply_stats(st: &mut State, stats: SessionStats) {
     }
 }
 
+/// The daemon's CDP discovery URL for `profile` (`browser.cdpEndpoint`), handed to omp as
+/// `browser.cdpUrl`.
+async fn cdp_endpoint(orchestrator: &dyn Orchestrator, profile: &str) -> Result<String, String> {
+    let fail = |e: &dyn std::fmt::Display| format!("cannot get the browser CDP endpoint for profile `{profile}`: {e}");
+    let res = orchestrator
+        .call(None, "browser.cdpEndpoint".into(), json!({ "profile": profile }))
+        .await
+        .map_err(|e| fail(&e.message))?;
+    res["url"].as_str().map(str::to_owned).ok_or_else(|| fail(&"response has no `url`"))
+}
+
 impl Agents {
     /// The agent's client, spawning (or resuming) its process first when needed.
     pub(crate) async fn ensure_live(self: &Arc<Self>, agent: &Arc<Agent>) -> ApiResult<Arc<Client>> {
@@ -287,12 +298,16 @@ impl Agents {
     /// Spawn the process. Caller holds `agent.lifecycle`.
     async fn spawn_locked(self: &Arc<Self>, agent: &Arc<Agent>) -> ApiResult<Arc<Client>> {
         let orchestrator = self.orch()?;
+        let profile = agent.state.lock().summary.project_id.clone().unwrap_or_else(|| "default".to_owned());
+        let cdp_url = match cdp_endpoint(orchestrator.as_ref(), &profile).await {
+            Ok(url) => url,
+            Err(message) => return Err(self.spawn_failed(agent, message).await),
+        };
         let spec = {
             let mut st = agent.state.lock();
             st.life = Life::Starting;
             st.summary.error = None;
             st.sync();
-            let profile = st.summary.project_id.clone().unwrap_or_else(|| "default".to_owned());
             SpawnSpec {
                 omp: self.omp.clone(),
                 dir: agent.dir.clone(),
@@ -301,7 +316,7 @@ impl Agents {
                 model: st.summary.model.clone(),
                 thinking: st.summary.thinking.clone(),
                 extra_args: self.config.extra_args.clone(),
-                cdp_url: format!("{}/cdp/{profile}", orchestrator.http_base().trim_end_matches('/')),
+                cdp_url,
                 agent_id: agent.id.clone(),
                 host_id: self.host_id().to_owned(),
                 tools: crate::tools::host_tools(self, &agent.id, orchestrator.clone()),
@@ -312,18 +327,7 @@ impl Agents {
         let spawned = tokio::task::spawn_blocking(move || spawn_omp(spec)).await.map_err(join_error)?;
         let spawned = match spawned {
             Ok(spawned) => spawned,
-            Err(message) => {
-                tracing::warn!(agent = %agent.id, %message, "omp failed to start");
-                {
-                    let mut st = agent.state.lock();
-                    st.take_process(Life::Crashed);
-                    st.summary.error = Some(message.clone());
-                    st.sync();
-                }
-                self.push_item(agent, ItemKind::Error, message.clone()).await;
-                self.changed(agent);
-                return Err(ApiError::unavailable(message));
-            }
+            Err(message) => return Err(self.spawn_failed(agent, message).await),
         };
 
         let client = Arc::new(spawned.client);
@@ -367,6 +371,20 @@ impl Agents {
             }
         }
         Ok(client)
+    }
+
+    /// Record a failed start: the agent shows as crashed with `message`.
+    async fn spawn_failed(self: &Arc<Self>, agent: &Arc<Agent>, message: String) -> ApiError {
+        tracing::warn!(agent = %agent.id, %message, "omp failed to start");
+        {
+            let mut st = agent.state.lock();
+            st.take_process(Life::Crashed);
+            st.summary.error = Some(message.clone());
+            st.sync();
+        }
+        self.push_item(agent, ItemKind::Error, message.clone()).await;
+        self.changed(agent);
+        ApiError::unavailable(message)
     }
 
     /// Send one prompt whose `outstanding` slot was already reserved (`State::begin_prompt`).

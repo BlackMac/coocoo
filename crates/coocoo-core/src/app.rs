@@ -440,7 +440,8 @@ async fn detect_omp_version(configured: Option<String>) -> Option<String> {
         }
         let text = String::from_utf8_lossy(&out.stdout);
         let line = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default();
-        let version = line.strip_prefix("omp").map(str::trim).unwrap_or(line);
+        // `omp/18.12.3`, `omp 18.12.3` or `omp v18.12.3`.
+        let version = line.strip_prefix("omp").unwrap_or(line).trim_start_matches(['/', ' ']);
         let version = version.strip_prefix('v').unwrap_or(version);
         if !version.is_empty() {
             return Some(version.to_owned());
@@ -453,7 +454,6 @@ async fn detect_omp_version(configured: Option<String>) -> Option<String> {
 pub(crate) struct Orch {
     pub app: Weak<App>,
     pub host_id: String,
-    pub http_base: String,
 }
 
 impl Orchestrator for Orch {
@@ -467,9 +467,5 @@ impl Orchestrator for Orch {
 
     fn local_host_id(&self) -> String {
         self.host_id.clone()
-    }
-
-    fn http_base(&self) -> String {
-        self.http_base.clone()
     }
 }

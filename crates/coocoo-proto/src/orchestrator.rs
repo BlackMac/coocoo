@@ -17,8 +17,4 @@ pub trait Orchestrator: Send + Sync {
 
     /// This daemon's host id.
     fn local_host_id(&self) -> String;
-
-    /// Loopback base URL of this daemon's HTTP server, e.g. `http://127.0.0.1:7421`.
-    /// The browser CDP discovery endpoint for a profile is `{http_base}/cdp/{profile}`.
-    fn http_base(&self) -> String;
 }

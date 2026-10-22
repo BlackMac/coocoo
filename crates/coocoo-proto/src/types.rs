@@ -429,7 +429,8 @@ pub struct BrowserProfileInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
     pub tabs: Vec<BrowserTab>,
-    /// CDP discovery URL handed to omp (`browser.cdpUrl`), loopback only.
+    /// Loopback CDP discovery root handed to omp (`browser.cdpUrl`), e.g. `http://127.0.0.1:41234`
+    /// (bound by `browser.cdpEndpoint`); empty while no listener is bound for this profile.
     pub cdp_url: String,
 }
 

@@ -147,20 +147,6 @@ async fn http_surface() {
         other => panic!("expected 401, got {:?}", other.map(|_| ())),
     }
 
-    // CDP discovery reaches the browser subsystem from loopback (Chromium cannot start here,
-    // so it answers with a JSON error), but not with a foreign Host header.
-    let host = addr.to_string();
-    let (status, body) =
-        tokio::task::spawn_blocking(move || http_get(addr, "/cdp/default/json/version", &host)).await.unwrap();
-    assert_ne!(status, 403, "{body}");
-    let parsed: Value = serde_json::from_str(&body).unwrap_or_else(|_| panic!("not JSON: {body}"));
-    if status != 200 {
-        assert!(parsed["code"].is_string(), "{body}");
-    }
-    let (status, _) =
-        tokio::task::spawn_blocking(move || http_get(addr, "/cdp/default/json/version", "evil.example:80")).await.unwrap();
-    assert_eq!(status, 403);
-
     // Static UI or the "not built" page; SPA routes fall back to it.
     let host = addr.to_string();
     let (status, _) = tokio::task::spawn_blocking(move || http_get(addr, "/agents/xyz", &host)).await.unwrap();
@@ -171,6 +157,30 @@ async fn http_surface() {
     assert_eq!(err["code"], json!("unknown_method"));
     let err = client.call(Some("not-a-host"), "projects.list", json!({})).await.unwrap_err();
     assert_eq!(err["code"], json!("not_found"));
+
+    // Each profile gets its own loopback discovery root (puppeteer drops any path from
+    // `browser.cdpUrl`). Chromium cannot start here, so discovery answers with a JSON error;
+    // a foreign Host header is refused.
+    let res = client.call(None, "browser.cdpEndpoint", json!({ "profile": "default" })).await.unwrap();
+    let url = res["url"].as_str().unwrap().to_owned();
+    let again = client.call(None, "browser.cdpEndpoint", json!({ "profile": "default" })).await.unwrap();
+    assert_eq!(again["url"].as_str(), Some(url.as_str()));
+    let cdp: SocketAddr = url.strip_prefix("http://").unwrap().parse().unwrap();
+    assert!(cdp.ip().is_loopback() && cdp.port() != addr.port(), "{url}");
+    let host = cdp.to_string();
+    let (status, body) = tokio::task::spawn_blocking(move || http_get(cdp, "/json/version", &host)).await.unwrap();
+    assert_ne!(status, 200, "{body}");
+    assert_ne!(status, 403, "{body}");
+    let parsed: Value = serde_json::from_str(&body).unwrap_or_else(|_| panic!("not JSON: {body}"));
+    assert!(parsed["code"].is_string(), "{body}");
+    let (status, _) =
+        tokio::task::spawn_blocking(move || http_get(cdp, "/json/version", "evil.example:80")).await.unwrap();
+    assert_eq!(status, 403);
+    let profiles = client.call(None, "browser.profiles", json!({})).await.unwrap();
+    let default = profiles.as_array().unwrap().iter().find(|p| p["id"] == json!("default")).unwrap();
+    assert_eq!(default["cdpUrl"].as_str(), Some(url.as_str()));
+    let err = client.call(None, "browser.cdpEndpoint", json!({ "profile": "../x" })).await.unwrap_err();
+    assert_eq!(err["code"], json!("invalid_params"));
 
     daemon.shutdown().await;
 }
@@ -318,7 +328,7 @@ async fn remote_browser_stream() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     viewer2.events.clear();
     viewer2
-        .call(Some(&b_id), "browser.navigate", json!({ "profile": "default", "targetId": target_id, "action": "reload" }))
+        .call(Some(&b_id), "browser.resize", json!({ "profile": "default", "targetId": target_id, "width": 640, "height": 420 }))
         .await
         .unwrap();
     viewer2.event("browser.frame after viewer 1 left", is_frame).await;

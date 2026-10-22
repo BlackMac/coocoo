@@ -133,10 +133,16 @@ async fn watch_loop(stats: Weak<Stats>) {
 fn build(sys: &System, host_id: String, roots: Vec<(String, u32)>) -> HostStats {
     let mut children: HashMap<Pid, Vec<Pid>> = HashMap::new();
     for (pid, proc_) in sys.processes() {
+        // Linux tasks (threads) share their process's memory; counting them would multiply RSS.
+        if proc_.thread_kind().is_some() {
+            continue;
+        }
         if let Some(parent) = proc_.parent() {
             children.entry(parent).or_default().push(*pid);
         }
     }
+    // Agents and browsers are children of the daemon; each tree is reported under its own key only.
+    let root_pids: HashSet<Pid> = roots.iter().map(|(_, pid)| Pid::from_u32(*pid)).collect();
     let procs = roots
         .into_iter()
         .filter_map(|(key, pid)| {
@@ -146,7 +152,7 @@ fn build(sys: &System, host_id: String, roots: Vec<(String, u32)>) -> HostStats 
             let mut seen = HashSet::new();
             let mut stack = vec![root];
             while let Some(pid) = stack.pop() {
-                if !seen.insert(pid) {
+                if !seen.insert(pid) || (pid != root && root_pids.contains(&pid)) {
                     continue;
                 }
                 if let Some(p) = sys.process(pid) {
