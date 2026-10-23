@@ -8,6 +8,8 @@
   // Hands a card to an agent. The button starts it in the agent the board is shown for (or a
   // new agent on the project page); the menu offers the project's other agents and new ones.
   // `refine`: the agent refines the card (researches, asks, attaches a plan) instead of doing it.
+  // `offerRefine`: a Start button whose menu also offers refining a card that has no refinement
+  // yet (where no separate Refine button is shown).
   let {
     host,
     projectId,
@@ -15,19 +17,21 @@
     agent,
     primary = false,
     refine = false,
-  }: { host: string; projectId: string; card: Card; agent?: AgentSummary; primary?: boolean; refine?: boolean } = $props();
+    offerRefine = false,
+  }: { host: string; projectId: string; card: Card; agent?: AgentSummary; primary?: boolean; refine?: boolean; offerRefine?: boolean } =
+    $props();
 
   const project = $derived(fleet.project(host, projectId));
   const others = $derived(fleet.agentsOf(host, projectId).filter((x) => x.status !== 'stopped' && x.id !== agent?.id));
   let busy = $state(false);
 
-  async function start(params: { agentId?: string; worktree?: boolean }) {
+  async function start(params: { agentId?: string; worktree?: boolean }, asRefine = refine) {
     if (busy) return;
     busy = true;
     try {
-      await fleet.call(refine ? 'boards.cardRefine' : 'boards.cardStart', { projectId, cardId: card.id, ...params }, host, 120_000);
+      await fleet.call(asRefine ? 'boards.cardRefine' : 'boards.cardStart', { projectId, cardId: card.id, ...params }, host, 120_000);
     } catch (err) {
-      ui.error(refine ? 'Could not request a refinement' : 'Could not start the card', err);
+      ui.error(asRefine ? 'Could not request a refinement' : 'Could not start the card', err);
     } finally {
       busy = false;
     }
@@ -41,11 +45,20 @@
     disabled: isBusy(x),
     run: () => start({ agentId: x.id }),
   });
+  const refineIn = (x: AgentSummary): MenuItem => ({
+    label: isBusy(x) ? `Refine in ${x.title} (busy)` : `Refine in ${x.title}`,
+    icon: NotebookPen,
+    disabled: isBusy(x),
+    run: () => start({ agentId: x.id }, true),
+  });
+  const live = $derived([...(agent && agent.status !== 'stopped' ? [agent] : []), ...others]);
   const items = $derived<MenuItem[]>([
-    ...(agent && agent.status !== 'stopped' ? [inAgent(agent)] : []),
-    ...others.map(inAgent),
+    ...live.map(inAgent),
     { label: 'New agent', icon: Plus, run: () => start({}) },
     ...(project?.git && !refine ? [{ label: 'New agent in a worktree', icon: GitBranch, run: () => start({ worktree: true }) }] : []),
+    ...(offerRefine && !refine && !card.refinement && !card.refining
+      ? [...live.map(refineIn), { label: 'Refine with a new agent', icon: NotebookPen, run: () => start({}, true) }]
+      : []),
   ]);
   const here = $derived(agent && agent.status !== 'stopped' ? agent : undefined);
   const hereBusy = $derived(!!here && isBusy(here));

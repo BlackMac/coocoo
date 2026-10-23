@@ -217,7 +217,7 @@
                   {#if col.id === 'inbox'}
                     <button class="btn sm" title="Move to Todo" onclick={() => move(card, 'todo')}>Todo</button>
                   {:else if col.id === 'todo' && i === 0}
-                    <StartCard {host} {projectId} {card} {agent} primary />
+                    <StartCard {host} {projectId} {card} {agent} primary offerRefine />
                   {/if}
                 </div>
                 {#if !open && (card.agentId || card.source || card.commit || card.note || card.startUrl || card.doneUrl || card.refinement || card.refining)}

@@ -30,7 +30,7 @@
       <span class="ttl ellipsis">{(doing ?? next)!.title}</span>
       {#if !doing && todoCount > 1}<span class="more faint num">+{todoCount - 1}</span>{/if}
     </button>
-    {#if !doing && next}<StartCard host={a.hostId} projectId={a.projectId} card={next} agent={a} primary />{/if}
+    {#if !doing && next}<StartCard host={a.hostId} projectId={a.projectId} card={next} agent={a} primary offerRefine />{/if}
   </div>
 {/if}
 

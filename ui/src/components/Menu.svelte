@@ -15,6 +15,18 @@
 
   let open = $state(false);
   let root: HTMLDivElement;
+  /** Opens above the button when there is no room below (e.g. the card bar above the composer). */
+  let up = $state(false);
+
+  function toggle() {
+    if (!open) {
+      const r = root.getBoundingClientRect();
+      // Rough height of the list: rows of ~32 px plus padding.
+      const need = items.length * 32 + 12;
+      up = r.bottom + need > innerHeight && r.top > innerHeight - r.bottom;
+    }
+    open = !open;
+  }
 
   $effect(() => {
     if (!open) return;
@@ -37,11 +49,11 @@
 </script>
 
 <div class="menu" bind:this={root}>
-  <button class="btn ghost icon sm" class:active={open} aria-label={label} aria-haspopup="menu" aria-expanded={open} onclick={() => (open = !open)}>
+  <button class="btn ghost icon sm" class:active={open} aria-label={label} aria-haspopup="menu" aria-expanded={open} onclick={toggle}>
     {@render trigger()}
   </button>
   {#if open}
-    <div class="pop" class:left={align === 'left'} role="menu">
+    <div class="pop" class:left={align === 'left'} class:up role="menu">
       {#each items as item (item.label)}
         <button
           role="menuitem"
@@ -80,6 +92,10 @@
     left: 0;
     right: auto;
   }
+  .pop.up {
+    top: auto;
+    bottom: calc(100% + 4px);
+  }
   button[role='menuitem'] {
     display: flex;
     align-items: center;
@@ -87,6 +103,7 @@
     width: 100%;
     height: 28px;
     padding: 0 8px;
+    white-space: nowrap;
     border: 0;
     border-radius: var(--r-sm);
     background: transparent;
