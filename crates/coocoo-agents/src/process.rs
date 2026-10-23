@@ -393,6 +393,7 @@ impl Agents {
             st.summary.error = Some(message.clone());
             st.sync();
         }
+        self.run_ended(agent);
         self.push_item(agent, ItemKind::Error, message.clone()).await;
         self.changed(agent);
         ApiError::unavailable(message)
@@ -497,6 +498,7 @@ impl Agents {
         self.requests_dropped(agent, &requests);
         self.push_item_blocking(agent, ItemKind::Error, format!("{message}. Send a message to resume the session."));
         self.changed(agent);
+        self.run_ended(agent);
     }
 
     /// Re-read session state after a turn (or a todo/model change). Coalesced per agent.
@@ -672,6 +674,7 @@ impl Sink for LiveSink<'_> {
                     }
                     if finished {
                         agents.schedule_refresh(agent, true);
+                        agents.run_ended(agent);
                     }
                     agents.changed(agent);
                 }
@@ -688,6 +691,7 @@ impl Sink for LiveSink<'_> {
                     }
                     if finished {
                         agents.schedule_refresh(agent, true);
+                        agents.run_ended(agent);
                     }
                     agents.changed(agent);
                 }

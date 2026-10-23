@@ -22,7 +22,7 @@ use coocoo_proto::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::state::Life;
+use crate::state::{Agent, Life};
 use crate::{Agents, sandbox};
 
 const MAX_TITLE: usize = 300;
@@ -445,6 +445,17 @@ fn insert_at(cards: &[Card], column: CardColumn, index: usize) -> usize {
 
 fn card_mut<'a>(board: &'a mut Board, card_id: &str) -> ApiResult<&'a mut Card> {
     board.cards.iter_mut().find(|c| c.id == card_id).ok_or_else(|| ApiError::not_found(format_args!("card {card_id}")))
+}
+
+/// The card's refining agent stopped without calling `kanban_refine`: the card is no longer
+/// being refined; a failed run leaves the first line of its error as the card's note.
+fn stop_refining(card: &mut Card, error: Option<&str>) {
+    card.refining = false;
+    if let Some(error) = error {
+        let line = error.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("unknown error");
+        card.note = Some(truncate(&format!("Refinement aborted: {line}"), MAX_TITLE));
+    }
+    card.updated_at = now_ms();
 }
 
 /// Move a card; entering done stamps `done_at`, leaving done clears it.
@@ -992,11 +1003,22 @@ impl Agents {
             }
             None => self.create_for_card(&p.project_id, &card.title, prompt, p.worktree, p.model).await?,
         };
+        // The agent may have finished already (an API error ends a run within moments); its
+        // run end then found no refining card, so the card is settled here.
+        let agent = self.get(&summary.id).ok();
         let (card, hook) = self.edit_board(&p.project_id, |b| {
             let c = card_mut(b, &p.card_id)?;
             c.agent_id = Some(summary.id.clone());
             c.agent_title = Some(summary.title.clone());
+            // A new run: a note from an earlier one (an aborted refinement) no longer applies.
+            c.note = None;
             c.refining = refine;
+            if refine && let Some(agent) = &agent {
+                let now = agent.summary();
+                if matches!(now.status, AgentStatus::Idle | AgentStatus::Error) {
+                    stop_refining(c, (now.status == AgentStatus::Error).then_some(now.error.as_deref().unwrap_or("the turn failed")));
+                }
+            }
             let from = c.column;
             let card = match refine {
                 false => move_card(b, &p.card_id, CardColumn::Doing, 0)?,
@@ -1072,6 +1094,30 @@ impl Agents {
             c.updated_at = now_ms();
             Ok((c.clone(), true))
         })?)
+    }
+
+    /// The agent's run ended (turn end as idle or error, crash, failed start). Cards it was
+    /// refining that got no refinement stop being refined; `ask` dialogs keep the run going
+    /// (waiting), so they do not get here.
+    pub(crate) fn run_ended(&self, agent: &Agent) {
+        let (project_id, status, error) = {
+            let st = agent.state.lock();
+            (st.summary.project_id.clone(), st.summary.status, st.summary.error.clone())
+        };
+        // Another run started meanwhile: it may still refine the card.
+        let Some(project_id) = project_id.filter(|_| matches!(status, AgentStatus::Idle | AgentStatus::Error)) else { return };
+        let error = (status == AgentStatus::Error).then(|| error.unwrap_or_else(|| "the turn failed".to_owned()));
+        let result = self.edit_board(&project_id, |b| {
+            let mut changed = false;
+            for card in b.cards.iter_mut().filter(|c| c.refining && c.agent_id.as_deref() == Some(agent.id.as_str())) {
+                stop_refining(card, error.as_deref());
+                changed = true;
+            }
+            Ok(((), changed))
+        });
+        if let Err(err) = result {
+            tracing::warn!(agent = %agent.id, project = %project_id, %err, "cannot clear refining cards");
+        }
     }
 
     /// `boards.attachment` / `boards.cardImage`: one file of a card's refinement, or one of its

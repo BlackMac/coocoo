@@ -257,6 +257,64 @@ async fn board_done_pushes() {
     daemon.shutdown().await;
 }
 
+/// An omp stand-in for `--mode rpc-ui`: accepts every command and fails every prompt the way a
+/// provider limit does (a `prompt_result` with status `error`).
+const FAILING_OMP: &str = r#"#!/usr/bin/env python3
+import json, sys
+def send(frame):
+    sys.stdout.write(json.dumps(frame) + "\n")
+    sys.stdout.flush()
+send({"type": "ready"})
+for line in sys.stdin:
+    msg = json.loads(line)
+    kind, rid = msg.get("type"), msg.get("id")
+    data = {"toolNames": [t["name"] for t in msg.get("tools", [])]} if kind == "set_host_tools" else {}
+    if kind == "prompt":
+        data = {"agentInvoked": True}
+    send({"type": "response", "id": rid, "command": kind, "success": True, "data": data})
+    if kind == "prompt":
+        send({"type": "agent_start"})
+        send({"type": "prompt_result", "id": rid, "agentInvoked": True, "status": "error", "sessionSettled": True,
+              "error": {"message": "You have reached your specified API usage limits\nretry later", "retryable": False}})
+"#;
+
+/// A refining agent whose run fails before it calls `kanban_refine` no longer leaves the card
+/// marked `refining`; the error's first line becomes the card's note.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_refinement_clears_refining() {
+    let dir = std::env::temp_dir().join(format!("coocoo-test-omp-{}", util::new_id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let omp = dir.join("omp");
+    std::fs::write(&omp, FAILING_OMP).unwrap();
+    std::fs::set_permissions(&omp, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let config = format!("[browser]\nchromePath = \"/nonexistent/coocoo-test-chrome\"\n[agents]\nompPath = {:?}\n", omp.to_str().unwrap());
+    let home = TempHome::with_config("refine", &config);
+    let daemon = start(&home, "127.0.0.1:0").await;
+    let mut client = Client::connect(&daemon).await;
+
+    let repo = home.0.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let project = client.call(None, "projects.add", json!({ "path": repo })).await.unwrap();
+    let pid = project["id"].as_str().unwrap().to_owned();
+    let card = client.call(None, "boards.cardAdd", json!({ "projectId": pid, "title": "Plan it" })).await.unwrap();
+    let started = client.call(None, "boards.cardRefine", json!({ "projectId": pid, "cardId": card["id"] })).await.unwrap();
+    assert!(started["agentId"].is_string(), "{started}");
+
+    let deadline = tokio::time::Instant::now() + STEP;
+    let card = loop {
+        let board = client.call(None, "boards.get", json!({ "projectId": pid })).await.unwrap();
+        let card = board["cards"].as_array().unwrap().iter().find(|c| c["id"] == card["id"]).unwrap().clone();
+        if card.get("refining").is_none() {
+            break card;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "card still refining: {card}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(card["note"], json!("Refinement aborted: You have reached your specified API usage limits"), "{card}");
+    assert_eq!(card["column"], json!("todo"), "{card}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_daemon_fleet() {
     let home_a = TempHome::new("a");

@@ -491,10 +491,13 @@
   <button class="retry" disabled={publishing[card.id]} onclick={() => publish(card)}>{publishing[card.id] ? 'Retrying…' : 'Retry'}</button>
 {/snippet}
 
+<!-- An agent whose last run failed stays red here after it hibernated (it keeps `error` until
+     its next run), so a card in Doing shows that its work stopped. -->
 {#snippet agentLink(id: string, title?: string)}
   {@const live = fleet.agents[key(host, id)]}
   {#if live}
-    <a class="agent" href={href({ name: 'agent', host, id: live.id })} title="Open agent"><StatusDot state={agentState(live)} size={6} />{live.title}</a>
+    {@const failed = live.status === 'error' || (live.status === 'hibernated' && !!live.error)}
+    <a class="agent" href={href({ name: 'agent', host, id: live.id })} title={failed && live.error ? `Open agent · stopped with an error: ${live.error}` : 'Open agent'}><StatusDot state={failed ? 'error' : agentState(live)} size={6} />{live.title}</a>
   {:else}
     <span class="agent gone" title="Agent deleted">{title ?? 'Deleted agent'}</span>
   {/if}

@@ -854,7 +854,8 @@ pub struct Card {
     /// Context images from the user (`boards.cardImage`); the agent gets their paths.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<Attachment>,
-    /// Its agent is working out a refinement (`boards.cardRefine`) instead of implementing it.
+    /// Its agent is working out a refinement (`boards.cardRefine`) instead of implementing it;
+    /// cleared by the refinement, or when the agent's run ends without one.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub refining: bool,
     /// The latest refinement: the plan agreed before the work starts, handed to the agent that
