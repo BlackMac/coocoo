@@ -1,10 +1,10 @@
-# Uploads website/public to the Hetzner webhosting (coocoo.dev) over SFTP on every push to main
+# Uploads website/public to the Hetzner webhosting (coocoo.dev) over SFTP on every push to master
 # that touches the website. Setup (secrets, host key): website/README.md.
 name: Website deploy
 
 on:
   push:
-    branches: [main]
+    branches: [master]
     paths:
       - 'website/**'
       - '.github/workflows/website-deploy.yml'

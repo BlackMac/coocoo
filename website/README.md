@@ -53,7 +53,7 @@ measurements change, update `stats` there too.
 
 ## Deploy
 
-`.github/workflows/website-deploy.yml` runs on every push to `main` that changes `website/` (and by
+`.github/workflows/website-deploy.yml` runs on every push to `master` that changes `website/` (and by
 hand via *Run workflow*): `php -l` on all files, then `lftp mirror --reverse --delete` of
 `website/public/` over SFTP. `cache/*.json` on the server is neither overwritten nor deleted.
 Without the secrets the upload step only logs a warning.
