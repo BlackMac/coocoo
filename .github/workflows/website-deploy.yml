@@ -62,10 +62,11 @@ jobs:
             printf '%s\n' "$SFTP_KEY" > ~/.ssh/deploy_key && chmod 600 ~/.ssh/deploy_key
             if [ "${{ inputs.debug }}" = "true" ]; then
               ssh-keygen -l -f ~/.ssh/deploy_key || true
-              printf -- '-ls -la public_html/coocoo.dev\n-put website/public/robots.txt public_html/coocoo.dev/a.txt\n-rm public_html/coocoo.dev/a.txt\n-put website/public/robots.txt /public_html/coocoo.dev/a.txt\n-rm /public_html/coocoo.dev/a.txt\n-put website/public/robots.txt /public_html/coocoo.dev//a.txt\n-rm /public_html/coocoo.dev//a.txt\n-put website/public/robots.txt public_html/coocoo.dev/inc/a.txt\n-rm public_html/coocoo.dev/inc/a.txt\n' \
+              # Paths are relative to the SFTP root (the account's home), e.g. public_html/coocoo.dev.
+              printf -- '-pwd\n-ls -la %s\n-put website/public/robots.txt %s/zz-deploy-test.txt\n-rm %s/zz-deploy-test.txt\n' \
+                "$SFTP_PATH" "$SFTP_PATH" "$SFTP_PATH" \
                 | sftp -v -b - -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes \
                   -o StrictHostKeyChecking=accept-new "$SFTP_USER@$SFTP_HOST" || true
-              printf '%s' "$SFTP_PATH" | od -c | head -3
             fi
             auth="set sftp:connect-program 'ssh -a -x -i $HOME/.ssh/deploy_key -o IdentitiesOnly=yes'
             open -u '$SFTP_USER,' 'sftp://$SFTP_HOST'"

@@ -66,7 +66,7 @@ Repository secrets (*Settings → Secrets and variables → Actions*):
 | `HETZNER_SFTP_USER` | login name of the **main FTP user** |
 | `HETZNER_SFTP_KEY` | private SSH key (OpenSSH format) whose public key is uploaded in konsoleH under *Access details → Public SFTP keys*; Hetzner accepts key login only for the main FTP user |
 | `HETZNER_SFTP_PASSWORD` | alternative to the key, used only when `HETZNER_SFTP_KEY` is empty; needs *Password login: Active* in konsoleH |
-| `HETZNER_SFTP_PATH` | target directory, e.g. `public_html` |
+| `HETZNER_SFTP_PATH` | the domain's document root **relative to the SFTP root** (the account's home), e.g. `public_html/coocoo.dev`; not the server path `/usr/home/<login>/…` from konsoleH |
 | `HETZNER_SFTP_KNOWN_HOSTS` | optional, output of `ssh-keyscan <host>`; without it the host key is accepted unverified |
 
 New deploy key: `ssh-keygen -t rsa -b 4096 -N '' -f deploy_key`, then `gh secret set HETZNER_SFTP_KEY < deploy_key`,
