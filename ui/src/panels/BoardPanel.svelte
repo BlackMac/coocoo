@@ -305,7 +305,7 @@
                     <StartCard {host} {projectId} {card} {agent} primary offerRefine />
                   {/if}
                 </div>
-                {#if !open && (card.agentId || card.source || card.commit || card.note || card.startUrl || card.doneUrl || card.refinement || card.refining || card.images?.length)}
+                {#if !open && (card.agentId || card.source || card.commit || card.note || card.startUrl || card.doneUrl || card.refinement || card.refining || card.images?.length || card.addedBy)}
                   <div class="sub faint">
                     {#if card.refining || card.refinement}
                       <span class="refb" class:on={card.refining} title={card.refining ? 'An agent is refining it' : 'Has a refinement; open the card to read it'}>
@@ -316,7 +316,7 @@
                     {#if card.agentId}{@render agentChip(card)}{/if}
                     {#if card.commit}<span class="mono"><GitCommitHorizontal size={11} />{card.commit.sha.slice(0, 7)}</span>{/if}
                     {#if card.startUrl || card.doneUrl}<span class="hooks" class:err={!!card.hookError} title={card.hookError ?? 'Webhooks on start/done'}><Webhook size={11} /></span>{/if}
-                    {#if card.note}<span class="ellipsis">{card.note}</span>{:else if card.source}<span class="ellipsis">{sourceName(card.source)}</span>{/if}
+                    {#if card.note}<span class="ellipsis">{card.note}</span>{:else if card.source}<span class="ellipsis">{sourceName(card.source)}</span>{:else if card.addedBy && !card.agentId}<span class="by">by {@render agentLink(card.addedBy.id, card.addedBy.title)}</span>{/if}
                   </div>
                 {/if}
                 {#if !open && card.hookError}<div class="herr">{card.hookError}</div>{/if}
@@ -340,7 +340,7 @@
                     {#if card.url}<a class="link" href={card.url} target="_blank" rel="noopener noreferrer"><ExternalLink size={11} />{card.url}</a>{/if}
                     {#if card.note}<div class="note"><span class="faint">Note:</span> {card.note}</div>{/if}
                     {#if card.commit}<div class="faint mono">{card.commit.sha.slice(0, 7)} {card.commit.summary}</div>{/if}
-                    <div class="faint meta">Added {ago(card.createdAt, now.value)} ago{card.source ? ` from ${sourceName(card.source) ?? 'a removed source'}` : ''}{saving && progress ? ` · ${progress}` : ''}</div>
+                    <div class="faint meta">Added {ago(card.createdAt, now.value)} ago{card.source ? ` from ${sourceName(card.source) ?? 'a removed source'}` : ''}{#if card.addedBy}&nbsp;by {@render agentLink(card.addedBy.id, card.addedBy.title)}{/if}{saving && progress ? ` · ${progress}` : ''}</div>
                     <div class="acts">
                       <button class="btn primary sm" disabled={saving} onclick={() => save(card)}>{#if saving}<span class="spinner"></span>{/if}Save</button>
                       {#if col.id === 'inbox' || col.id === 'todo'}
@@ -429,11 +429,15 @@
 
 <!-- The agent a card was handed to: live status and title, or the remembered title once deleted. -->
 {#snippet agentChip(card: Card)}
-  {@const live = fleet.agents[key(host, card.agentId!)]}
+  {@render agentLink(card.agentId!, card.agentTitle)}
+{/snippet}
+
+{#snippet agentLink(id: string, title?: string)}
+  {@const live = fleet.agents[key(host, id)]}
   {#if live}
     <a class="agent" href={href({ name: 'agent', host, id: live.id })} title="Open agent"><StatusDot state={agentState(live)} size={6} />{live.title}</a>
   {:else}
-    <span class="agent gone" title="Agent deleted">{card.agentTitle ?? 'Deleted agent'}</span>
+    <span class="agent gone" title="Agent deleted">{title ?? 'Deleted agent'}</span>
   {/if}
 {/snippet}
 
@@ -522,6 +526,16 @@
   .acts .spinner {
     width: 10px;
     height: 10px;
+  }
+  .by {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    overflow: hidden;
+  }
+  .by .agent {
+    max-width: none;
   }
   .imgc {
     display: inline-flex;

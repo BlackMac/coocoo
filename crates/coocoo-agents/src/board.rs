@@ -14,7 +14,7 @@ use coocoo_proto::error::{ok, params};
 use coocoo_proto::util::{new_id, now_ms, read_json, truncate, write_json_atomic};
 use base64::Engine as _;
 use coocoo_proto::{
-    AgentStatus, ApiError, ApiResult, Attachment, Board, BoardEvent, BoardSource, Card, CardColumn, CommitInfo, Project, Refinement, events,
+    AgentRef, AgentStatus, ApiError, ApiResult, Attachment, Board, BoardEvent, BoardSource, Card, CardColumn, CommitInfo, Project, Refinement, events,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -65,6 +65,8 @@ struct CardAddParams {
     /// Context images for the agent.
     #[serde(default)]
     images: Vec<ImageUpload>,
+    /// The agent adding it (`kanban_add`); recorded as `addedBy`.
+    agent_id: Option<String>,
 }
 
 /// An image the client sends with a card.
@@ -230,6 +232,7 @@ fn new_card(title: String, body: Option<String>, column: CardColumn) -> Card {
         start_url: None,
         done_url: None,
         hook_error: None,
+        added_by: None,
         images: Vec::new(),
         refining: false,
         refinement: None,
@@ -561,10 +564,14 @@ impl Agents {
                 let start_url = p.start_url.as_deref().map(clean_url).transpose()?.flatten();
                 let done_url = p.done_url.as_deref().map(clean_url).transpose()?.flatten();
                 let images = decode_images(p.images, &[])?;
+                let added_by = p.agent_id.as_deref().filter(|a| !a.is_empty()).map(|id| self.get(id)).transpose()?.map(|a| {
+                    let s = a.summary();
+                    AgentRef { id: s.id, title: s.title }
+                });
                 self.project(&p.project_id).await?;
                 let column = p.column.unwrap_or(CardColumn::Todo);
                 let mut card = new_card(title, body, column);
-                (card.start_url, card.done_url) = (start_url, done_url);
+                (card.start_url, card.done_url, card.added_by) = (start_url, done_url, added_by);
                 let dir = image_dir(&self.boards_dir, &card.id);
                 write_images(&dir, &images).await?;
                 card.images = images.into_iter().map(|(a, _)| a).collect();

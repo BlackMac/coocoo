@@ -335,6 +335,8 @@ export interface Card {
   hookError?: string;
   /** Its agent is working out a refinement (`boards.cardRefine`). */
   refining?: boolean;
+  /** The agent that put the card on the board (`kanban_add`), e.g. a suggestion in the inbox. */
+  addedBy?: { id: string; title: string };
   /** Context images from the user (`boards.cardImage`); the agent gets their paths. */
   images?: Attachment[];
   /** The latest refinement, handed to the agent that implements the card. */

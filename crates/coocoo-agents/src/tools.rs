@@ -287,6 +287,9 @@ impl ToolEnv {
                     if let Some(agent) = c.get("agentId").and_then(Value::as_str) {
                         card["agent"] = if agent == self.agent_id { json!("you") } else { c.get("agentTitle").cloned().unwrap_or(json!(agent)) };
                     }
+                    if let Some(by) = c.pointer("/addedBy/id").and_then(Value::as_str) {
+                        card["addedBy"] = if by == self.agent_id { json!("you") } else { c.pointer("/addedBy/title").cloned().unwrap_or(json!(by)) };
+                    }
                     if c.get("refining") == Some(&Value::Bool(true)) {
                         card["refining"] = json!(true);
                     }
@@ -312,11 +315,15 @@ impl ToolEnv {
     }
 
     fn kanban_add(&self, args: Map<String, Value>) -> ToolResult {
-        let mut params = json!({ "projectId": self.project_id()?, "title": required(&args, "title")? });
+        let mut params = json!({ "projectId": self.project_id()?, "title": required(&args, "title")?, "agentId": self.agent_id });
         for key in ["body", "column"] {
             if let Some(value) = str_arg(&args, key) {
                 params[key] = Value::String(value);
             }
+        }
+        // The inbox lists the newest suggestion first, like importer entries.
+        if params["column"] == "inbox" {
+            params["top"] = json!(true);
         }
         let card = self.call(None, "boards.cardAdd", params)?;
         Ok(text(&json!({ "id": card["id"], "column": card["column"] })))
@@ -585,7 +592,7 @@ pub(crate) fn host_tools(agents: &Arc<Agents>, agent_id: &str, orchestrator: Arc
         tool(
             "kanban_add",
             "Add card",
-            "Add a card to your project's Kanban board, e.g. a follow-up you found. Goes to the bottom of todo unless a column is given.",
+            "Add a card to your project's Kanban board. Suggestions the user did not ask for (follow-ups, ideas, problems you noticed outside your task) go to the inbox (column: inbox, newest on top), where the user moves them to todo or deletes them. Without a column the card goes to the bottom of todo: use that only for work the user asked you to queue.",
             json!({
                 "type": "object",
                 "properties": {

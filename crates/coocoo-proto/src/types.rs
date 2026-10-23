@@ -552,6 +552,9 @@ pub struct Card {
     /// Why the last webhook call failed; cleared by the next successful one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hook_error: Option<String>,
+    /// The agent that put the card on the board (`kanban_add`), e.g. a suggestion in the inbox.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_by: Option<AgentRef>,
     /// Context images from the user (`boards.cardImage`); the agent gets their paths.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<Attachment>,
@@ -562,6 +565,14 @@ pub struct Card {
     /// implements the card.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refinement: Option<Refinement>,
+}
+
+/// An agent as remembered on a card: its title at the time, for when it has been deleted since.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRef {
+    pub id: String,
+    pub title: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
