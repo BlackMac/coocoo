@@ -30,16 +30,17 @@ jobs:
         env:
           SFTP_HOST: ${{ secrets.HETZNER_SFTP_HOST }}
           SFTP_USER: ${{ secrets.HETZNER_SFTP_USER }}
+          SFTP_KEY: ${{ secrets.HETZNER_SFTP_KEY }}
           LFTP_PASSWORD: ${{ secrets.HETZNER_SFTP_PASSWORD }}
           SFTP_PATH: ${{ secrets.HETZNER_SFTP_PATH }}
           SFTP_KNOWN_HOSTS: ${{ secrets.HETZNER_SFTP_KNOWN_HOSTS }}
         run: |
-          if [ -z "$SFTP_HOST" ] || [ -z "$SFTP_USER" ] || [ -z "$LFTP_PASSWORD" ] || [ -z "$SFTP_PATH" ]; then
+          if [ -z "$SFTP_HOST" ] || [ -z "$SFTP_USER" ] || [ -z "$SFTP_PATH" ] || { [ -z "$SFTP_KEY" ] && [ -z "$LFTP_PASSWORD" ]; }; then
             echo "::warning::HETZNER_SFTP_* secrets are not set; skipping the upload (see website/README.md)."
             exit 0
           fi
           sudo apt-get update -qq && sudo apt-get install -y -qq lftp
-          mkdir -p ~/.ssh
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
           if [ -n "$SFTP_KNOWN_HOSTS" ]; then
             printf '%s\n' "$SFTP_KNOWN_HOSTS" > ~/.ssh/known_hosts
             confirm=no
@@ -47,12 +48,21 @@ jobs:
             echo "::warning::HETZNER_SFTP_KNOWN_HOSTS is not set; accepting the server's host key unverified."
             confirm=yes
           fi
+          if [ -n "$SFTP_KEY" ]; then
+            # Key login (Hetzner: main FTP user only). The empty password after the comma keeps
+            # lftp from asking for one.
+            printf '%s\n' "$SFTP_KEY" > ~/.ssh/deploy_key && chmod 600 ~/.ssh/deploy_key
+            auth="set sftp:connect-program 'ssh -a -x -i $HOME/.ssh/deploy_key -o IdentitiesOnly=yes'
+            open -u '$SFTP_USER,' 'sftp://$SFTP_HOST'"
+          else
+            auth="open --env-password -u '$SFTP_USER' 'sftp://$SFTP_HOST'"
+          fi
           # cache/*.json lives only on the server: excluded from upload and from --delete.
           lftp -c "
             set sftp:auto-confirm $confirm
             set net:max-retries 2
             set net:timeout 20
-            open --env-password -u '$SFTP_USER' 'sftp://$SFTP_HOST'
+            $auth
             mirror --reverse --delete --verbose --parallel=4 \
               --exclude-glob 'cache/*.json' --exclude-glob 'cache/tmp*' \
               website/public/ '$SFTP_PATH'

@@ -63,7 +63,12 @@ Repository secrets (*Settings → Secrets and variables → Actions*):
 | Secret | Value |
 |---|---|
 | `HETZNER_SFTP_HOST` | server name from konsoleH (*Access details*), e.g. `www123.your-server.de` |
-| `HETZNER_SFTP_USER` | FTP/SFTP user |
-| `HETZNER_SFTP_PASSWORD` | its password |
+| `HETZNER_SFTP_USER` | login name of the **main FTP user** |
+| `HETZNER_SFTP_KEY` | private SSH key (OpenSSH format) whose public key is uploaded in konsoleH under *Access details → Public SFTP keys*; Hetzner accepts key login only for the main FTP user |
+| `HETZNER_SFTP_PASSWORD` | alternative to the key, used only when `HETZNER_SFTP_KEY` is empty; needs *Password login: Active* in konsoleH |
 | `HETZNER_SFTP_PATH` | target directory, e.g. `public_html` |
 | `HETZNER_SFTP_KNOWN_HOSTS` | optional, output of `ssh-keyscan <host>`; without it the host key is accepted unverified |
+
+New deploy key: `ssh-keygen -t rsa -b 4096 -N '' -f deploy_key`, then `gh secret set HETZNER_SFTP_KEY < deploy_key`,
+upload `deploy_key.pub` in konsoleH (it converts the format; `ssh-keygen -e -f deploy_key.pub` gives the RFC 4716
+form directly), and delete the local private key.
