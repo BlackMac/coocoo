@@ -3,9 +3,10 @@
   import { ui } from '../lib/ui.svelte';
   import type { AddHostParams } from '../lib/protocol';
   import Dialog from './Dialog.svelte';
-  import { Globe, Terminal } from '../lib/icons';
+  import { Globe, Link, Terminal } from '../lib/icons';
 
-  let tab = $state<'ssh' | 'direct'>('ssh');
+  let tab = $state<'link' | 'ssh' | 'direct'>('link');
+  let link = $state('');
   let name = $state('');
   let target = $state('');
   let sshPort = $state('');
@@ -16,13 +17,51 @@
   let token = $state('');
   let busy = $state(false);
 
-  const valid = $derived(tab === 'ssh' ? /^[^\s@]+@[^\s@]+$|^[^\s@]+$/.test(target.trim()) : /^wss?:\/\/./.test(url.trim()) && !!token.trim());
+  /**
+   * A connect link as `coocoo pair` and Settings show it (`http://host:7421/#token=…`): the
+   * daemon's WebSocket URL and token. A path before the hash (a reverse proxy) is kept.
+   */
+  function parseLink(text: string): { url: string; token: string; loopback: boolean } | undefined {
+    try {
+      const u = new URL(text.trim());
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return undefined;
+      const t = /(?:^#|[#&?])token=([^&]+)/.exec(u.hash)?.[1] ?? u.searchParams.get('token');
+      if (!t) return undefined;
+      const path = u.pathname.replace(/\/+$/, '');
+      return {
+        url: `${u.protocol === 'https:' ? 'wss' : 'ws'}://${u.host}${path}/ws`,
+        token: decodeURIComponent(t),
+        loopback: /^(127\.|localhost$|\[::1\]$)/.test(u.hostname),
+      };
+    } catch {
+      return undefined;
+    }
+  }
+  const parsed = $derived(parseLink(link));
+
+  /** A connect link pasted into the Direct URL field fills URL and token. */
+  function splitDirect(e: ClipboardEvent) {
+    const p = parseLink(e.clipboardData?.getData('text') ?? '');
+    if (!p) return;
+    e.preventDefault();
+    [url, token] = [p.url, p.token];
+  }
+
+  const valid = $derived(
+    tab === 'link'
+      ? !!parsed && !parsed.loopback
+      : tab === 'ssh'
+        ? /^[^\s@]+@[^\s@]+$|^[^\s@]+$/.test(target.trim())
+        : /^wss?:\/\/./.test(url.trim()) && !!token.trim(),
+  );
 
   async function add(e: SubmitEvent) {
     e.preventDefault();
     if (!valid || busy) return;
     const params: AddHostParams =
-      tab === 'ssh'
+      tab === 'link'
+        ? { kind: 'direct', url: parsed!.url, token: parsed!.token, name: name.trim() || undefined }
+        : tab === 'ssh'
         ? {
             kind: 'ssh',
             target: target.trim(),
@@ -50,11 +89,26 @@
 
 <Dialog title="Add host" width={500} onclose={() => (ui.dialog = null)}>
   <div class="tabs" role="tablist">
+    <button role="tab" class:on={tab === 'link'} aria-selected={tab === 'link'} onclick={() => (tab = 'link')}><Link size={14} /> Link</button>
     <button role="tab" class:on={tab === 'ssh'} aria-selected={tab === 'ssh'} onclick={() => (tab = 'ssh')}><Terminal size={14} /> SSH</button>
     <button role="tab" class:on={tab === 'direct'} aria-selected={tab === 'direct'} onclick={() => (tab = 'direct')}><Globe size={14} /> Direct URL</button>
   </div>
   <form id="add-host" class="form" onsubmit={add}>
-    {#if tab === 'ssh'}
+    {#if tab === 'link'}
+      <p class="hint">Paste the connect link of the other machine: run <code>coocoo pair</code> there, or copy it under <em>Hosts &amp; Settings</em> in its Coocoo.</p>
+      <label class="field">
+        <span>Connect link</span>
+        <!-- svelte-ignore a11y_autofocus -->
+        <input class="input mono" bind:value={link} placeholder="http://192.168.1.20:7421/#token=…" spellcheck="false" autocomplete="off" autofocus />
+      </label>
+      {#if link.trim() && !parsed}
+        <span class="msg err">Not a connect link: it looks like <code>http://host:port/#token=…</code>.</span>
+      {:else if parsed?.loopback}
+        <span class="msg err">This link only works on that machine itself. Run <code>coocoo pair</code> there for its LAN address.</span>
+      {:else if parsed}
+        <span class="msg faint">Connects to <code>{parsed.url}</code></span>
+      {/if}
+    {:else if tab === 'ssh'}
       <p class="hint">The home daemon opens an SSH tunnel to the remote daemon using your OpenSSH config and agent. Coocoo can install and start <code>coocoo serve</code> on the remote machine.</p>
       <label class="field">
         <span>SSH target</span>
@@ -75,7 +129,7 @@
       <label class="field">
         <span>Daemon URL</span>
         <!-- svelte-ignore a11y_autofocus -->
-        <input class="input mono" bind:value={url} placeholder="ws://10.0.0.42:7421/ws" spellcheck="false" autocomplete="off" autofocus />
+        <input class="input mono" bind:value={url} onpaste={splitDirect} placeholder="ws://10.0.0.42:7421/ws" spellcheck="false" autocomplete="off" autofocus />
       </label>
       <label class="field">
         <span>Token</span>
@@ -131,6 +185,14 @@
     margin: 0;
     font-size: var(--fs-sm);
     line-height: 1.5;
+  }
+  .msg {
+    margin-top: -6px;
+    font-size: var(--fs-xs);
+    overflow-wrap: anywhere;
+  }
+  .msg.err {
+    color: var(--red);
   }
   .row3 {
     display: grid;

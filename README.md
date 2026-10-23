@@ -59,11 +59,13 @@ coocoo status | token | version
 ```
 
 **Add a server to your desktop:** open *Hosts & Settings → Add host*.
+- **Link** (default): paste the server's connect link (`http://host:7421/#token=…`) from
+  `coocoo pair` on it or from *Hosts & Settings* in its UI; Coocoo connects directly to it.
 - **SSH:** enter `user@server`. Coocoo opens `ssh -N -L …` with your existing keys, fetches the
   token with `coocoo token`, and keeps the tunnel alive. Tick *install* to copy the binary to
   `~/.local/bin/coocoo` and start it as a systemd user service (or with `nohup` when systemd isn't
   available).
-- **Direct:** paste the server's pairing link (`http://host:7421/#token=…`) or its URL and token.
+- **Direct URL:** the server's WebSocket URL and token (pasting a connect link fills both).
 
 **Phone:** open the pairing link from `coocoo pair` (on your LAN or tailnet). It serves the same
 UI as the desktop app.
