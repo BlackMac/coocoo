@@ -21,16 +21,16 @@ return [
 
     // Used when GitHub is unreachable and nothing is cached yet. Update on each release.
     'fallback_release' => [
-        'tag' => 'v0.1.2',
-        'name' => 'Coocoo v0.1.2',
-        'published_at' => '2026-10-23T08:26:12Z',
-        'html_url' => 'https://github.com/BlackMac/coocoo/releases/tag/v0.1.2',
+        'tag' => 'v0.3.0',
+        'name' => 'Coocoo v0.3.0',
+        'published_at' => '2026-10-23T21:56:38Z',
+        'html_url' => 'https://github.com/BlackMac/coocoo/releases/tag/v0.3.0',
         'body_html' => '',
         'assets' => [
-            ['name' => 'Coocoo_0.1.2_universal.dmg', 'url' => 'https://github.com/BlackMac/coocoo/releases/download/v0.1.2/Coocoo_0.1.2_universal.dmg', 'size' => 0],
-            ['name' => 'Coocoo_0.1.2_x64-setup.exe', 'url' => 'https://github.com/BlackMac/coocoo/releases/download/v0.1.2/Coocoo_0.1.2_x64-setup.exe', 'size' => 0],
-            ['name' => 'Coocoo_0.1.2_amd64.AppImage', 'url' => 'https://github.com/BlackMac/coocoo/releases/download/v0.1.2/Coocoo_0.1.2_amd64.AppImage', 'size' => 0],
-            ['name' => 'Coocoo_0.1.2_amd64.deb', 'url' => 'https://github.com/BlackMac/coocoo/releases/download/v0.1.2/Coocoo_0.1.2_amd64.deb', 'size' => 0],
+            ['name' => 'Coocoo_0.3.0_universal.dmg', 'url' => 'https://github.com/BlackMac/coocoo/releases/download/v0.3.0/Coocoo_0.3.0_universal.dmg', 'size' => 0],
+            ['name' => 'Coocoo_0.3.0_x64-setup.exe', 'url' => 'https://github.com/BlackMac/coocoo/releases/download/v0.3.0/Coocoo_0.3.0_x64-setup.exe', 'size' => 0],
+            ['name' => 'Coocoo_0.3.0_amd64.AppImage', 'url' => 'https://github.com/BlackMac/coocoo/releases/download/v0.3.0/Coocoo_0.3.0_amd64.AppImage', 'size' => 0],
+            ['name' => 'Coocoo_0.3.0_amd64.deb', 'url' => 'https://github.com/BlackMac/coocoo/releases/download/v0.3.0/Coocoo_0.3.0_amd64.deb', 'size' => 0],
         ],
     ],
 
