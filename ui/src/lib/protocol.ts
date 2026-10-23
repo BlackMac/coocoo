@@ -147,6 +147,53 @@ export interface GitInfo {
   worktrees: Worktree[];
   /** Newest `FETCH_HEAD` mtime (ms) over all worktrees: how current `ahead`/`behind` are. */
   fetchedAt?: number;
+  /** Default remote for pushes of branches without upstream: `origin`, else the only remote. Absent when the repo has no (unambiguous) remote. */
+  remote?: string;
+  /** Present when that default remote's URL points to github.com. */
+  github?: GithubInfo;
+}
+
+export interface GithubInfo {
+  /** `owner/name`. */
+  repo: string;
+  /** Remote name, e.g. `origin`. */
+  remote: string;
+  /** `unknown` until the first PR call (`git.prStatus` etc.) on this daemon. */
+  gh: 'unknown' | 'ready' | 'missing' | 'loggedOut';
+  /** Allowed by the repo; `[]` until known. */
+  mergeMethods: MergeMethod[];
+  deleteBranchOnMerge: boolean;
+}
+
+export type MergeMethod = 'squash' | 'merge' | 'rebase';
+
+export interface PullRequestInfo {
+  number: number;
+  url: string;
+  title: string;
+  state: 'open' | 'closed' | 'merged';
+  draft: boolean;
+  /** Base branch name. */
+  base: string;
+  checks: PrChecks;
+  review?: 'approved' | 'changesRequested' | 'reviewRequired';
+  /** GitHub mergeStateStatus verbatim: CLEAN, HAS_HOOKS, UNSTABLE, BLOCKED, BEHIND, DIRTY, DRAFT, UNKNOWN. Mergeable only when CLEAN or HAS_HOOKS. */
+  mergeState: string;
+  /** Unix ms. */
+  fetchedAt: number;
+}
+
+export interface PrChecks {
+  total: number;
+  passed: number;
+  failed: number;
+  pending: number;
+  failing: PrCheck[];
+}
+
+export interface PrCheck {
+  name: string;
+  url?: string;
 }
 
 export interface CommitInfo {
@@ -172,6 +219,10 @@ export interface Worktree {
   /** Unmerged paths. */
   conflicts: number;
   operation?: GitOperation;
+  /** The branch's pull request (open one preferred over closed/merged), from the daemon's cache. */
+  pullRequest?: PullRequestInfo;
+  /** When the PR status of this branch was last fetched (Unix ms); absent = never. Also set when no PR exists. */
+  prCheckedAt?: number;
 }
 
 export type GitOperation = 'merge' | 'rebase' | 'cherryPick' | 'revert' | 'bisect';
@@ -357,7 +408,11 @@ export interface TodoPhase {
 export interface Board {
   cards: Card[];
   sources: BoardSource[];
+  /** What `kanban_done` does beyond committing. */
+  doneAction: DoneAction;
 }
+
+export type DoneAction = 'commit' | 'push' | 'pullRequest';
 
 export type CardColumn = 'inbox' | 'todo' | 'doing' | 'done';
 
@@ -391,6 +446,10 @@ export interface Card {
   images?: Attachment[];
   /** The latest refinement, handed to the agent that implements the card. */
   refinement?: Refinement;
+  /** The pull request opened for it when it was done. */
+  pullRequest?: { number: number; url: string };
+  /** Why push / PR creation after `kanban_done` failed; cleared by a successful `boards.cardPublish`. */
+  gitError?: string;
 }
 
 export interface Refinement {
@@ -694,6 +753,13 @@ export interface Methods {
   'git.merge': [{ projectId: string; branch: string }, { ok: boolean; output: string }];
   'git.fetch': [{ projectId: string }, { ok: boolean; output: string }];
   'git.fastForward': [{ projectId: string; path: string }, { ok: boolean; output: string }];
+  /** `rejected`: non-fast-forward. Never forces; without upstream pushes with `-u`. */
+  'git.push': [{ projectId: string; path: string }, { ok: boolean; output: string; rejected: boolean }];
+  /** Commits a `git.push` would send, newest first (≤ 200). */
+  'git.outgoing': [{ projectId: string; path: string }, CommitInfo[]];
+  'git.prCreate': [{ projectId: string; path: string; title: string; body: string; draft?: boolean; base?: string }, PullRequestInfo];
+  'git.prStatus': [{ projectId: string; path: string }, PullRequestInfo | null];
+  'git.prMerge': [{ projectId: string; path: string; method: MergeMethod; deleteBranch: boolean }, { ok: boolean; output: string }];
   'git.worktreeCreate': [{ projectId: string; branch?: string; base?: string }, WorktreeRef];
   'git.worktreeRemove': [{ projectId: string; path: string; deleteBranch?: boolean }, Ok];
   'fs.list': [{ path?: string }, { path: string; parent?: string; entries: FsEntry[] }];
@@ -735,7 +801,13 @@ export interface Methods {
   'boards.cardRefine': [{ projectId: string; cardId: string; agentId?: string; worktree?: boolean; model?: string }, Card];
   'boards.attachment': [{ projectId: string; cardId: string; name: string }, { mime: string; data: string }];
   'boards.cardImage': [{ projectId: string; cardId: string; name: string }, { mime: string; data: string }];
-  'boards.cardDone': [{ projectId: string; cardId: string; agentId?: string; commitMessage?: string; note?: string }, { card: Card; commit?: CommitInfo; commitSkipped?: string }];
+  'boards.cardDone': [
+    { projectId: string; cardId: string; agentId?: string; commitMessage?: string; note?: string; prTitle?: string; prBody?: string },
+    { card: Card; commit?: CommitInfo; commitSkipped?: string; pushed?: boolean; pullRequest?: { number: number; url: string }; gitError?: string },
+  ];
+  'boards.update': [{ projectId: string; doneAction: DoneAction }, Board];
+  /** Retries push (+ PR) for a done card. */
+  'boards.cardPublish': [{ projectId: string; cardId: string }, { card: Card; pushed: boolean; pullRequest?: { number: number; url: string }; error?: string }];
   'boards.sourceAdd': [
     { projectId: string; kind: SourceKind; target?: string; name?: string; script?: string; intervalMins?: number; agentId?: string },
     SourceRun,

@@ -348,6 +348,91 @@ async fn upstream_base_fetch_and_fast_forward() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn push_and_outgoing_against_a_bare_remote() {
+    let e = env();
+    let seed = e.root.join("seed");
+    init_repo(&seed, true);
+    let bare = e.root.join("up.git");
+    git(&e.root, &["clone", "-q", "--bare", seed.to_str().unwrap(), bare.to_str().unwrap()]);
+    let repo = e.root.join("repo");
+    git(&e.root, &["clone", "-q", bare.to_str().unwrap(), repo.to_str().unwrap()]);
+    for (k, v) in [("user.name", "Test"), ("user.email", "test@example.com"), ("commit.gpgsign", "false")] {
+        git(&repo, &["config", k, v]);
+    }
+    let project: Project = call(&e.ws, "projects.add", json!({ "path": repo })).await;
+    let info = project.git.clone().unwrap();
+    assert_eq!(info.remote.as_deref(), Some("origin"));
+    assert!(info.github.is_none(), "a local remote is not on GitHub");
+
+    // A new worktree branch: what goes out are the commits no remote branch has.
+    let wt: WorktreeRef = call(&e.ws, "git.worktreeCreate", json!({ "projectId": project.id })).await;
+    let wt_path = PathBuf::from(&wt.path);
+    commit_file(&wt_path, "f1.txt", "1\n", "feature one");
+    commit_file(&wt_path, "f2.txt", "2\n", "feature two");
+    std::fs::create_dir_all(wt_path.join("sub")).unwrap();
+    let at = json!({ "projectId": project.id, "path": wt_path.join("sub") });
+    let out: Vec<coocoo_proto::CommitInfo> = call(&e.ws, "git.outgoing", at.clone()).await;
+    assert_eq!(out.iter().map(|c| c.summary.as_str()).collect::<Vec<_>>(), ["feature two", "feature one"]);
+
+    // First push creates the remote branch and sets the upstream.
+    let pushed: Value = call(&e.ws, "git.push", at.clone()).await;
+    assert_eq!((pushed["ok"].as_bool(), pushed["rejected"].as_bool()), (Some(true), Some(false)), "{pushed}");
+    assert_eq!(git(&bare, &["rev-parse", &format!("refs/heads/{}", wt.branch)]), git(&wt_path, &["rev-parse", "HEAD"]));
+    let p: Project = call(&e.ws, "projects.get", json!({ "id": project.id })).await;
+    let linked = p.git.unwrap().worktrees.into_iter().find(|w| w.path == wt.path).unwrap();
+    assert_eq!(linked.upstream, Some(format!("origin/{}", wt.branch)));
+    assert_eq!(linked.ahead, 0);
+    let out: Vec<coocoo_proto::CommitInfo> = call(&e.ws, "git.outgoing", at.clone()).await;
+    assert!(out.is_empty());
+
+    // Second push after a new commit goes to the upstream.
+    commit_file(&wt_path, "f3.txt", "3\n", "feature three");
+    let out: Vec<coocoo_proto::CommitInfo> = call(&e.ws, "git.outgoing", at.clone()).await;
+    assert_eq!(out.iter().map(|c| c.summary.as_str()).collect::<Vec<_>>(), ["feature three"]);
+    let pushed: Value = call(&e.ws, "git.push", at.clone()).await;
+    assert_eq!(pushed["ok"], true, "{pushed}");
+    assert_eq!(git(&bare, &["rev-parse", &format!("refs/heads/{}", wt.branch)]), git(&wt_path, &["rev-parse", "HEAD"]));
+
+    // Someone else pushed to the branch: our push is rejected, never forced.
+    let other = e.root.join("other");
+    git(&e.root, &["clone", "-q", "-b", &wt.branch, bare.to_str().unwrap(), other.to_str().unwrap()]);
+    for (k, v) in [("user.name", "Other"), ("user.email", "o@example.com"), ("commit.gpgsign", "false")] {
+        git(&other, &["config", k, v]);
+    }
+    commit_file(&other, "o.txt", "o\n", "other side");
+    git(&other, &["push", "-q"]);
+    let remote_head = git(&bare, &["rev-parse", &format!("refs/heads/{}", wt.branch)]);
+    commit_file(&wt_path, "f4.txt", "4\n", "feature four");
+    let pushed: Value = call(&e.ws, "git.push", at.clone()).await;
+    assert_eq!((pushed["ok"].as_bool(), pushed["rejected"].as_bool()), (Some(false), Some(true)), "{pushed}");
+    assert_eq!(git(&bare, &["rev-parse", &format!("refs/heads/{}", wt.branch)]), remote_head);
+
+    // The project checkout pushes its own branch to its upstream.
+    commit_file(&repo, "m.txt", "m\n", "main work");
+    let main_at = json!({ "projectId": project.id, "path": repo });
+    let out: Vec<coocoo_proto::CommitInfo> = call(&e.ws, "git.outgoing", main_at.clone()).await;
+    assert_eq!(out.len(), 1);
+    let pushed: Value = call(&e.ws, "git.push", main_at.clone()).await;
+    assert_eq!(pushed["ok"], true, "{pushed}");
+    assert_eq!(git(&bare, &["rev-parse", "refs/heads/main"]), git(&repo, &["rev-parse", "HEAD"]));
+
+    // Detached HEAD cannot be pushed.
+    git(&wt_path, &["checkout", "-q", "--detach"]);
+    let err = e.ws.dispatch("git.push", at.clone()).await.unwrap_err();
+    assert_eq!(err.code, "conflict");
+    assert!(err.message.contains("detached"), "{}", err.message);
+
+    // Without any remote there is nothing to push to.
+    let lonely = e.root.join("lonely");
+    init_repo(&lonely, true);
+    let solo: Project = call(&e.ws, "projects.add", json!({ "path": lonely })).await;
+    assert_eq!(solo.git.as_ref().unwrap().remote, None);
+    let err = e.ws.dispatch("git.push", json!({ "projectId": solo.id, "path": lonely })).await.unwrap_err();
+    assert_eq!(err.code, "conflict");
+    assert!(err.message.contains("no remote"), "{}", err.message);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn fs_list_orders_and_hides() {
     let e = env();
     let dir = e.root.join("browse");

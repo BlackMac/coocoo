@@ -63,5 +63,5 @@ driven by the official Rust client (vendored in `crates/omp-rpc`):
 | Agents | omp processes hibernate after inactivity; timelines live on disk (JSONL), memory holds summaries |
 | Event fan-out | Each event is serialized once into `Arc<str>` and shared by all connections; bounded queues; slow clients get `system.resync` instead of unbounded buffers |
 | Browser | One Chromium per project, headless; screencast only while a client watches, fps-capped, JPEG passed through without re-encoding; lossy queue for frames |
-| git | `git` CLI with `GIT_OPTIONAL_LOCKS=0`; no libgit2; diffs size-capped |
+| git | `git` CLI with `GIT_OPTIONAL_LOCKS=0`; no libgit2; diffs size-capped. GitHub pull requests through the `gh` CLI; their status is network, so it is looked up only after a push/PR action or fetch and when a client opens the git popover (cached, ≥ 60 s apart), never on watcher refreshes |
 | UI | Svelte 5, no UI framework, lazy-loaded heavy views, tail-rendered transcripts |

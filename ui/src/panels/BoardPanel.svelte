@@ -5,12 +5,13 @@
   import { ui } from '../lib/ui.svelte';
   import { href } from '../lib/router.svelte';
   import { agentState } from '../lib/status';
-  import { IMPORT_INTERVALS, type AgentSummary, type BoardSource, type Card, type CardColumn } from '../lib/protocol';
+  import { IMPORT_INTERVALS, type AgentSummary, type BoardSource, type Card, type CardColumn, type DoneAction, type PullRequestInfo } from '../lib/protocol';
   import { ArrowUp, ExternalLink, FileCode, Image, NotebookPen, GitCommitHorizontal, Inbox, Plus, RotateCw, Rss, ShieldCheck, ShieldOff, Terminal, Trash2, Webhook, X } from '../lib/icons';
   import StartCard from '../agent/StartCard.svelte';
   import RefinementView from '../agent/RefinementView.svelte';
   import CardFields, { type EditImage } from './CardFields.svelte';
   import StatusDot from '../components/StatusDot.svelte';
+  import PrBadge from '../components/PrBadge.svelte';
 
   // A project's Kanban board: inbox (from sources) → todo → doing → done. Cards move by drag and
   // drop or by the actions of an opened card; starting one hands it to an agent, which is then
@@ -47,6 +48,30 @@
       ui.error(label, err);
       return undefined;
     }
+  }
+
+  // ─── Publishing done cards (push / pull request) ───────────────────────────────────────────
+  /** Live PR status from the project's worktrees, by number: colours a done card's PR badge. */
+  const livePrs = $derived(
+    new Map<number, PullRequestInfo>(
+      (fleet.project(host, projectId)?.git?.worktrees ?? []).flatMap((w) => (w.pullRequest ? [[w.pullRequest.number, w.pullRequest]] : [])),
+    ),
+  );
+
+  /** Which step failed, from the error text: PR creation errors come from `gh`. */
+  const gitErrorLabel = (err: string) => (/pull request|\bPR\b|\bgh\b/i.test(err) ? 'PR failed' : 'push failed');
+
+  let publishing = $state<Record<string, boolean>>({});
+  async function publish(card: Card) {
+    if (publishing[card.id]) return;
+    publishing[card.id] = true;
+    const r = await run('Retry failed', () => fleet.call('boards.cardPublish', { projectId, cardId: card.id }, host, 120_000));
+    delete publishing[card.id];
+    if (!r) return;
+    if (r.error) ui.toast('error', `${gitErrorLabel(r.error)}: ${card.title}`, r.error);
+    else if (r.pullRequest) ui.toast('success', `Opened pull request #${r.pullRequest.number}`, card.title);
+    else if (r.pushed) ui.toast('success', 'Pushed', card.title);
+    else ui.toast('info', 'Nothing to publish', card.title);
   }
 
   // ─── Cards ─────────────────────────────────────────────────────────────────────────────────
@@ -241,6 +266,20 @@
   {:else if !board}
     <div class="empty"><span class="spinner"></span></div>
   {:else}
+    <div class="bset">
+      <label for="done-action-{projectId}">When a card is done:</label>
+      <select
+        id="done-action-{projectId}"
+        class="select mini"
+        value={board.doneAction ?? 'commit'}
+        onchange={(e) => run('Could not change what happens when a card is done', () => fleet.call('boards.update', { projectId, doneAction: e.currentTarget.value as DoneAction }, host))}
+      >
+        <option value="commit">Commit</option>
+        <option value="push">Commit + push</option>
+        <option value="pullRequest">Commit + push + pull request</option>
+      </select>
+      {#if board.doneAction === 'pullRequest'}<span class="faint">PR only for worktree agents</span>{/if}
+    </div>
     <div class="cols" class:dragging={!!dragId}>
       {#each COLUMNS as col (col.id)}
         {@const cards = byColumn[col.id]}
@@ -305,7 +344,7 @@
                     <StartCard {host} {projectId} {card} {agent} primary offerRefine />
                   {/if}
                 </div>
-                {#if !open && (card.agentId || card.source || card.commit || card.note || card.startUrl || card.doneUrl || card.refinement || card.refining || card.images?.length || card.addedBy)}
+                {#if !open && (card.agentId || card.source || card.commit || card.note || card.startUrl || card.doneUrl || card.refinement || card.refining || card.images?.length || card.addedBy || card.pullRequest || card.gitError)}
                   <div class="sub faint">
                     {#if card.refining || card.refinement}
                       <span class="refb" class:on={card.refining} title={card.refining ? 'An agent is refining it' : 'Has a refinement; open the card to read it'}>
@@ -315,6 +354,8 @@
                     {#if card.images?.length}<span class="imgc" title="{card.images.length} image{card.images.length === 1 ? '' : 's'}"><Image size={11} />{card.images.length}</span>{/if}
                     {#if card.agentId}{@render agentChip(card)}{/if}
                     {#if card.commit}<span class="mono"><GitCommitHorizontal size={11} />{card.commit.sha.slice(0, 7)}</span>{/if}
+                    {#if card.pullRequest}{@render prBadge(card.pullRequest)}{/if}
+                    {#if card.gitError}{@render gitError(card)}{/if}
                     {#if card.startUrl || card.doneUrl}<span class="hooks" class:err={!!card.hookError} title={card.hookError ?? 'Webhooks on start/done'}><Webhook size={11} /></span>{/if}
                     {#if card.note}<span class="ellipsis">{card.note}</span>{:else if card.source}<span class="ellipsis">{sourceName(card.source)}</span>{:else if card.addedBy && !card.agentId}<span class="by">by {@render agentLink(card.addedBy.id, card.addedBy.title)}</span>{/if}
                   </div>
@@ -335,11 +376,18 @@
                       oncancel={() => (openId = null)}
                     />
                     {#if card.hookError}<div class="herr">{card.hookError}</div>{/if}
+                    {#if card.gitError}<div class="herr">{card.gitError}</div>{/if}
                     {#if card.agentId}<div class="faint">{col.id === 'done' ? 'Done by' : card.refining ? 'Being refined by' : 'Agent:'} {@render agentChip(card)}</div>{/if}
                     {#if card.refinement}<RefinementView {host} {projectId} {card} clamp />{/if}
                     {#if card.url}<a class="link" href={card.url} target="_blank" rel="noopener noreferrer"><ExternalLink size={11} />{card.url}</a>{/if}
                     {#if card.note}<div class="note"><span class="faint">Note:</span> {card.note}</div>{/if}
                     {#if card.commit}<div class="faint mono">{card.commit.sha.slice(0, 7)} {card.commit.summary}</div>{/if}
+                    {#if card.pullRequest || card.gitError}
+                      <div class="pubrow">
+                        {#if card.pullRequest}{@render prBadge(card.pullRequest)}{/if}
+                        {#if card.gitError}{@render gitError(card)}{/if}
+                      </div>
+                    {/if}
                     <div class="faint meta">Added {ago(card.createdAt, now.value)} ago{card.source ? ` from ${sourceName(card.source) ?? 'a removed source'}` : ''}{#if card.addedBy}&nbsp;by {@render agentLink(card.addedBy.id, card.addedBy.title)}{/if}{saving && progress ? ` · ${progress}` : ''}</div>
                     <div class="acts">
                       <button class="btn primary sm" disabled={saving} onclick={() => save(card)}>{#if saving}<span class="spinner"></span>{/if}Save</button>
@@ -430,6 +478,17 @@
 <!-- The agent a card was handed to: live status and title, or the remembered title once deleted. -->
 {#snippet agentChip(card: Card)}
   {@render agentLink(card.agentId!, card.agentTitle)}
+{/snippet}
+
+<!-- A done card's pull request, coloured by the live status of its worktree's PR when known. -->
+{#snippet prBadge(pr: { number: number; url: string })}
+  <PrBadge pr={livePrs.get(pr.number)} number={pr.number} url={pr.url} prefix="PR " />
+{/snippet}
+
+<!-- Push / PR creation after kanban_done failed: what failed, the error as tooltip, and Retry. -->
+{#snippet gitError(card: Card)}
+  <span class="gerr" title={card.gitError}>{gitErrorLabel(card.gitError ?? '')}</span>
+  <button class="retry" disabled={publishing[card.id]} onclick={() => publish(card)}>{publishing[card.id] ? 'Retrying…' : 'Retry'}</button>
 {/snippet}
 
 {#snippet agentLink(id: string, title?: string)}
@@ -651,6 +710,51 @@
   }
   .hooks.err {
     color: var(--red);
+  }
+  .gerr {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    height: 16px;
+    padding: 0 6px;
+    border-radius: 99px;
+    background: var(--red-soft);
+    color: var(--red);
+    font-family: var(--mono);
+    font-size: 10.5px;
+    font-weight: 600;
+  }
+  .retry {
+    flex: none;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--accent-text);
+    font-size: var(--fs-xs);
+    cursor: pointer;
+  }
+  .retry:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+  .pubrow {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .bset {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 8px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-2);
+    font-size: var(--fs-sm);
+  }
+  .bset .faint {
+    margin-left: auto;
+    font-size: var(--fs-xs);
   }
   .herr {
     color: var(--red);

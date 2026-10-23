@@ -12,6 +12,7 @@
   import AddHostDialog from './components/AddHostDialog.svelte';
   import AddProjectDialog from './components/AddProjectDialog.svelte';
   import ConfirmDialog from './components/ConfirmDialog.svelte';
+  import PushDialog from './components/PushDialog.svelte';
   import SubagentDialog from './components/SubagentDialog.svelte';
   import Overview from './views/Overview.svelte';
   import ProjectView from './views/ProjectView.svelte';
@@ -127,6 +128,8 @@
     <SubagentDialog hostId={ui.dialog.hostId} agentId={ui.dialog.agentId} subagentId={ui.dialog.subagentId} sessionFile={ui.dialog.sessionFile} />
   {:else if ui.dialog?.kind === 'confirm'}
     <ConfirmDialog dialog={ui.dialog} />
+  {:else if ui.dialog?.kind === 'push'}
+    <PushDialog dialog={ui.dialog} />
   {/if}
 {/if}
 <Toasts />

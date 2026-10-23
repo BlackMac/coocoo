@@ -231,6 +231,123 @@ pub struct GitInfo {
     /// upstream counts are. `None` when the repository was never fetched.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fetched_at: Option<i64>,
+    /// Default remote for pushing a branch without upstream: `origin`, else the only remote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
+    /// Present when that remote points to github.com.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github: Option<GithubInfo>,
+}
+
+/// The GitHub repository behind the project's default remote, and what `gh` can do with it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubInfo {
+    /// `owner/name`.
+    pub repo: String,
+    /// Remote name, e.g. `origin`.
+    pub remote: String,
+    pub gh: GhState,
+    /// Merge methods the repository allows; empty until known.
+    #[serde(default)]
+    pub merge_methods: Vec<MergeMethod>,
+    #[serde(default)]
+    pub delete_branch_on_merge: bool,
+}
+
+/// Whether the `gh` CLI can be used on this host; `Unknown` until the first pull request call.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GhState {
+    #[default]
+    Unknown,
+    Ready,
+    Missing,
+    LoggedOut,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MergeMethod {
+    Squash,
+    Merge,
+    Rebase,
+}
+
+impl MergeMethod {
+    /// The `gh pr merge` flag.
+    pub fn flag(self) -> &'static str {
+        match self {
+            MergeMethod::Squash => "--squash",
+            MergeMethod::Merge => "--merge",
+            MergeMethod::Rebase => "--rebase",
+        }
+    }
+}
+
+/// A branch's pull request on GitHub, as of `fetched_at`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PullRequestInfo {
+    pub number: u64,
+    pub url: String,
+    pub title: String,
+    pub state: PrState,
+    pub draft: bool,
+    /// Base branch name.
+    pub base: String,
+    pub checks: PrChecks,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<PrReview>,
+    /// GitHub's `mergeStateStatus` verbatim (`CLEAN`, `HAS_HOOKS`, `UNSTABLE`, `BLOCKED`,
+    /// `BEHIND`, `DIRTY`, `DRAFT`, `UNKNOWN`); mergeable when `CLEAN` or `HAS_HOOKS`.
+    pub merge_state: String,
+    /// Unix ms.
+    pub fetched_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PrState {
+    Open,
+    Closed,
+    Merged,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PrReview {
+    Approved,
+    ChangesRequested,
+    ReviewRequired,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrChecks {
+    pub total: u32,
+    pub passed: u32,
+    pub failed: u32,
+    pub pending: u32,
+    /// The failed checks, with their details page.
+    #[serde(default)]
+    pub failing: Vec<PrCheck>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrCheck {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+/// A pull request as remembered on a card.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PullRequestRef {
+    pub number: u64,
+    pub url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -272,6 +389,13 @@ pub struct Worktree {
     /// Operation in progress in this worktree.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation: Option<GitOperation>,
+    /// The branch's pull request (an open one before closed or merged ones), from the daemon's
+    /// cache: refreshed after push, PR actions, fetch and `git.prStatus`, never in the background.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pull_request: Option<PullRequestInfo>,
+    /// When the branch's pull request was last looked up (Unix ms), also when it has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_checked_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -636,6 +760,22 @@ pub struct Board {
     /// External sources whose new entries land in the inbox.
     #[serde(default)]
     pub sources: Vec<BoardSource>,
+    /// What `kanban_done` does after the commit.
+    #[serde(default)]
+    pub done_action: DoneAction,
+}
+
+/// What finishing a card (`kanban_done`) does besides moving it to done.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DoneAction {
+    /// Commit the agent's directory.
+    #[default]
+    Commit,
+    /// Commit, then push the branch.
+    Push,
+    /// Commit, push and open a pull request (worktree agents; others only push).
+    PullRequest,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -698,6 +838,13 @@ pub struct Card {
     /// implements the card.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refinement: Option<Refinement>,
+    /// Pull request opened when the card was finished (`DoneAction::PullRequest`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pull_request: Option<PullRequestRef>,
+    /// Why the push or pull request after finishing the card failed; cleared by a successful
+    /// `boards.cardPublish`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_error: Option<String>,
 }
 
 /// An agent as remembered on a card: its title at the time, for when it has been deleted since.

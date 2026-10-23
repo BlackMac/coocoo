@@ -299,7 +299,11 @@ impl Agents {
     /// Spawn the process. Caller holds `agent.lifecycle`.
     async fn spawn_locked(self: &Arc<Self>, agent: &Arc<Agent>) -> ApiResult<Arc<Client>> {
         let orchestrator = self.orch()?;
-        let profile = agent.state.lock().summary.project_id.clone().unwrap_or_else(|| "default".to_owned());
+        let project_id = agent.state.lock().summary.project_id.clone();
+        // Told to the agent in the `kanban_done` description.
+        let done_action =
+            project_id.as_deref().and_then(|pid| self.edit_board(pid, |b| Ok((b.done_action, false))).ok()).unwrap_or_default();
+        let profile = project_id.unwrap_or_else(|| "default".to_owned());
         let cdp_url = match cdp_endpoint(orchestrator.as_ref(), &profile).await {
             Ok(url) => url,
             Err(message) => return Err(self.spawn_failed(agent, message).await),
@@ -320,7 +324,7 @@ impl Agents {
                 cdp_url,
                 agent_id: agent.id.clone(),
                 host_id: self.host_id().to_owned(),
-                tools: crate::tools::host_tools(self, &agent.id, orchestrator.clone()),
+                tools: crate::tools::host_tools(self, &agent.id, orchestrator.clone(), done_action),
             }
         };
         self.changed(agent);
