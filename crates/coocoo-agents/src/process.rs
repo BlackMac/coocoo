@@ -708,6 +708,15 @@ impl Sink for LiveSink<'_> {
                     agents.changed(agent);
                 }
             }
+            Effect::Title(title) => {
+                if self.update(|st| {
+                    let changed = st.summary.title != title;
+                    st.summary.title = title;
+                    changed
+                }) {
+                    agents.changed(agent);
+                }
+            }
             Effect::Commands(commands) => {
                 if self.update(|st| {
                     st.commands = Some(commands.clone());

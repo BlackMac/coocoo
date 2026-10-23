@@ -33,7 +33,7 @@ fn has_running(item: &TimelineItem) -> bool {
 
 /// omp's catalog in Coocoo's wire shape.
 pub(crate) fn slash_commands(commands: Vec<AvailableSlashCommand>) -> Vec<SlashCommand> {
-    commands
+    let commands = commands
         .into_iter()
         .map(|c| SlashCommand {
             name: c.name,
@@ -48,7 +48,8 @@ pub(crate) fn slash_commands(commands: Vec<AvailableSlashCommand>) -> Vec<SlashC
                 .map(|s| SlashSubcommand { name: s.name, description: s.description, usage: s.usage })
                 .collect(),
         })
-        .collect()
+        .collect();
+    crate::slash::filter(commands)
 }
 
 /// Text without ANSI escape sequences (omp formats command output for a terminal).
@@ -114,6 +115,8 @@ pub(crate) enum Effect {
     TodosCleared,
     /// omp's slash-command catalog (`available_commands_update`).
     Commands(Vec<SlashCommand>),
+    /// `/rename` changed the session title (`session_info_update`).
+    Title(String),
 }
 
 /// Tests compare effects structurally; `TimelineItem` itself has no `PartialEq`.
@@ -293,6 +296,11 @@ impl Mapper {
             }
             // `/switch`, `/effort`… changed the model or thinking level.
             RpcNotification::ConfigUpdate(_) => sink.effect(Effect::Refresh),
+            RpcNotification::SessionInfoUpdate(info) => {
+                if let Some(title) = info.title.map(|t| t.trim().to_owned()).filter(|t| !t.is_empty()) {
+                    sink.effect(Effect::Title(title));
+                }
+            }
             RpcNotification::RpcFrameError(err) => {
                 tracing::warn!(error = %err.error, original = ?err.original_type, "omp dropped an oversized frame");
             }

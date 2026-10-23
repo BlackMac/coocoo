@@ -384,6 +384,15 @@ impl Agents {
             Some(other) => return Err(ApiError::invalid(format!("unknown mode `{other}`"))),
         };
         let agent = self.get(&p.id)?;
+        // A builtin that makes no sense through Coocoo: explain it in the chat, wake nothing.
+        if let Some((command, reason)) = crate::slash::refused(p.message.trim_start()) {
+            if agent.state.lock().life == Life::Stopped {
+                return Err(ApiError::conflict("the agent is archived"));
+            }
+            self.push_item(&agent, ItemKind::User, p.message.trim().to_owned()).await;
+            self.push_item(&agent, ItemKind::Error, format!("{command} is not available in Coocoo. {reason}")).await;
+            return Ok(json!({}));
+        }
         {
             let mut st = agent.state.lock();
             if st.life == Life::Stopped {

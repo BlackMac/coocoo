@@ -13,6 +13,7 @@ mod board;
 mod mapper;
 mod process;
 mod sandbox;
+mod slash;
 mod state;
 mod timeline;
 mod tools;
