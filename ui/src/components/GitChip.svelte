@@ -235,11 +235,13 @@
   {#if g.shared.length > 1}<span class="faint minor">×{g.shared.length}</span>{/if}
 </button>
 
+<!-- Each portaled block must be exactly one element: Svelte removes a block by walking siblings
+     from its first to its last node, which breaks once some of them live in another parent. -->
+{#if open && sheet}
+  <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
+  <div class="backdrop" use:portal onclick={() => (open = false)}></div>
+{/if}
 {#if open}
-  {#if sheet}
-    <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-    <div class="backdrop" use:portal onclick={() => (open = false)}></div>
-  {/if}
   <div class="gpop" class:sheet style={sheet ? '' : place} bind:this={pop} use:portal role="dialog" aria-label={form ? 'New pull request' : 'Git status'}>
     {#if form}
       <div class="hd">
