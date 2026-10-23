@@ -58,7 +58,7 @@ jobs:
           projectPath: src-tauri
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'v__VERSION__' }}
           releaseName: Coocoo ${{ github.ref_type == 'tag' && github.ref_name || 'v__VERSION__' }}
-          releaseBody: 'Desktop app installers. Linux: .deb / .AppImage, macOS: .dmg (universal, ad-hoc signed: on first launch right-click the app → Open), Windows: -setup.exe.'
+          releaseBody: 'Desktop app installers. Linux: .deb / .AppImage, macOS: .dmg (universal, ad-hoc signed, not notarized: after the first blocked launch allow it under System Settings → Privacy & Security → Open Anyway, again after each update), Windows: -setup.exe.'
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}

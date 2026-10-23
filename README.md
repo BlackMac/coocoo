@@ -201,7 +201,9 @@ cd src-tauri && npm install && npm run build   # deb / AppImage / dmg / nsis bun
 Releases: pushing a `v*` tag (or running *Desktop release* manually) makes
 `.github/workflows/desktop-release.yml` build the Linux, macOS (universal, ad-hoc signed) and Windows
 installers and publish them as a GitHub release. The ad-hoc signature avoids macOS calling the app
-"damaged" on Apple Silicon; it is not notarized, so open it the first time with right-click → Open.
+"damaged" on Apple Silicon; it is not notarized, so macOS blocks the first launch: open it once, then
+allow it under System Settings → Privacy & Security → "Open Anyway" (again after every update, since
+each build has a new signature).
 
 ## Status and known limitations
 

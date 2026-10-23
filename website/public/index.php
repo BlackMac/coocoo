@@ -314,7 +314,7 @@ function download_button(array $download, array $release, string $extraClass = '
     </div>
     <div class="term panel" role="tabpanel" id="panel-desktop" aria-labelledby="tab-desktop">
       <div><span class="c"># download the installer for your OS and open it</span></div>
-      <div><span class="c"># macOS: first launch with right-click → Open (ad-hoc signed, not notarized)</span></div>
+      <div><span class="c"># macOS: after the first blocked launch, System Settings → Privacy &amp; Security → Open Anyway</span></div>
       <div><span class="c"># closing the window hides it to the tray, agents keep running</span></div>
     </div>
     <div class="term panel" role="tabpanel" id="panel-server" aria-labelledby="tab-server" hidden>
@@ -347,7 +347,7 @@ function download_button(array $download, array $release, string $extraClass = '
       <?php endforeach ?>
     </ul>
     <?php endif ?>
-    <p class="os-note"><?= e($version) ?> · <a href="<?= e($release['html_url']) ?>">release notes</a> · macOS: first launch with right-click → Open</p>
+    <p class="os-note"><?= e($version) ?> · <a href="<?= e($release['html_url']) ?>">release notes</a> · macOS: after the first blocked launch, System Settings → Privacy &amp; Security → Open Anyway</p>
   </div>
 </section>
 </main>
