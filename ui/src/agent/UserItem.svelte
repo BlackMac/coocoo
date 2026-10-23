@@ -2,7 +2,23 @@
   import type { TimelineItem } from '../lib/protocol';
   import { MousePointerClick } from '../lib/icons';
 
-  let { item }: { item: TimelineItem } = $props();
+  // `pending`/`failed`: a provisional prompt from the outbox (fleet.sendPrompt), not yet in omp's
+  // transcript; `failed` is the error shown with Retry/Edit/Discard.
+  let {
+    item,
+    pending = false,
+    failed,
+    onretry,
+    onedit,
+    ondiscard,
+  }: {
+    item: TimelineItem;
+    pending?: boolean;
+    failed?: string;
+    onretry?: () => void;
+    onedit?: () => void;
+    ondiscard?: () => void;
+  } = $props();
 
   /** Text split into plain runs and design-mode element blocks (see Composer.buildMessage). */
   type Part = { kind: 'text'; text: string } | { kind: 'element'; selector: string; body: string };
@@ -30,7 +46,7 @@
   const long = $derived((item.text?.length ?? 0) > LONG && parts.length === 1);
 </script>
 
-<div class="user">
+<div class="user" class:pending class:failed={failed !== undefined} aria-busy={pending || undefined}>
   <div class="bubble">
     {#each parts as p, i (i)}
       {#if p.kind === 'text'}
@@ -44,7 +60,18 @@
     {/each}
     {#if long}<button class="more" onclick={() => (expanded = !expanded)}>{expanded ? 'Show less' : 'Show more'}</button>{/if}
   </div>
-  <time class="faint" datetime={new Date(item.ts).toISOString()}>{new Date(item.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
+  {#if failed !== undefined}
+    <span class="err" role="alert">{failed}</span>
+    <div class="actions">
+      <button class="btn sm retry" onclick={onretry}>Retry</button>
+      <button class="btn sm" onclick={onedit}>Edit</button>
+      <button class="btn sm" onclick={ondiscard}>Discard</button>
+    </div>
+  {:else if pending}
+    <span class="meta faint"><span class="spinner"></span>Sending…</span>
+  {:else}
+    <time class="faint" datetime={new Date(item.ts).toISOString()}>{new Date(item.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
+  {/if}
 </div>
 
 <style>
@@ -66,6 +93,17 @@
     border: 1px solid var(--border);
     border-radius: 10px 10px 3px 10px;
     background: var(--bg-2);
+    transition:
+      opacity var(--t-fast) var(--ease),
+      border-color var(--t-fast) var(--ease);
+  }
+  .pending .bubble {
+    opacity: 0.6;
+    border-style: dashed;
+  }
+  .failed .bubble {
+    border-color: color-mix(in srgb, var(--red) 55%, var(--border));
+    background: var(--red-soft);
   }
   .txt {
     white-space: pre-wrap;
@@ -113,7 +151,35 @@
     font-size: var(--fs-xs);
     cursor: pointer;
   }
-  time {
+  time,
+  .meta,
+  .err {
     font-size: 10.5px;
+  }
+  .meta {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .meta .spinner {
+    width: 10px;
+    height: 10px;
+    border-width: 1.5px;
+  }
+  .err {
+    color: var(--red);
+    overflow-wrap: anywhere;
+    text-align: right;
+  }
+  .actions {
+    display: flex;
+    gap: 4px;
+  }
+  .actions .btn {
+    height: 22px;
+    font-size: var(--fs-xs);
+  }
+  .retry {
+    color: var(--accent-text);
   }
 </style>

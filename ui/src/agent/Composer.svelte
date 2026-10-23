@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { fleet, key } from '../lib/fleet.svelte';
+  import { fleet, key, type Outgoing } from '../lib/fleet.svelte';
   import { ui, type Draft } from '../lib/ui.svelte';
   import type { AgentDetail, AgentSummary, ImageInput, ModelInfo } from '../lib/protocol';
   import { ArrowUp, Image, MousePointerClick, Paperclip, Square, X } from '../lib/icons';
@@ -20,9 +20,10 @@
   const running = $derived(a.status === 'running' || a.status === 'starting' || a.status === 'waiting');
   const readonly = $derived(a.status === 'stopped');
   const queued = $derived([...(detail?.queuedSteering ?? []).map((t) => ({ t, kind: 'Steer' })), ...(detail?.queuedFollowUp ?? []).map((t) => ({ t, kind: 'Queued' }))]);
+  /** Mid-turn prompts sent from here that the agent's queue does not show yet. */
+  const outgoing = $derived((fleet.outbox[k] ?? []).filter((e) => e.target === 'queue'));
 
   let mode = $state<'steer' | 'followUp'>('steer');
-  let busy = $state(false);
   let dragOver = $state(false);
   let models = $state<ModelInfo[]>([]);
   let ta = $state<HTMLTextAreaElement>();
@@ -104,27 +105,22 @@
     return { message: parts.filter(Boolean).join('\n\n'), images };
   }
 
-  const canSend = $derived(!readonly && !busy && (!!draft.text.trim() || draft.images.length > 0 || draft.elements.length > 0));
+  const canSend = $derived(!readonly && (!!draft.text.trim() || draft.images.length > 0 || draft.elements.length > 0));
 
-  async function send() {
+  /** Hands the prompt to the fleet outbox (shown at once, confirmed later) and clears the draft. */
+  function send() {
     if (!canSend) return;
     const { message, images } = buildMessage();
-    busy = true;
-    try {
-      await fleet.call(
-        'agents.prompt',
-        { id: a.id, message, mode: running ? mode : 'auto', images: images.length ? images : undefined },
-        a.hostId,
-        60_000,
-      );
-      draft.text = '';
-      draft.images = [];
-      draft.elements = [];
-    } catch (err) {
-      ui.error('Could not send', err);
-    } finally {
-      busy = false;
-    }
+    fleet.sendPrompt(a.hostId, a.id, { message, images, draft: $state.snapshot(draft) }, running ? mode : 'auto');
+    draft.text = '';
+    draft.images = [];
+    draft.elements = [];
+  }
+
+  function edit(e: Outgoing) {
+    fleet.discard(k, e.id);
+    ui.restoreDraft(k, e.draft);
+    ta?.focus();
   }
 
   async function abort() {
@@ -212,10 +208,27 @@
 {#if readonly}
   <div class="ro faint">This agent is archived and read-only.</div>
 {:else}
-  {#if queued.length}
+  {#if queued.length || outgoing.length}
     <div class="queued">
       {#each queued as q, i (i)}
         <div class="qrow"><span class="qk">{q.kind}</span><span class="ellipsis">{q.t}</span></div>
+      {/each}
+      {#each outgoing as e (e.id)}
+        {#if e.state === 'failed'}
+          <div class="qrow failed" role="alert">
+            <span class="qk">{e.mode === 'steer' ? 'Steer' : 'Queued'}</span><span class="ellipsis">{e.text}</span>
+          </div>
+          <div class="qfail">
+            <span class="ellipsis">{e.error ?? 'Not sent'}</span>
+            <button class="btn sm retry" onclick={() => fleet.retry(k, e.id)}>Retry</button>
+            <button class="btn sm" onclick={() => edit(e)}>Edit</button>
+            <button class="btn sm" onclick={() => fleet.discard(k, e.id)}>Discard</button>
+          </div>
+        {:else}
+          <div class="qrow pending" aria-busy="true">
+            <span class="qk">{e.mode === 'steer' ? 'Steer' : 'Queued'}</span><span class="ellipsis">{e.text}</span><span class="spinner"></span>
+          </div>
+        {/if}
       {/each}
     </div>
   {/if}
@@ -280,7 +293,7 @@
         <button class="btn sm stop" onclick={abort} title="Abort (Esc)" aria-label="Stop"><Square size={11} fill="currentColor" /><span class="stop-l">Stop</span></button>
       {/if}
       <button class="btn primary icon sm send" disabled={!canSend} onclick={send} title="Send (Enter)" aria-label="Send">
-        {#if busy}<span class="spinner"></span>{:else}<ArrowUp size={15} />{/if}
+        <ArrowUp size={15} />
       </button>
     </div>
     {#if dragOver}<div class="dropzone"><Image size={18} /> Drop images to attach</div>{/if}
@@ -310,6 +323,39 @@
     gap: 8px;
     min-width: 0;
     color: var(--text-2);
+  }
+  .qrow.pending {
+    align-items: center;
+    opacity: 0.6;
+  }
+  .qrow .spinner {
+    flex: none;
+    width: 10px;
+    height: 10px;
+    border-width: 1.5px;
+  }
+  .qrow.failed {
+    color: var(--red);
+  }
+  .qfail {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    padding-left: 2px;
+    color: var(--red);
+    font-size: var(--fs-xs);
+  }
+  .qfail .ellipsis {
+    flex: 1;
+  }
+  .qfail .btn {
+    flex: none;
+    height: 20px;
+    font-size: var(--fs-xs);
+  }
+  .qfail .retry {
+    color: var(--accent-text);
   }
   .qk {
     flex: none;
@@ -403,10 +449,6 @@
     width: 28px;
     height: 28px;
     border-radius: 8px;
-  }
-  .send .spinner {
-    border-color: rgba(255, 255, 255, 0.35);
-    border-top-color: #fff;
   }
   .attach {
     display: flex;
