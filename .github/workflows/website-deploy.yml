@@ -62,8 +62,8 @@ jobs:
             printf '%s\n' "$SFTP_KEY" > ~/.ssh/deploy_key && chmod 600 ~/.ssh/deploy_key
             if [ "${{ inputs.debug }}" = "true" ]; then
               ssh-keygen -l -f ~/.ssh/deploy_key || true
-              printf -- '-pwd\n-df -h\n-ls -la %s\n-put website/public/robots.txt zz-deploy-test.txt\n-rm zz-deploy-test.txt\n-put website/public/robots.txt public_html/zz-deploy-test.txt\n-rm public_html/zz-deploy-test.txt\n-put website/public/robots.txt %s/zz-deploy-test.txt\n-rm %s/zz-deploy-test.txt\n' \
-                "$SFTP_PATH" "$SFTP_PATH" "$SFTP_PATH" \
+              printf -- '-mkdir public_html/zzprobe\n-put website/public/robots.txt public_html/zzprobe/a.txt\n-rm public_html/zzprobe/a.txt\n-rmdir public_html/zzprobe\n-mkdir public_html/zzprobe.dev\n-put website/public/robots.txt public_html/zzprobe.dev/a.txt\n-rm public_html/zzprobe.dev/a.txt\n-rmdir public_html/zzprobe.dev\n-put website/public/robots.txt public_html/zzprobe.dev.txt\n-rm public_html/zzprobe.dev.txt\n-put website/public/robots.txt %s/a.txt\n-rm %s/a.txt\n' \
+                "$SFTP_PATH" "$SFTP_PATH" \
                 | sftp -v -b - -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes \
                   -o StrictHostKeyChecking=accept-new "$SFTP_USER@$SFTP_HOST" || true
             fi
