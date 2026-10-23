@@ -25,6 +25,7 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -44,7 +45,9 @@ jobs:
             echo "::warning::HETZNER_SFTP_* secrets are not set; skipping the upload (see website/README.md)."
             exit 0
           fi
-          sudo apt-get update -qq && sudo apt-get install -y -qq lftp
+          echo "Installing lftp"
+          timeout 180 sudo apt-get install -y -qq -o DPkg::Lock::Timeout=60 lftp \
+            || { timeout 180 sudo apt-get update -qq && timeout 180 sudo apt-get install -y -qq lftp; }
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           if [ -n "$SFTP_KNOWN_HOSTS" ]; then
             printf '%s\n' "$SFTP_KNOWN_HOSTS" > ~/.ssh/known_hosts
