@@ -21,6 +21,7 @@ It is in the same category as Paseo, Superset, Conductor and Orca, built around 
 | **omp only** | No lowest common denominator across harnesses. Coocoo uses omp's RPC protocol directly through the official Rust client: structured `ask` dialogs, todos, subagent counts, `session_settled`-accurate status, session resume, and orchestration host tools (spawn, message and wait for agents on any host) injected without MCP. The composer shows the model provider's subscription quota the way that provider meters it (5-hour and weekly windows, extra usage, several accounts), read from `omp usage`. |
 | **Browser use** | Each project gets a Chromium owned by the daemon on the host where the code runs. omp's own browser tool attaches to it, and every client watches the same tab through a screencast and can take over with mouse and keyboard. That includes a phone, and a headless server. Design mode turns a clicked element into prompt context (screenshot, selector, computed styles, HTML). |
 | **Kanban per project** | Queue work on a project's board and hand a card to one of its agents or to a new one (optionally in its own worktree); the agent's top card sits above its composer for one-tap starts. Or ask for a refinement first: the agent researches what it can, asks you the rest in the chat and attaches a plan with UI mocks (images, HTML) to the card, which the agent implementing it then follows. Cards show the agent working on them, and the agent finishes them itself (`kanban_done`), which commits the change when the project uses git and, if the board says so, pushes it and opens a pull request. Importers fill an inbox column you pick from, on a schedule (every 15 min, hourly, every 6 h, daily): RSS/Atom feeds, any command (`gh issue list …`), or small scripts an agent writes for you (“put every new release from X's changelog in the inbox”), which run sandboxed with Landlock on Linux and which the agent can change or delete later. |
+| **Stats & workflows** | Two tabs next to the overview. *Stats* shows what the Coocoo agents on every host used — API-equivalent cost, tokens, requests, models (cache hits, time to first token, speed), days, projects, agents (incl. deleted ones, cost split into main agent, subagents and advisor), commits attributed to agents, tools, a weekday × hour heatmap, Kanban throughput and omp's frustration signals —, with every number's formula and source one click away. *Workflows* shows how work flows: agent journey and Kanban funnels, session shapes, frequent sequences, feature use and friction (re-asked questions, long needs-you waits, aborts, crashes…), each with links to the agents behind it; *Analyze patterns* hands this to an agent that files evidence-backed improvement ideas into a board's inbox. |
 | **Clean UI** | Svelte 5, hand-written design tokens, dense and quiet, in dark and light, responsive down to phone width, with a ⌘K palette and keyboard navigation. A terminal in the agent's or project's directory on its host (the shell keeps running when you close the panel) is one tab away. |
 
 ## Screenshots
@@ -131,7 +132,20 @@ headless = true
 idleShutdownSecs = 600
 maxFps = 12
 quality = 70
+
+[insights]
+enabled = true                # the usage log behind the Workflows tab (local only)
+retentionDays = 365           # 0 = keep forever
 ```
+
+**Usage log.** Each host records what happens in Coocoo — actions such as creating, prompting or
+aborting an agent, card moves, commits, and which views, panels, dialogs and commands you use and
+on which kind of device — in `<data dir>/events/` (`~/.local/share/coocoo/events/` on Linux). It
+never stores prompt texts, arguments, file contents or paths, stays on the host and only travels
+over your own fleet links (and to the model provider of an *Analyze patterns* agent, which reads
+the aggregated numbers). Switch it off or delete it under *Hosts & Settings → Usage log*. The
+Stats tab itself reads omp's own `~/.omp/stats.db` (read-only); its frustration drill-down shows
+prompt texts from there.
 
 ## Project actions
 

@@ -44,7 +44,7 @@
     try {
       const p = await fleet.call('projects.add', { path: path.trim(), name: name.trim() || undefined }, host);
       fleet.projects[`${p.hostId}:${p.id}`] = p;
-      ui.dialog = null;
+      ui.submitDialog();
       router.go({ name: 'project', host: p.hostId, id: p.id });
     } catch (err) {
       ui.error('Could not add project', err);

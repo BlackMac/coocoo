@@ -31,10 +31,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
+use coocoo_proto::insights::{InsightEvent, InsightsSink, LedgerEntry};
 use coocoo_proto::util::{now_ms, read_json, write_json_atomic};
 use coocoo_proto::{
-    ApiError, ApiResult, Emitter, ItemKind, ModelInfo, Orchestrator, Paths, ProviderUsage, TimelineEvent, TimelineItem,
-    events,
+    AgentSummary, ApiError, ApiResult, Emitter, ItemKind, ModelInfo, Orchestrator, Paths, ProviderUsage, TimelineEvent,
+    TimelineItem, UiRequest, events,
 };
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -87,6 +88,8 @@ pub struct Agents {
     config: AgentsConfig,
     omp: PathBuf,
     orchestrator: OnceLock<Arc<dyn Orchestrator>>,
+    /// Usage log and agent ledger; without one nothing is recorded.
+    insights: OnceLock<Arc<dyn InsightsSink>>,
     runtime: OnceLock<Handle>,
     agents: RwLock<HashMap<String, Arc<Agent>>>,
     models: tokio::sync::Mutex<Option<(Instant, Vec<ModelInfo>)>>,
@@ -122,6 +125,7 @@ impl Agents {
             config,
             omp,
             orchestrator: OnceLock::new(),
+            insights: OnceLock::new(),
             runtime: OnceLock::new(),
             agents: RwLock::new(agents),
             models: tokio::sync::Mutex::new(None),
@@ -141,6 +145,26 @@ impl Agents {
             let _ = self.runtime.set(handle);
             self.start_board_poller();
         }
+    }
+
+    /// Where domain events and agent identity changes are reported; set once at startup.
+    pub fn set_insights(&self, sink: Arc<dyn InsightsSink>) {
+        let _ = self.insights.set(sink);
+    }
+
+    /// The omp executable agents run (its `stats` subcommand feeds the usage statistics).
+    pub fn omp_path(&self) -> &Path {
+        &self.omp
+    }
+
+    /// Summaries of every agent on this host.
+    pub fn summaries(&self) -> Vec<AgentSummary> {
+        self.agents.read().values().map(|agent| agent.summary()).collect()
+    }
+
+    /// Summary of agent `id`, if this host has it.
+    pub fn summary(&self, id: &str) -> Option<AgentSummary> {
+        self.agents.read().get(id).map(|agent| agent.summary())
     }
 
     /// `agents.*` and `boards.*`.
@@ -166,7 +190,7 @@ impl Agents {
         let agents: Vec<Arc<Agent>> = self.agents.read().values().cloned().collect();
         let mut teardown = Vec::new();
         for agent in agents {
-            let (proc, _) = {
+            let (proc, requests) = {
                 let mut st = agent.state.lock();
                 if !matches!(st.life, Life::Live | Life::Starting) {
                     continue;
@@ -176,6 +200,9 @@ impl Agents {
                 }
                 st.take_process(Life::Hibernated)
             };
+            for request in &requests {
+                self.request_closed(&agent, request, Some("process"));
+            }
             teardown.push(tokio::task::spawn_blocking(move || {
                 drop(proc);
                 write_meta(&agent);
@@ -204,7 +231,8 @@ impl Agents {
         self.emitter.host_id()
     }
 
-    /// The agent's summary changed: emit `agent.updated` and persist `meta.json`, coalesced.
+    /// The agent's summary changed: emit `agent.updated`, persist `meta.json` and report its
+    /// identity to the agent ledger, coalesced.
     fn changed(&self, agent: &Arc<Agent>) {
         if agent.flush_scheduled.swap(true, Ordering::AcqRel) {
             return;
@@ -222,12 +250,79 @@ impl Agents {
                 st.summary.clone()
             };
             me.emitter.emit(events::AGENT_UPDATED, &summary);
+            me.record_ledger(&summary, None);
             let _ = tokio::task::spawn_blocking(move || write_meta(&agent)).await;
         });
     }
 
     fn emit_item(&self, agent_id: &str, item: TimelineItem) {
         self.emitter.emit(events::AGENT_TIMELINE, &TimelineEvent { agent_id: agent_id.to_owned(), item });
+    }
+
+    /// Report a usage-log event (no-op without a sink).
+    fn record(&self, build: impl FnOnce() -> InsightEvent) {
+        if let Some(sink) = self.insights.get() {
+            sink.event(build());
+        }
+    }
+
+    /// Report a domain event about `agent`, tagged with its id and project. Locks the agent's
+    /// state, so never call it while holding that lock.
+    fn record_agent(&self, agent: &Agent, kind: &str, build: impl FnOnce(InsightEvent) -> InsightEvent) {
+        self.record(|| {
+            let project = agent.state.lock().summary.project_id.clone();
+            build(InsightEvent::new(kind).agent(agent.id.as_str()).project(project))
+        });
+    }
+
+    /// Report the agent's identity to the ledger, which skips entries that did not change.
+    fn record_ledger(&self, summary: &AgentSummary, deleted_at: Option<i64>) {
+        if let Some(sink) = self.insights.get() {
+            sink.agent(LedgerEntry {
+                ts: now_ms(),
+                agent_id: summary.id.clone(),
+                title: summary.title.clone(),
+                project_id: summary.project_id.clone(),
+                cwd: summary.cwd.clone(),
+                worktree: summary.worktree.as_ref().map(|w| w.path.clone()),
+                session_file: summary.session_file.clone(),
+                parent_id: summary.parent_id.clone(),
+                created_at: summary.created_at,
+                deleted_at,
+            });
+        }
+    }
+
+    /// A dialog was answered (`cancel` = `None`) or cancelled (`user`, `omp`, `process`).
+    fn request_closed(&self, agent: &Agent, request: &UiRequest, cancel: Option<&'static str>) {
+        let kind = if cancel.is_some() { "request.cancel" } else { "request.answer" };
+        self.record_agent(agent, kind, |event| {
+            let event = event.ms(now_ms() - request.created_at).meta("method", request.method.as_str());
+            match cancel {
+                Some(reason) => event.meta("reason", reason),
+                None => event,
+            }
+        });
+    }
+
+    /// Dialogs dropped with the agent's process: gone for the clients, cancelled in the log.
+    fn requests_dropped(&self, agent: &Agent, requests: &[UiRequest]) {
+        for request in requests {
+            self.emit_resolved(&agent.id, &request.id);
+            self.request_closed(agent, request, Some("process"));
+        }
+    }
+
+    /// Report a model change (`cause`: user, switch, fallback, respawn); `from` is `None` when
+    /// the previous model was not known.
+    fn record_model_change(&self, agent: &Agent, from: Option<&str>, to: &str, cause: &'static str) {
+        self.record_agent(agent, "model.change", |event| {
+            let event = event.meta("to", to).meta("cause", cause);
+            match from {
+                Some(from) => event.meta("from", from),
+                None => event,
+            }
+        });
     }
 
     fn emit_resolved(&self, agent_id: &str, request_id: &str) {
@@ -308,14 +403,23 @@ impl Agents {
         for agent in idle {
             let minutes = after.as_secs().div_ceil(60);
             let note = format!("Hibernated after {minutes} min idle; the session resumes on the next message");
-            if let Err(err) = self.stop_process(&agent, Life::Hibernated, Some(note)).await {
+            if let Err(err) = self.hibernate(&agent, note).await {
                 tracing::warn!(agent = %agent.id, %err, "hibernation failed");
             }
         }
     }
 
+    /// Hibernate a live agent (idle sweep, `agents.hibernate`).
+    async fn hibernate(&self, agent: &Arc<Agent>, note: String) -> ApiResult<()> {
+        if self.stop_process(agent, Life::Hibernated, Some(note)).await? {
+            self.record_agent(agent, "agent.hibernate", |event| event);
+        }
+        Ok(())
+    }
+
     /// Stop the agent's process (if any) and move it to `life`. Pending dialogs are resolved.
-    async fn stop_process(&self, agent: &Arc<Agent>, life: Life, note: Option<String>) -> ApiResult<()> {
+    /// Returns `false` when the agent was in that state already.
+    async fn stop_process(&self, agent: &Arc<Agent>, life: Life, note: Option<String>) -> ApiResult<bool> {
         let _lifecycle = agent.lifecycle.lock().await;
         let (proc, requests) = {
             let mut st = agent.state.lock();
@@ -323,13 +427,11 @@ impl Agents {
                 return Err(ApiError::not_found(format_args!("agent {}", agent.id)));
             }
             if st.life == life || (life == Life::Hibernated && !st.is_live()) {
-                return Ok(());
+                return Ok(false);
             }
             st.take_process(life)
         };
-        for request in &requests {
-            self.emit_resolved(&agent.id, &request.id);
-        }
+        self.requests_dropped(agent, &requests);
         if let Some(proc) = proc {
             // Teardown (SIGTERM, wait, SIGKILL) blocks for up to ~2 s.
             let _ = tokio::task::spawn_blocking(move || drop(proc)).await;
@@ -338,7 +440,7 @@ impl Agents {
             self.push_item(agent, ItemKind::Notice, note).await;
         }
         self.changed(agent);
-        Ok(())
+        Ok(true)
     }
 }
 

@@ -7,6 +7,8 @@
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
+use coocoo_proto::insights::TOOL_AGENT;
+use coocoo_proto::util::now_ms;
 use coocoo_proto::{ApiError, DoneAction, Emitter, Orchestrator, events};
 use omp_rpc::{HostTool, HostToolContext, HostToolError, HostToolOutput, ToolLoadMode};
 use serde_json::{Map, Value, json};
@@ -20,6 +22,14 @@ const MAX_WAIT_SECS: u64 = 3600;
 /// Re-check interval while waiting (covers peers whose events are not relayed to this host).
 const WAIT_RECHECK: Duration = Duration::from_secs(5);
 const DONE_STATUSES: &[&str] = &["idle", "error", "hibernated", "stopped"];
+const DAY_MS: i64 = 86_400_000;
+/// Longest period `coocoo_insights` accepts, in days.
+const MAX_INSIGHT_DAYS: u64 = 3660;
+/// Agents `coocoo_insights` lists in the usage section, most expensive first.
+const TOP_AGENTS: usize = 20;
+const FRUSTRATION_EXAMPLES: usize = 10;
+const DEFAULT_EVENTS: u64 = 200;
+const MAX_EVENTS: u64 = 2000;
 
 struct ToolEnv {
     agents: Weak<Agents>,
@@ -59,9 +69,9 @@ impl ToolEnv {
     fn call(&self, host: Option<String>, method: &str, params: Value) -> Result<Value, HostToolError> {
         let orchestrator = self.orchestrator.clone();
         let method = method.to_owned();
-        self.handle
-            .block_on(async move { orchestrator.call(host, method, params).await })
-            .map_err(|e| Box::new(e) as HostToolError)
+        // The daemon logs the call as this agent's action.
+        let call = TOOL_AGENT.scope(self.agent_id.clone(), async move { orchestrator.call(host, method, params).await });
+        self.handle.block_on(call).map_err(|e| Box::new(e) as HostToolError)
     }
 
     /// `None` = this daemon.
@@ -505,6 +515,174 @@ impl ToolEnv {
         }
         Ok(text(&report))
     }
+
+    // ─── Usage statistics (read-only) ─────────────────────────────────────────────────────
+
+    /// `coocoo_insights`: the Stats/Workflows numbers of every host, asked of this daemon (it
+    /// gathers the peers' parts itself), boiled down to what an agent can read.
+    fn insights(&self, args: Map<String, Value>) -> ToolResult {
+        let section = required(&args, "section")?;
+        let (from, to) = insights_period(&args)?;
+        let mut query = json!({ "from": from, "to": to, "tzOffset": 0 });
+        if let Some(project) = str_arg(&args, "project") {
+            query["project"] = Value::String(project);
+        }
+        if let Some(host) = str_arg(&args, "host") {
+            query["hosts"] = json!([host]);
+        }
+        let mut report = match section.as_str() {
+            "usage" => usage_digest(&self.call(None, "insights.usage", query)?),
+            "workflows" | "friction" | "features" | "sequences" => workflow_digest(&self.call(None, "insights.workflows", query)?, &section),
+            "events" => {
+                query["limit"] = json!(args.get("limit").and_then(Value::as_u64).unwrap_or(DEFAULT_EVENTS).clamp(1, MAX_EVENTS));
+                self.call(None, "insights.events", query)?
+            }
+            other => return Err(err(format!("unknown section `{other}` (usage, workflows, friction, features, sequences, events)"))),
+        };
+        if let Some(map) = report.as_object_mut() {
+            map.insert("period".to_owned(), json!({ "from": from, "to": to, "unit": "Unix ms, UTC, `to` exclusive" }));
+        }
+        Ok(text(&report))
+    }
+}
+
+/// `[from, to)` in Unix ms from `coocoo_insights`' `from`/`to` (UTC days, `to` inclusive) and
+/// `days` (counted back from `to`, default today).
+fn insights_period(args: &Map<String, Value>) -> Result<(i64, i64), HostToolError> {
+    let day = |key: &str| -> Result<Option<i64>, HostToolError> {
+        str_arg(args, key).map(|d| parse_date(&d).ok_or_else(|| err(format!("`{key}` must be a date like 2026-01-31")))).transpose()
+    };
+    let to = match day("to")? {
+        Some(start) => start + DAY_MS,
+        None => now_ms(),
+    };
+    let from = match day("from")? {
+        Some(start) => start,
+        None => {
+            let days = args.get("days").and_then(Value::as_u64).unwrap_or(30).clamp(1, MAX_INSIGHT_DAYS) as i64;
+            (to - 1).div_euclid(DAY_MS) * DAY_MS - (days - 1) * DAY_MS
+        }
+    };
+    if from >= to {
+        return Err(err("`from` must not be after `to`"));
+    }
+    Ok((from, to))
+}
+
+/// Unix ms of UTC midnight starting `YYYY-MM-DD` (Howard Hinnant's days-from-civil).
+fn parse_date(date: &str) -> Option<i64> {
+    let mut parts = date.splitn(3, '-');
+    let year: i64 = parts.next()?.parse().ok()?;
+    let month: i64 = parts.next()?.parse().ok()?;
+    let day: i64 = parts.next()?.parse().ok()?;
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year.div_euclid(400);
+    let yoe = year - era * 400;
+    let doy = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some((era * 146_097 + doe - 719_468) * DAY_MS)
+}
+
+/// Where each host's numbers come from, without the database paths.
+fn hosts_digest(report: &Value) -> Value {
+    let hosts = report["hosts"].as_array().into_iter().flatten().map(|h| {
+        let mut host = Map::new();
+        for key in ["hostId", "name", "ok", "error", "syncedAt", "statsError", "logSince", "logEnabled"] {
+            if let Some(value) = h.get(key) {
+                host.insert(key.to_owned(), value.clone());
+            }
+        }
+        Value::Object(host)
+    });
+    Value::Array(hosts.collect())
+}
+
+/// `insights.usage` for an agent: totals, the breakdowns, the most expensive agents and the
+/// frustration counts with a few examples.
+fn usage_digest(report: &Value) -> Value {
+    let totals = |totals: &Value| {
+        let mut totals = totals.clone();
+        if let Some(map) = totals.as_object_mut() {
+            map.remove("activeDaySet");
+        }
+        totals
+    };
+    let cost = |agent: &Value| agent.pointer("/cost/total").and_then(Value::as_f64).unwrap_or(0.0);
+    let mut agents: Vec<&Value> = report["agents"].as_array().into_iter().flatten().collect();
+    agents.sort_by(|a, b| cost(b).total_cmp(&cost(a)));
+    let agents: Vec<Value> = agents
+        .into_iter()
+        .take(TOP_AGENTS)
+        .map(|a| {
+            json!({
+                "id": a["id"],
+                "host": a["hostId"],
+                "title": a["title"],
+                "project": a.get("projectId"),
+                "cost": cost(a),
+                "prompts": a["prompts"],
+                "requests": a["requests"],
+                "commits": a["commits"].as_array().map_or(0, Vec::len),
+                "cardsDone": a["cardsDone"],
+                "deleted": a.get("deleted").cloned().unwrap_or(Value::Bool(false)),
+            })
+        })
+        .collect();
+    let models: Vec<Value> = report["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|m| {
+            json!({
+                "model": m["model"],
+                "provider": m["provider"],
+                "requests": m["requests"],
+                "failed": m["failed"],
+                "cost": m.pointer("/cost/total"),
+                "tokens": m["tokens"],
+                "cacheHit": m.get("cacheHit"),
+                "ttftMs": m.get("ttft"),
+                "tokensPerSec": m.get("tps"),
+            })
+        })
+        .collect();
+    let frustration = &report["frustration"];
+    let examples: Vec<&Value> = frustration["examples"].as_array().into_iter().flatten().take(FRUSTRATION_EXAMPLES).collect();
+    json!({
+        "cost": "API-equivalent USD (what the tokens would cost at API prices; subscriptions are billed differently)",
+        "totals": totals(&report["totals"]),
+        "prev": report.get("prev").map(totals),
+        "models": models,
+        "projects": report["projects"],
+        "agents": agents,
+        "agentCount": report["agents"].as_array().map_or(0, Vec::len),
+        "tools": report["tools"],
+        "frustration": {
+            "prompts": frustration["prompts"],
+            "flagged": frustration["flagged"],
+            "signals": frustration["signals"],
+            "examples": examples,
+        },
+        "hosts": hosts_digest(report),
+    })
+}
+
+/// `insights.workflows` for an agent: everything (`workflows`) or one part of it.
+fn workflow_digest(report: &Value, section: &str) -> Value {
+    let keys: &[&str] = match section {
+        "workflows" => &["kpis", "journey", "kanban", "shapes", "sequences", "features", "friction", "logSince"],
+        "friction" => &["friction", "logSince"],
+        "features" => &["features", "logSince"],
+        _ => &["sequences", "logSince"],
+    };
+    let mut digest: Map<String, Value> = keys.iter().map(|key| ((*key).to_owned(), report.get(*key).cloned().unwrap_or(Value::Null))).collect();
+    if section == "workflows" {
+        digest.insert("hosts".to_owned(), hosts_digest(report));
+    }
+    Value::Object(digest)
 }
 
 const COLUMNS: &[&str] = &["inbox", "todo", "doing", "done"];
@@ -753,8 +931,35 @@ pub(crate) fn host_tools(agents: &Arc<Agents>, agent_id: &str, orchestrator: Arc
             }),
             |env, args, _| env.actions(args),
         ),
+        tool(
+            "coocoo_insights",
+            "Usage insights",
+            INSIGHTS_DOC,
+            json!({
+                "type": "object",
+                "properties": {
+                    "section": { "type": "string", "enum": ["usage", "workflows", "friction", "features", "sequences", "events"] },
+                    "days": { "type": "integer", "minimum": 1, "maximum": MAX_INSIGHT_DAYS, "description": "Period length in days, ending with `to` (default 30); ignored with `from`." },
+                    "from": { "type": "string", "description": "First day, YYYY-MM-DD (UTC)." },
+                    "to": { "type": "string", "description": "Last day, inclusive, YYYY-MM-DD (UTC); default today." },
+                    "project": { "type": "string", "description": "Only this project (id from coocoo_projects)." },
+                    "host": { "type": "string", "description": "Only this host (id from coocoo_hosts); default all hosts." },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": MAX_EVENTS, "description": "events: at most this many (default 200)." }
+                },
+                "required": ["section"],
+                "additionalProperties": false
+            }),
+            |env, args, _| env.insights(args),
+        ),
     ]
 }
+
+const INSIGHTS_DOC: &str = "Usage statistics of the Coocoo agents on all hosts: the same numbers as the Stats and Workflows tabs of the Coocoo UI. Sections: \
+`usage`: cost (API equivalent), tokens, requests, prompts, commits and finished cards, per model, project, agent (top 20 by cost) and tool, plus frustration signals with a few flagged prompts; \
+`workflows`: KPIs, the agent journey (created → prompted → changed files → reviewed → committed → closed), Kanban flow, session shapes, frequent action sequences, feature usage and friction; \
+`friction`, `features`, `sequences`: only that part of `workflows`; \
+`events`: the raw usage log (kinds, ids, durations and small metadata; no prompt texts, arguments, paths or file contents). \
+Examples carry hostId, agentId and ts (Unix ms), so you can cite an agent at a moment in its history. Periods are UTC days; data before a host's `logSince` is reconstructed from older records.";
 
 /// `kanban_done` description, naming what the board does after the commit.
 fn kanban_done_doc(done_action: DoneAction) -> String {
@@ -792,3 +997,23 @@ worktree = true       # with prompt: the new agent gets its own worktree\n\
 url = \"http://localhost:5173\"  # opens in the project's browser for loopback hosts, else the system browser\n\
 target = \"external\"   # with url: browser | external\n\
 Scope `project` runs in the project directory, `agent` in the agent's directory (its worktree). Ports are fixed by the command, so a dev server in two worktrees collides; use foreground processes (Stop sends SIGHUP to the process group).";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn insight_periods_are_utc_days() {
+        assert_eq!(parse_date("1970-01-01"), Some(0));
+        assert_eq!(parse_date("2000-03-01"), Some(11_017 * DAY_MS));
+        assert_eq!(parse_date("2024-13-01"), None);
+        assert_eq!(parse_date("yesterday"), None);
+        let day = parse_date("2026-01-31").unwrap();
+        assert_eq!(insights_period(&schema(json!({ "from": "2026-01-31", "to": "2026-01-31" }))).unwrap(), (day, day + DAY_MS));
+        assert_eq!(insights_period(&schema(json!({ "to": "2026-01-31", "days": 7 }))).unwrap(), (day - 6 * DAY_MS, day + DAY_MS));
+        let (from, to) = insights_period(&schema(json!({}))).unwrap();
+        assert_eq!(from % DAY_MS, 0);
+        assert!(to - from >= 29 * DAY_MS && to - from <= 30 * DAY_MS, "today and the 29 days before");
+        assert!(insights_period(&schema(json!({ "from": "2026-02-01", "to": "2026-01-31" }))).is_err());
+    }
+}

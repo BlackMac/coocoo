@@ -78,7 +78,7 @@
       const h = await fleet.call('hosts.add', params, undefined, 260_000);
       fleet.hosts[h.id] = h;
       ui.toast('success', `Added ${h.name}`, h.online ? 'Connected' : h.error);
-      ui.dialog = null;
+      ui.submitDialog();
     } catch (err) {
       ui.error('Could not add host', err);
     } finally {

@@ -2,6 +2,7 @@
   import { untrack } from 'svelte';
   import { fleet, key, type Outgoing } from '../lib/fleet.svelte';
   import { ui, type Draft } from '../lib/ui.svelte';
+  import { track } from '../lib/track';
   import type { AgentDetail, AgentSummary, ImageInput, ModelInfo } from '../lib/protocol';
   import { ArrowUp, Image, MousePointerClick, Paperclip, Square, X } from '../lib/icons';
   import { slashMenu } from '../lib/slash';
@@ -63,6 +64,8 @@
   function pick(index: number) {
     const option = menu?.options[index];
     if (!option) return;
+    // Command names come from omp's catalog, so they carry no user text; arguments are never recorded.
+    if (menu?.stage === 'command') track('slash', { agentId: a.id, projectId: a.projectId ?? undefined, meta: { command: option.label.slice(1) } });
     draft.text = option.insert;
     ta?.focus();
   }

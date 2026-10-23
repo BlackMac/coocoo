@@ -42,7 +42,7 @@ Params marked `?` are optional. Return types refer to `types.rs`.
 ### system / hosts / stats — `coocoo-core`
 | Method | Params | Result |
 |---|---|---|
-| `system.hello` | – | `{ protocol: u32, host: HostInfo, hosts: HostInfo[] }` (`hosts` = local + peers) |
+| `system.hello` | `{ client?: { id, device: "desktop" \| "phone" \| "browser" } }` | `{ protocol: u32, host: HostInfo, hosts: HostInfo[] }` (`hosts` = local + peers). `client` names the client installation (random id) and device kind for the usage log's actor of this connection's requests |
 | `system.subscribe` | `{ scope: "all" \| "local" }` | `{}` — peer links use `local` (only events originating on this daemon) |
 | `hosts.list` | – | `HostInfo[]` |
 | `hosts.add` | `{ kind: "direct", url, token?, name? }` or `{ kind: "ssh", target: "user@host", sshPort?, remotePort? (7421), token?, install?: bool, name? }` | `HostInfo` — connects first and fails (`unavailable`, with the reason) if the host cannot be reached; `conflict` if already in the fleet. `url`: `ws://host:port`, `host[:port]`, or a pairing link `http://host:port/#token=…` (then `token` may be omitted). SSH without `token` runs `coocoo token` remotely; `install` copies this `coocoo` binary to `~/.local/bin` when missing (same OS/arch) and starts it (lingering systemd user unit, else `nohup`) |
@@ -172,7 +172,7 @@ the agent's project on startup (cards in doing/done keep that agent). Every meth
 
 | Method | Params | Result |
 |---|---|---|
-| `boards.get` | `{ projectId }` | `Board` — `cards` (`column` inbox/todo/doing/done; a column's order is the order of its cards, first = top; `agentId`/`agentTitle` = the agent it was handed to or that finished it; `refining` while its agent works out a refinement; `refinement`: `{ text (Markdown), attachments?: [{ name, mime, size }], agentId?, agentTitle?, at }`; `pullRequest?: { number, url }` and `gitError?` from finishing it), `sources` and `doneAction` (`commit` \| `push` \| `pullRequest`, default `commit`: what `boards.cardDone` does after the commit) |
+| `boards.get` | `{ projectId }` | `Board` — `cards` (`column` inbox/todo/doing/done; a column's order is the order of its cards, first = top; `agentId`/`agentTitle` = the agent it was handed to or that finished it; `refining` while its agent works out a refinement; `refinement`: `{ text (Markdown), attachments?: [{ name, mime, size }], agentId?, agentTitle?, at }`; `pullRequest?: { number, url }` and `gitError?` from finishing it; `doneAt?`: when it last entered `done`, cleared when it moves back — cards finished before Coocoo recorded it have none), `sources` and `doneAction` (`commit` \| `push` \| `pullRequest`, default `commit`: what `boards.cardDone` does after the commit) |
 | `boards.update` | `{ projectId, doneAction? }` | `Board` |
 | `boards.cardAdd` | `{ projectId, title, body?, column? (todo), top?: bool, startUrl?, doneUrl?, images?: [{ name?, mimeType, data (base64) }], agentId? }` | `Card` — `agentId`: the agent adding it, recorded as `addedBy: { id, title }` (`kanban_add`; its inbox suggestions go to the top); `startUrl`/`doneUrl`: http(s) webhooks, see below. `images`: context images (PNG, JPEG, GIF or WebP, ≤ 5 MiB each, ≤ 10 per card), stored in `<data_dir>/boards/cards/<card id>/` under safe, unique names (`Card.images`: `[{ name, mime, size }]`); the agent that starts or refines the card gets their paths in its prompt, `kanban_list` shows them |
 | `boards.cardUpdate` | `{ projectId, cardId, title?, body?, startUrl?, doneUrl? ("" clears each), column?, index?, addImages?: [{ name?, mimeType, data }], removeImages?: [name] }` | `Card` — images as for `cardAdd` (the UI uploads one per call to stay below the socket's message limit); `index` = position in the (target) column, 0 = top, past the end = bottom |
@@ -229,6 +229,67 @@ project's host in the background (15 s timeout); a non-2xx answer or network err
 | `browser.inspect` | `{ profile, targetId, x, y }` | `{ selector, tag, html (outer, ≤ 4 KiB), text (≤ 1 KiB), styles: {prop: value} (layout/typography/color subset), box: {x,y,width,height}, screenshot: base64 PNG of the element (≤ 800 px) }` — "design mode": the UI attaches this to a prompt |
 | `browser.highlight` | `{ profile, targetId, x?, y? }` | `{}` — overlay-highlight the element under the point (omit x/y to clear) |
 
+### insights — `coocoo-core` + `coocoo-insights` (Stats and Workflows tabs)
+Usage statistics of Coocoo agents (incl. their subagents and advisor) and the workflows around them.
+Every host answers for its own data; the home daemon asks each online peer with `localOnly: true`
+and merges, so a client and the `coocoo_insights` agent tool see the same numbers. Hosts that are
+offline, too old or slow (80 s) are listed with `ok: false` and `error`; their numbers are missing.
+
+`InsightsQuery`: `{ from, to (Unix ms, [from, to)), tzOffset (client's UTC offset in minutes, east
+positive: days and the heatmap use it), project? (id), model? (omp model name), hosts?: [id],
+compare? (default true: also the equally long period before `from`) }`.
+
+| Method | Params | Result |
+|---|---|---|
+| `insights.usage` | `InsightsQuery` | `UsageReport` — `hosts` (per host: `statsDb`, `syncedAt`, `schema` = omp's `rollup_version`, `statsError`, `logSince`, `logEnabled`), `totals` / `prev` (cost split input/output/cache read/cache write, tokens, requests, failed, aborted, prompts, commits, lines, agents, subagents, activeMs, activeDays, streak, cardsDone), `days` (every local day: cost/tokens/requests per model, commits, prompts, flagged, cardsDone), `models` (cacheHit, ttft, tps, failed), `projects`, `agents` (cost by main/subagents/advisor, session files, commits with `match`, `dayCost`, `deleted`), `tools`, `heatmap` (weekday × hour prompts), `frustration` (flagged prompts with omp's signals; `examples` carry the prompt text, ≤ 400 chars), `allModels` |
+| `insights.workflows` | `InsightsQuery` | `WorkflowReport` — `kpis` (agents started, prompts per agent, autonomy, needs-you wait, abort rate, agent → commit; with `prev`), `journey` and `kanban` funnels (count, median time to the next stage, `stuck` examples), `shapes`, `sequences` (3–5 step n-grams per agent or 30-min client session), `features`, `friction`, `lastAnalyze`, `logSince`, `events`/`reconstructed` counts. Examples are `ExampleRef { hostId, agentId?, projectId?, cardId?, label?, ts }` |
+| `insights.events` | `InsightsQuery & { limit? (10 000) }` | `{ events: InsightEvent[], truncated, hosts }` — the recorded log, oldest first, newest `limit` kept |
+| `insights.track` | `{ clientId, device, events: [{ ts, kind ("ui.…"), agentId?, projectId?, cardId?, meta? }] }` | `{}` — client events, recorded by the home daemon (≤ 500 per call; meta values are cut to short strings, numbers and booleans) |
+| `insights.settings` | `{ enabled?, retentionDays? }` (per host) | `{ enabled, retentionDays, logSince?, bytes }` — `[insights]` in `config.toml`; switching off drops buffered events |
+| `insights.clear` | – (per host) | same as `insights.settings` — deletes the log files |
+| `insights.analyze` | `{ projectId, from, to, tzOffset, focus? }` (on the project's host) | `AgentSummary` — starts the pattern-analysis agent with a fixed prompt: read the insights with `coocoo_insights`, compare with the code read-only, add 3–7 evidence-backed inbox cards with `kanban_add`, implement nothing. `lastAnalyze` counts its cards and how many left the inbox |
+
+**Sources.** Tokens, cost, requests, tool calls and prompts come from omp's `~/.omp/stats.db`,
+opened read-only after `omp stats --summary` brought it up to date (at most once per minute, only
+when queried, 60 s limit). Only the columns Coocoo reads are checked; a missing one is reported as
+`statsError` instead of guessed. Rows belong to an agent by `session_file`: its main session files
+(every one it had, from the agent ledger) and everything under `<file without .jsonl>/`
+(subagents, advisor). Cost is omp's `cost_total` at API prices — the API equivalent, not what a
+subscription bills. Commits come from `git log --branches --no-merges --shortstat` of the projects the
+agents worked in; a commit is `exact` when a card recorded it (`kanban_done`), `turn` when its
+committer time lies within one of the agent's turns (± 60 s), `shared` when within turns of several
+agents of the project; others are not counted. A turn runs from a prompt to the last response before
+the next prompt; active time sums the gaps between them, each capped at 10 min.
+
+**Usage log.** `<data_dir>/events/YYYY-MM.jsonl` (UTC months), append-only, buffered ≤ 2 s,
+months older than `retentionDays` (default 365, 0 = forever) are deleted. One `InsightEvent` per
+line: `{ ts, kind, actor: "user" | "agent" | "daemon", device?, clientId?, agentId?, projectId?, cardId?, ok, ms?, meta }`.
+It never holds prompt texts, arguments, file contents or paths; `meta` holds ids, counts and names
+(prompt length, image count, a slash command's name, a panel or dialog name, a model). Recorded are:
+- **Actions** with user intent, by the host that executes them, once (nested calls are not
+  recorded again): `agents.create/prompt/abort/respond/setModel/setThinking/markRead/rename/hibernate/archive/delete`,
+  `boards.card*`, `boards.update`, `boards.source*`, `git.commit/merge/push/fetch/fastForward/prCreate/prMerge/worktreeCreate/worktreeRemove`,
+  `browser.start/open/navigate/watch/input` (input at most every 10 min per client and profile),
+  `terminal.open`, `actions.run`, `projects.add/remove`, `hosts.add/remove`, `insights.analyze`.
+  `actor` is `user` for a client's request (with `device`, `clientId` from `system.hello`), `agent`
+  for a host tool's call (`meta.by` = the agent), and comes with the request when a peer link
+  forwards it (`Request.origin`). The daemon's own calls (diff stats, refreshes) are not recorded.
+- **Domain events** from the agents subsystem, carrying the actor of the request that caused them:
+  `agent.created` (`meta.source` user/card/agent), `agent.deleted`, `turn.start`, `turn.end`
+  (`ms`, `meta.stop` completed/aborted/error, `meta.tools`), `request.ask` / `request.answer` /
+  `request.cancel` (`ms` = wait, `meta.reason` user/omp/process), `model.change` (`meta.cause`
+  user/switch/fallback/respawn), `retry.start`/`retry.end`, `compaction`, `agent.crash`,
+  `agent.hibernate`, `agent.resume`, `command.refused`, `card.add`, `card.move` (`meta.from`/`to`),
+  `card.refined`, `card.delete`.
+- **Client events** (`insights.track`): `ui.route`, `ui.tab`, `ui.panel`, `ui.palette.open|run`,
+  `ui.shortcut`, `ui.dialog.open|submit|cancel`, `ui.slash`, `ui.model.open|pick`, `ui.leave`,
+  `ui.return`, `ui.example`.
+
+Workflow data from before a host's log began is reconstructed (marked `reconstructed`) from agent
+timelines, cards and omp's statistics. The agent ledger `<data_dir>/insights/ledger.jsonl` keeps
+each agent's title, project, directory, worktree, session files and deletion time, so deleted
+agents stay in the statistics.
+
 ## Events
 
 | Event | Payload | Scope |
@@ -262,6 +323,8 @@ such as `ask`; via the vendored official Rust client `crates/omp-rpc`). The daem
   spawn fails with an agent error if the endpoint cannot be obtained;
 - registers host tools (`coocoo_hosts`, `coocoo_projects`, `coocoo_agents`, `coocoo_spawn`,
   `coocoo_send`, `coocoo_wait`) so agents orchestrate other agents on any host of the fleet,
+  `coocoo_insights` (read-only: the Stats/Workflows numbers by section — usage, workflows,
+  friction, features, sequences, events — for a period, project and host),
   `coocoo_actions` (read-only: the project's parsed `.coocoo/actions.toml` and its problems; the tool description carries the file format), and
   `kanban_list`, `kanban_add` (suggestions go to the inbox, work the user asked for to todo), `kanban_move`, `kanban_done`, `kanban_refine` (attach a refinement with mocks, see `boards.refinementSave`) for the board of the agent's project, and `kanban_importers`, `kanban_importer_save` (create/change a script or feed importer; runs it once and reports the result), `kanban_importer_delete` for its inbox importers (agents cannot create or change `command` importers);
 - enables `set_ask_dialog` and surfaces omp `extension_ui_request`s as `UiRequest`s;

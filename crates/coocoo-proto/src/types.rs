@@ -823,6 +823,10 @@ pub struct Card {
     pub source: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+    /// When the card last entered done (cleared when it moves back). Cards finished before this
+    /// field existed have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done_at: Option<i64>,
     /// The agent's closing note (`kanban_done`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,

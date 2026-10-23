@@ -439,6 +439,8 @@ export interface Card {
   source?: string;
   createdAt: number;
   updatedAt: number;
+  /** When it last entered done (cleared when moved back); absent on cards finished before Coocoo recorded it. */
+  doneAt?: number;
   /** The agent's closing note. */
   note?: string;
   commit?: CommitInfo;
@@ -731,8 +733,338 @@ export type AddHostParams =
   | { kind: 'direct'; url: string; token: string; name?: string }
   | { kind: 'ssh'; target: string; sshPort?: number; remotePort?: number; token?: string; install?: boolean; name?: string };
 
+// ─── Insights (usage statistics and workflows) ────────────────────────────────────────────────
+
+export type Device = 'desktop' | 'phone' | 'browser';
+
+export interface InsightsQuery {
+  /** Unix ms, inclusive. */
+  from: number;
+  /** Unix ms, exclusive. */
+  to: number;
+  /** `-new Date().getTimezoneOffset()`: days and the heatmap use it. */
+  tzOffset: number;
+  project?: string;
+  /** Model name as omp records it (`claude-opus-5-5`). */
+  model?: string;
+  /** Host ids; absent = every host. */
+  hosts?: string[];
+  /** Compare with the equally long period before `from` (default true). */
+  compare?: boolean;
+}
+
+export interface InsightHostSource {
+  hostId: string;
+  name: string;
+  /** The host answered. */
+  ok: boolean;
+  /** Why it could not answer (offline, timeout). */
+  error?: string;
+  statsDb?: string;
+  syncedAt?: number;
+  schema?: string;
+  /** Why token/cost numbers are missing (no database, unknown schema, sync failed). */
+  statsError?: string;
+  /** Oldest usage-log entry; older workflow data is reconstructed. */
+  logSince?: number;
+  logEnabled: boolean;
+}
+
+export interface InsightCost {
+  total: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+export interface InsightTokens {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+export interface InsightTotals {
+  cost: InsightCost;
+  tokens: InsightTokens;
+  requests: number;
+  failed: number;
+  aborted: number;
+  prompts: number;
+  commits: number;
+  linesAdded: number;
+  linesDeleted: number;
+  agents: number;
+  subagents: number;
+  activeMs: number;
+  activeDaySet: number[];
+  activeDays: number;
+  /** Longest run of consecutive active days in the period. */
+  streak: number;
+  cardsDone: number;
+}
+
+export interface InsightDay {
+  /** Days since 1970-01-01 in the query's time zone. */
+  index: number;
+  /** `YYYY-MM-DD`. */
+  date: string;
+  /** Unix ms of the local midnight starting the day. */
+  start: number;
+  models: Record<string, { cost: number; tokens: number; requests: number }>;
+  commits: number;
+  prompts: number;
+  flagged: number;
+  cardsDone: number;
+  cardsDoneApprox: number;
+}
+
+export interface InsightModelRow {
+  model: string;
+  provider: string;
+  requests: number;
+  failed: number;
+  cost: InsightCost;
+  tokens: InsightTokens;
+  /** `cacheRead / (input + cacheRead + cacheWrite)`. */
+  cacheHit: number;
+  /** Mean time to first token, ms. */
+  ttft?: number;
+  /** Mean output tokens per second of generation. */
+  tps?: number;
+}
+
+export interface InsightProjectRow {
+  hostId: string;
+  projectId: string;
+  name: string;
+  agents: number;
+  cost: number;
+  commits: number;
+  linesAdded: number;
+  linesDeleted: number;
+  cardsDone: number;
+}
+
+export type CommitMatch = 'exact' | 'turn' | 'shared';
+
+export interface InsightCommit {
+  sha: string;
+  ts: number;
+  summary: string;
+  linesAdded: number;
+  linesDeleted: number;
+  match: CommitMatch;
+}
+
+export interface InsightAgentRow {
+  hostId: string;
+  id: string;
+  title: string;
+  projectId?: string;
+  parentId?: string;
+  createdAt: number;
+  deleted?: boolean;
+  archived?: boolean;
+  /** Most requests first. */
+  models: string[];
+  prompts: number;
+  requests: number;
+  failed: number;
+  toolCalls: number;
+  activeMs: number;
+  cost: InsightCost;
+  costBy: { main: number; subagents: number; advisor: number };
+  /** Requests per omp agent type (`main`, `subagent`, `advisor`). */
+  requestsBy: Record<string, number>;
+  subagentSessions: number;
+  sessionFiles: string[];
+  commits: InsightCommit[];
+  linesAdded: number;
+  linesDeleted: number;
+  cardsDone: number;
+  /** Cost per day, aligned with `UsageReport.days`. */
+  dayCost: number[];
+}
+
+export interface FlaggedPrompt {
+  ts: number;
+  hostId: string;
+  agentId?: string;
+  text: string;
+  signals: string[];
+}
+
+export interface FrustrationSignals {
+  yelling: number;
+  profanity: number;
+  anguish: number;
+  negation: number;
+  repetition: number;
+  blame: number;
+}
+
+export interface UsageReport {
+  query?: InsightsQuery;
+  hosts: InsightHostSource[];
+  totals: InsightTotals;
+  /** The equally long period before `from`. */
+  prev?: InsightTotals;
+  /** Every day of the period, oldest first. */
+  days: InsightDay[];
+  models: InsightModelRow[];
+  projects: InsightProjectRow[];
+  agents: InsightAgentRow[];
+  tools: { name: string; calls: number; errors: number }[];
+  /** Prompts by local weekday (0 = Monday) × hour (0–23). */
+  heatmap: number[][];
+  frustration: { prompts: number; flagged: number; signals: FrustrationSignals; examples: FlaggedPrompt[] };
+  /** Models with requests in the period (ignores the model filter). */
+  allModels: string[];
+}
+
+/** A concrete example behind a number: an agent (and when), or a card. */
+export interface ExampleRef {
+  hostId: string;
+  agentId?: string;
+  projectId?: string;
+  cardId?: string;
+  label?: string;
+  ts: number;
+}
+
+export interface WorkflowKpi {
+  value: number;
+  prev?: number;
+  extra?: number;
+  n: number;
+}
+
+export interface FunnelStage {
+  id: string;
+  label: string;
+  count: number;
+  medianToNextMs?: number;
+  /** Reached this stage but not the next, newest first. */
+  stuck: ExampleRef[];
+}
+
+export interface WorkflowShape {
+  id: string;
+  label: string;
+  /** The rule, in words. */
+  rule: string;
+  agents: number;
+  promptsMedian: number;
+  turnMedianMs: number;
+  costAvg: number;
+  commitRate?: number;
+  examples: ExampleRef[];
+}
+
+export interface WorkflowSequence {
+  /** Step ids (`card.refine`, `request.answer`, `ui.leave`…). */
+  steps: string[];
+  count: number;
+  medianMs: number;
+  commits: number;
+  friction: number;
+  phone: number;
+  examples: ExampleRef[];
+}
+
+export interface WorkflowFeature {
+  id: string;
+  label: string;
+  uses: number;
+  days: number;
+  lastUsed?: number;
+  desktop: number;
+  phone: number;
+  browser: number;
+}
+
+export interface WorkflowFriction {
+  id: string;
+  label: string;
+  count: number;
+  prev?: number;
+  examples: ExampleRef[];
+}
+
+export interface WorkflowReport {
+  query?: InsightsQuery;
+  hosts: InsightHostSource[];
+  logSince?: number;
+  events: number;
+  reconstructed: number;
+  kpis: {
+    /** `extra` = from Kanban cards. */
+    agentsStarted: WorkflowKpi;
+    agentsByAgents: number;
+    /** Median; `extra` = p90. */
+    promptsPerAgent: WorkflowKpi;
+    /** Tool calls per prompt. */
+    autonomy: WorkflowKpi;
+    /** Median ms; `extra` = p90. */
+    needsYouWait: WorkflowKpi;
+    /** Share of turns; `extra` = aborts followed by a steer. */
+    abortRate: WorkflowKpi;
+    /** Share of agents with ≥ 1 commit. */
+    agentCommit: WorkflowKpi;
+  };
+  journey: FunnelStage[];
+  kanban: {
+    stages: FunnelStage[];
+    backMoves: number;
+    /** [finished in one run, finished]. */
+    refinedOneRun: [number, number];
+    unrefinedOneRun: [number, number];
+  };
+  shapes: WorkflowShape[];
+  sequences: WorkflowSequence[];
+  features: WorkflowFeature[];
+  friction: WorkflowFriction[];
+  lastAnalyze?: { hostId: string; projectId: string; agentId: string; at: number; cards: number; accepted: number };
+}
+
+export interface InsightEvent {
+  ts: number;
+  kind: string;
+  actor: 'user' | 'agent' | 'daemon';
+  device?: Device;
+  clientId?: string;
+  host?: string;
+  agentId?: string;
+  projectId?: string;
+  cardId?: string;
+  ok: boolean;
+  ms?: number;
+  meta?: Record<string, unknown>;
+  reconstructed?: boolean;
+}
+
+/** A client event for `insights.track` (`kind` starts with `ui.`). */
+export interface TrackEvent {
+  ts: number;
+  kind: string;
+  agentId?: string;
+  projectId?: string;
+  cardId?: string;
+  meta?: Record<string, string | number | boolean>;
+}
+
+export interface InsightsSettings {
+  enabled: boolean;
+  retentionDays: number;
+  logSince?: number;
+  /** Size of the log files. */
+  bytes: number;
+}
+
 export interface Methods {
-  'system.hello': [Empty | undefined, { protocol: number; host: HostInfo; hosts: HostInfo[] }];
+  'system.hello': [{ client?: { id: string; device: Device } } | undefined, { protocol: number; host: HostInfo; hosts: HostInfo[] }];
   'system.subscribe': [{ scope: 'all' | 'local' }, Ok];
   'hosts.list': [Empty | undefined, HostInfo[]];
   'hosts.add': [AddHostParams, HostInfo];
@@ -740,6 +1072,16 @@ export interface Methods {
   'hosts.rename': [{ id: string; name: string }, HostInfo];
   'stats.watch': [{ enabled: boolean }, Ok];
   'stats.get': [Empty | undefined, HostStats];
+
+  'insights.usage': [InsightsQuery, UsageReport];
+  'insights.workflows': [InsightsQuery, WorkflowReport];
+  /** Content-free usage-log events of every host, oldest first. */
+  'insights.events': [InsightsQuery & { limit?: number }, { events: InsightEvent[]; truncated: boolean; hosts: InsightHostSource[] }];
+  'insights.track': [{ clientId: string; device: Device; events: TrackEvent[] }, Ok];
+  'insights.settings': [{ enabled?: boolean; retentionDays?: number } | undefined, InsightsSettings];
+  'insights.clear': [Empty | undefined, InsightsSettings];
+  /** Starts the pattern-analysis agent in `projectId` (on that project's host). */
+  'insights.analyze': [{ projectId: string; from: number; to: number; tzOffset: number; focus?: string }, AgentSummary];
 
   'terminal.list': [Empty | undefined, TerminalInfo[]];
   'terminal.open': [{ cwd: string; cols?: number; rows?: number }, TerminalInfo];

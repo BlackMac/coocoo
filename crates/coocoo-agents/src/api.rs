@@ -5,6 +5,7 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use coocoo_proto::error::{ok, params};
+use coocoo_proto::insights::slash_name;
 use coocoo_proto::util::{new_id, now_ms};
 use coocoo_proto::{
     AgentStatus, AgentSummary, ApiError, ApiResult, ImageInput, ItemKind, ModelInfo, Project, ProviderUsage, SlashCommand,
@@ -63,6 +64,9 @@ struct CreateParams {
     model: Option<String>,
     thinking: Option<String>,
     parent_id: Option<String>,
+    /// Created to work on a Kanban card (usage log only; not a request parameter).
+    #[serde(skip)]
+    from_card: bool,
 }
 
 #[derive(Deserialize)]
@@ -242,7 +246,7 @@ impl Agents {
             "agents.hibernate" => {
                 let IdParams { id } = params(p)?;
                 let agent = self.get(&id)?;
-                self.stop_process(&agent, Life::Hibernated, Some("Hibernated".to_owned())).await?;
+                self.hibernate(&agent, "Hibernated".to_owned()).await?;
                 ok(agent.summary())
             }
             "agents.archive" => {
@@ -287,6 +291,7 @@ impl Agents {
             model,
             thinking: None,
             parent_id: None,
+            from_card: true,
         })
         .await
     }
@@ -391,6 +396,19 @@ impl Agents {
         self.agents.write().insert(id, agent.clone());
         let summary = agent.summary();
         self.emitter.emit(events::AGENT_UPDATED, &summary);
+        self.record_ledger(&summary, None);
+        let source = match (&summary.parent_id, p.from_card) {
+            (Some(_), _) => "agent",
+            (None, true) => "card",
+            (None, false) => "user",
+        };
+        self.record_agent(&agent, "agent.created", |event| {
+            let event = event.meta("source", source).meta("worktree", summary.worktree.is_some());
+            match &summary.parent_id {
+                Some(parent) => event.meta("parentId", parent.as_str()),
+                None => event,
+            }
+        });
 
         let me = self.clone();
         tokio::spawn(async move {
@@ -418,6 +436,7 @@ impl Agents {
             }
             self.push_item(&agent, ItemKind::User, p.message.trim().to_owned()).await;
             self.push_item(&agent, ItemKind::Error, format!("{command} is not available in Coocoo. {reason}")).await;
+            self.record_agent(&agent, "command.refused", |event| event.meta("command", slash_name(&p.message)));
             return Ok(json!({}));
         }
         {
@@ -468,6 +487,7 @@ impl Agents {
             return Err(ApiError::invalid("`response` must be an object"));
         };
         body.insert("id".to_owned(), Value::String(p.request_id.clone()));
+        let cancelled = body.get("cancelled") == Some(&Value::Bool(true));
         let response = ExtensionUiResponse::from_value(Value::Object(body)).map_err(|e| ApiError::invalid(e.to_string()))?;
         let client = {
             let st = agent.state.lock();
@@ -479,8 +499,10 @@ impl Agents {
         let client = client.ok_or_else(|| ApiError::conflict("the agent process is not running"))?;
         // Queues the frame for the writer thread; does not block.
         client.send(&RpcInbound::ExtensionUiResponse(response)).map_err(client_error)?;
-        if agent.state.lock().resolve_request(&p.request_id).is_some() {
+        let resolved = agent.state.lock().resolve_request(&p.request_id);
+        if let Some(request) = resolved {
             self.emit_resolved(&agent.id, &p.request_id);
+            self.request_closed(&agent, &request, cancelled.then_some("user"));
             self.changed(&agent);
         }
         Ok(json!({}))
@@ -516,7 +538,10 @@ impl Agents {
             }
             None => p.model.clone(),
         };
-        agent.state.lock().summary.model = Some(model.clone());
+        let previous = agent.state.lock().summary.model.replace(model.clone());
+        if previous.as_deref() != Some(model.as_str()) {
+            self.record_model_change(&agent, previous.as_deref(), &model, "user");
+        }
         self.push_item(&agent, ItemKind::Notice, format!("Model: {model}")).await;
         self.changed(&agent);
         ok(agent.summary())
@@ -695,6 +720,8 @@ impl Agents {
             .map_err(ApiError::internal)?;
         }
         self.emitter.emit(events::AGENT_REMOVED, &json!({ "id": agent.id }));
+        self.record_agent(&agent, "agent.deleted", |event| event);
+        self.record_ledger(&agent.summary(), Some(now_ms()));
         Ok(json!({}))
     }
 }

@@ -119,6 +119,16 @@ pub(crate) enum Effect {
     Commands(Vec<SlashCommand>),
     /// `/rename` changed the session title (`session_info_update`).
     Title(String),
+    /// A tool call started (counted per turn for the usage log).
+    ToolStarted,
+    /// omp retries a failed model request (`attempt` counts from 1).
+    RetryStart { attempt: i64 },
+    /// The retries ended: the request went through (`ok`) or they were exhausted.
+    RetryEnd { ok: bool },
+    /// An automatic compaction ended (`ok` = it neither failed nor was aborted).
+    Compaction { ok: bool },
+    /// omp switched to its fallback model; the `Refresh` that follows picks the model up.
+    ModelFallback,
 }
 
 /// Tests compare effects structurally; `TimelineItem` itself has no `PartialEq`.
@@ -459,6 +469,7 @@ impl Mapper {
                     subagents: Vec::new(),
                 });
                 sink.effect(Effect::Upsert(item.clone()));
+                sink.effect(Effect::ToolStarted);
                 self.tools.insert(start.tool_call_id, RunningTool { item, started: Instant::now() });
             }
             RpcAgentEvent::ToolExecutionEnd(end) => {
@@ -511,6 +522,9 @@ impl Mapper {
                     None => new_item(sink, ItemKind::Notice, None, false),
                 };
                 item.partial = false;
+                if end.skipped != Some(true) {
+                    sink.effect(Effect::Compaction { ok: !end.aborted && end.error_message.is_none() });
+                }
                 item.text = Some(if end.aborted {
                     "Compaction aborted".to_owned()
                 } else if end.skipped == Some(true) {
@@ -540,6 +554,7 @@ impl Mapper {
                 );
                 let item = TimelineItem { text: Some(text), partial: true, ..item };
                 sink.effect(Effect::Upsert(item.clone()));
+                sink.effect(Effect::RetryStart { attempt: start.attempt });
                 self.retry = Some(item);
             }
             RpcAgentEvent::AutoRetryEnd(end) => {
@@ -559,9 +574,11 @@ impl Mapper {
                     self.error_shown = true;
                 }
                 sink.effect(Effect::Upsert(item));
+                sink.effect(Effect::RetryEnd { ok: end.success });
             }
             RpcAgentEvent::RetryFallbackApplied(e) => {
                 notice(sink, ItemKind::Notice, format!("Switched model {} → {}", e.from, e.to));
+                sink.effect(Effect::ModelFallback);
                 sink.effect(Effect::Refresh);
             }
             RpcAgentEvent::ModelChanged(_) => sink.effect(Effect::Refresh),
@@ -910,6 +927,7 @@ mod tests {
         );
         // `setWidget` presentation frames are ignored.
         assert!(!rec.effects.iter().any(|e| matches!(e, Effect::Request { .. })));
+        assert_eq!(rec.effects.iter().filter(|e| matches!(e, Effect::ToolStarted)).count(), 1, "one tool call");
     }
 
     #[test]
@@ -967,6 +985,9 @@ mod tests {
         assert_eq!(payload["message"], "rm -rf build");
         assert!(rec.effects.contains(&Effect::Resolve { id: "ui1".into() }));
         assert!(rec.effects.contains(&Effect::SubagentStarted("Sub1".into())));
+        assert!(rec.effects.contains(&Effect::ToolStarted));
+        assert!(rec.effects.contains(&Effect::RetryStart { attempt: 1 }));
+        assert!(rec.effects.contains(&Effect::RetryEnd { ok: false }));
         assert!(rec.effects.contains(&Effect::PromptResult {
             status: PromptStatus::Error,
             settled: true,

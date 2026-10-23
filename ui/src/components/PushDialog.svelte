@@ -40,7 +40,7 @@
   async function confirm() {
     if (!a || !g) return;
     await pushNow(a, g);
-    ui.dialog = null;
+    ui.submitDialog();
   }
 </script>
 

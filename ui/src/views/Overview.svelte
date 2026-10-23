@@ -6,6 +6,7 @@
   import { href, router } from '../lib/router.svelte';
   import { agentState, GROUPS } from '../lib/status';
   import { ui } from '../lib/ui.svelte';
+  import { track } from '../lib/track';
   import { CircleAlert, CircleCheck, Inbox, Plus, FolderGit2, ChevronDown } from '../lib/icons';
   import HostCard from '../components/HostCard.svelte';
   import AgentRow from '../components/AgentRow.svelte';
@@ -13,6 +14,7 @@
   import RequestCard from '../components/RequestCard.svelte';
   import DiffCount from '../components/DiffCount.svelte';
   import HostDot from '../components/HostDot.svelte';
+  import ViewTabs from '../insights/ViewTabs.svelte';
 
   $effect(() => fleet.watchStats());
 
@@ -47,6 +49,7 @@
     if (e.key === 'j' || e.key === 'k') {
       if (!fleet.attention.length) return;
       e.preventDefault();
+      track('shortcut', { meta: { key: e.key } });
       focusItem(qi < 0 ? 0 : qi + (e.key === 'j' ? 1 : -1));
     } else if (e.key === 'Enter' && t.dataset.q !== undefined) {
       const item = fleet.attention[Number(t.dataset.q)];
@@ -77,7 +80,7 @@
 <div class="scroll">
   <div class="page">
     <div class="titlebar">
-      <h1>Overview</h1>
+      <ViewTabs current="overview" />
       <div class="summary num">
         <span><i class="d working"></i>{counts.working} working</span>
         <span><i class="d needs"></i>{counts.needs} need you</span>
@@ -210,12 +213,6 @@
     align-items: baseline;
     gap: 16px;
     flex-wrap: wrap;
-  }
-  h1 {
-    margin: 0;
-    font-size: var(--fs-xl);
-    font-weight: 600;
-    letter-spacing: -0.02em;
   }
   .summary {
     display: flex;

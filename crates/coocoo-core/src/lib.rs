@@ -8,6 +8,7 @@
 mod app;
 pub mod config;
 mod conn;
+mod insights;
 mod peer;
 mod server;
 mod ssh;
@@ -21,6 +22,7 @@ use anyhow::Context;
 use axum::serve::ListenerExt;
 use coocoo_agents::Agents;
 use coocoo_browser::Browser;
+use coocoo_insights::Insights;
 use coocoo_proto::{Emitter, Paths};
 use coocoo_workspace::{PidSource, Stats, Terminals, Workspace};
 use parking_lot::Mutex;
@@ -85,10 +87,17 @@ impl Daemon {
         };
         let stats = Stats::new(emitter.clone(), pids);
         let terminals = Terminals::new(emitter.clone());
+        let insights = Insights::new(&paths.data_dir, agents.omp_path().to_owned(), &config.insights);
+        agents.set_insights(Arc::new(crate::insights::Sink(insights.clone())));
+        {
+            // Agents that existed before the ledger (or changed while the daemon was down).
+            let (insights, agents) = (insights.clone(), agents.summaries());
+            tokio::task::spawn_blocking(move || insights.backfill(&agents));
+        }
 
         let host_id = config.host_id.clone();
         let token = config.token.clone();
-        let app = App::new(paths, config, emitter.clone(), Subsystems { workspace, stats, terminals, agents, browser });
+        let app = App::new(paths, config, emitter.clone(), Subsystems { workspace, stats, terminals, agents, browser, insights });
         app.agents.set_orchestrator(Arc::new(Orch {
             app: Arc::downgrade(&app),
             host_id: host_id.clone(),
@@ -146,7 +155,7 @@ impl Daemon {
         self.app.agents.drain().await;
     }
 
-    /// Graceful stop: peers, agents (sessions stay resumable), browsers, server.
+    /// Graceful stop: peers, agents (sessions stay resumable), browsers, usage log, server.
     /// Idempotent; returns after everything stopped or the internal timeouts expired.
     pub async fn shutdown(&self) {
         if self.app.shutdown.send_replace(true) {
@@ -162,6 +171,11 @@ impl Daemon {
         let subsystems = async { tokio::join!(self.app.agents.shutdown(), self.app.browser.shutdown()) };
         if tokio::time::timeout(Duration::from_secs(15), subsystems).await.is_err() {
             tracing::warn!("subsystems did not stop within 15s");
+        }
+        // The usage log buffers up to 2 s of events; the stops above added the last ones.
+        let insights = self.app.insights.clone();
+        if let Err(err) = tokio::task::spawn_blocking(move || insights.flush()).await {
+            tracing::warn!("flushing the usage log failed: {err}");
         }
         let server = self.server.lock().take();
         if let Some(server) = server

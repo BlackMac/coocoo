@@ -11,6 +11,7 @@
   import { router } from '../lib/router.svelte';
   import { agentState, STATE_LABEL } from '../lib/status';
   import { ui, type PanelTab } from '../lib/ui.svelte';
+  import { track } from '../lib/track';
   import { Archive, Ellipsis, FileDiff, Globe, Info, ListChecks, Moon, PanelRight, SquareKanban, Terminal, Trash2, MessageSquareText } from '../lib/icons';
   import StatusDot from '../components/StatusDot.svelte';
   import InlineEdit from '../components/InlineEdit.svelte';
@@ -64,6 +65,12 @@
   const loadChanges = () => (changesMod ??= import('../panels/ChangesPanel.svelte'));
   const loadBrowser = () => (browserMod ??= import('../panels/BrowserPanel.svelte'));
   const loadTerminal = () => (terminalMod ??= import('../panels/TerminalPanel.svelte'));
+  const by = $derived({ agentId: id, projectId: a?.projectId ?? undefined });
+
+  function togglePanel() {
+    ui.panel.open = !ui.panel.open;
+    if (ui.panel.open) track('panel', { ...by, meta: { panel: ui.panel.tab } });
+  }
 
   async function act(method: 'agents.hibernate' | 'agents.archive', label: string) {
     try {
@@ -137,7 +144,7 @@
         <div class="hacts">
           {#if project}<ActionsButton {project} agent={a} />{/if}
           <Menu label="Agent actions" items={menu}>{#snippet trigger()}<Ellipsis size={15} />{/snippet}</Menu>
-          <button class="btn ghost icon sm toggle" class:active={ui.panel.open} title="Toggle side panel" aria-label="Toggle side panel" onclick={() => (ui.panel.open = !ui.panel.open)}>
+          <button class="btn ghost icon sm toggle" class:active={ui.panel.open} title="Toggle side panel" aria-label="Toggle side panel" onclick={togglePanel}>
             <PanelRight size={15} />
           </button>
         </div>
@@ -145,13 +152,13 @@
       <nav class="mtabs" aria-label="Agent panes">
         <button class:on={ui.mobilePane === 'chat'} onclick={() => (ui.mobilePane = 'chat')}><MessageSquareText size={14} />Chat</button>
         {#each tabs as t (t.id)}
-          <button class:on={ui.mobilePane === t.id} onclick={() => ui.showPanel(t.id)}><t.icon size={14} />{t.label}</button>
+          <button class:on={ui.mobilePane === t.id} onclick={() => ui.showPanel(t.id, by)}><t.icon size={14} />{t.label}</button>
         {/each}
       </nav>
       {#if a.error && st === 'error'}
         <div class="errbar">{a.error}</div>
       {/if}
-      <Transcript {timeline} agent={a} />
+      <Transcript {timeline} agent={a} at={router.route.name === 'agent' ? router.route.at : undefined} />
       <div class="bottom">
         {#if requests.length}
           <div class="reqs">{#each requests as r (r.id)}<RequestCard request={r} {host} />{/each}</div>
@@ -168,7 +175,7 @@
       <aside class="panel">
         <div class="tabs" role="tablist">
           {#each tabs as t (t.id)}
-            <button role="tab" class:on={ui.panel.tab === t.id} aria-selected={ui.panel.tab === t.id} onclick={() => ui.showPanel(t.id)}>
+            <button role="tab" class:on={ui.panel.tab === t.id} aria-selected={ui.panel.tab === t.id} onclick={() => ui.showPanel(t.id, by)}>
               <t.icon size={14} />{t.label}
               {#if t.id === 'changes' && a.diff?.files}<span class="cnt num">{a.diff.files}</span>{/if}
               {#if t.id === 'plan' && a.todos?.total}<span class="cnt num">{a.todos.done}/{a.todos.total}</span>{/if}

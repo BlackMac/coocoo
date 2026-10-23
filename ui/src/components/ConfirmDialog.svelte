@@ -10,7 +10,7 @@
     busy = true;
     try {
       await dialog.run();
-      ui.dialog = null;
+      ui.submitDialog();
     } catch (err) {
       ui.error(`${dialog.action} failed`, err);
     } finally {

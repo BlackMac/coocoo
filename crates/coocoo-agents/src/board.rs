@@ -6,11 +6,13 @@
 //! host tool, which commits the work when its directory is a git repository. Stored in
 //! `<data_dir>/boards/<project id>.json`.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use coocoo_proto::error::{ok, params};
+use coocoo_proto::insights::InsightEvent;
 use coocoo_proto::util::{new_id, now_ms, read_json, truncate, write_json_atomic};
 use base64::Engine as _;
 use coocoo_proto::{
@@ -252,6 +254,7 @@ fn new_card(title: String, body: Option<String>, column: CardColumn) -> Card {
         source: None,
         created_at: now,
         updated_at: now,
+        done_at: None,
         note: None,
         commit: None,
         agent_id: None,
@@ -444,14 +447,76 @@ fn card_mut<'a>(board: &'a mut Board, card_id: &str) -> ApiResult<&'a mut Card> 
     board.cards.iter_mut().find(|c| c.id == card_id).ok_or_else(|| ApiError::not_found(format_args!("card {card_id}")))
 }
 
+/// Move a card; entering done stamps `done_at`, leaving done clears it.
 fn move_card(board: &mut Board, card_id: &str, column: CardColumn, index: usize) -> ApiResult<Card> {
     let at = board.cards.iter().position(|c| c.id == card_id).ok_or_else(|| ApiError::not_found(format_args!("card {card_id}")))?;
     let mut card = board.cards.remove(at);
+    let now = now_ms();
+    card.done_at = match column {
+        CardColumn::Done if card.column == CardColumn::Done => card.done_at,
+        CardColumn::Done => Some(now),
+        _ => None,
+    };
     card.column = column;
-    card.updated_at = now_ms();
+    card.updated_at = now;
     let to = insert_at(&board.cards, column, index);
     board.cards.insert(to, card.clone());
     Ok(card)
+}
+
+/// Name of a column in the usage log (its wire name).
+fn column_name(column: CardColumn) -> &'static str {
+    match column {
+        CardColumn::Inbox => "inbox",
+        CardColumn::Todo => "todo",
+        CardColumn::Doing => "doing",
+        CardColumn::Done => "done",
+    }
+}
+
+/// What the usage log compares between two states of a board: column and refinement time per card.
+type CardMarks = HashMap<String, (CardColumn, Option<i64>)>;
+
+fn card_marks(board: &Board) -> CardMarks {
+    board.cards.iter().map(|c| (c.id.clone(), (c.column, c.refinement.as_ref().map(|r| r.at)))).collect()
+}
+
+/// Usage-log events (without project) for what changed on `board` since `before`. Diffing the
+/// whole board also catches moves made on the side, like a card started inside another request.
+fn card_events(before: &CardMarks, board: &Board) -> Vec<InsightEvent> {
+    let mut events = Vec::new();
+    for card in &board.cards {
+        let refined_at = card.refinement.as_ref().map(|r| r.at);
+        let Some(&(column, was_refined_at)) = before.get(&card.id) else {
+            let mut event = InsightEvent::new("card.add")
+                .card(card.id.as_str())
+                .meta("column", column_name(card.column))
+                .meta("byAgent", card.added_by.is_some());
+            if let Some(by) = &card.added_by {
+                event = event.agent(by.id.as_str());
+            }
+            events.push(event);
+            continue;
+        };
+        if column != card.column {
+            let mut event =
+                InsightEvent::new("card.move").card(card.id.as_str()).meta("from", column_name(column)).meta("to", column_name(card.column));
+            if let Some(agent) = &card.agent_id {
+                event = event.agent(agent.as_str());
+            }
+            events.push(event);
+        }
+        if refined_at.is_some() && refined_at != was_refined_at {
+            let mut event = InsightEvent::new("card.refined").card(card.id.as_str());
+            if let Some(agent) = card.refinement.as_ref().and_then(|r| r.agent_id.as_ref()).or(card.agent_id.as_ref()) {
+                event = event.agent(agent.as_str());
+            }
+            events.push(event);
+        }
+    }
+    let current: HashSet<&str> = board.cards.iter().map(|c| c.id.as_str()).collect();
+    events.extend(before.keys().filter(|id| !current.contains(id.as_str())).map(|id| InsightEvent::new("card.delete").card(id.as_str())));
+    events
 }
 
 /// The card as the agent sees it: title, details, source link, images.
@@ -873,7 +938,8 @@ impl Agents {
     }
 
     /// Run `f` on the project's board (loaded on first use); persist and announce it when `f`
-    /// reports a change. Callers check the project exists first.
+    /// reports a change, and report the card changes to the usage log. Callers check the project
+    /// exists first.
     pub(crate) fn edit_board<R>(&self, project_id: &str, f: impl FnOnce(&mut Board) -> ApiResult<(R, bool)>) -> ApiResult<R> {
         let mut boards = self.boards.lock();
         let board = boards.entry(project_id.to_owned()).or_insert_with(|| match read_json::<Board>(&self.board_file(project_id)) {
@@ -883,9 +949,15 @@ impl Agents {
                 Board::default()
             }
         });
+        let before = self.insights.get().map(|_| card_marks(board));
         let (result, changed) = f(board)?;
         if changed {
             write_json_atomic(&self.board_file(project_id), &*board)?;
+            if let Some(before) = before {
+                for event in card_events(&before, board) {
+                    self.record(|| event.project(Some(project_id)));
+                }
+            }
             self.emitter.emit(events::PROJECT_BOARD, &BoardEvent { project_id: project_id.to_owned(), board: board.clone() });
         }
         Ok(result)
@@ -1623,6 +1695,41 @@ mod tests {
         move_card(&mut b, "b", CardColumn::Done, usize::MAX).unwrap();
         assert_eq!(columns(&b, CardColumn::Done), ["x", "b"]);
         assert!(move_card(&mut b, "nope", CardColumn::Done, 0).is_err());
+    }
+
+    #[test]
+    fn done_at_follows_the_done_column() {
+        let mut b = Board { cards: vec![card("a", CardColumn::Doing), card("x", CardColumn::Done)], ..Board::default() };
+        let done_at = move_card(&mut b, "a", CardColumn::Done, 0).unwrap().done_at;
+        assert!(done_at.is_some());
+        assert_eq!(move_card(&mut b, "a", CardColumn::Done, usize::MAX).unwrap().done_at, done_at, "reordering within done keeps it");
+        assert_eq!(move_card(&mut b, "a", CardColumn::Todo, 0).unwrap().done_at, None);
+    }
+
+    #[test]
+    fn board_changes_become_card_events() {
+        let mut b = Board { cards: vec![card("a", CardColumn::Inbox), card("b", CardColumn::Todo), card("gone", CardColumn::Todo)], ..Board::default() };
+        let before = card_marks(&b);
+        move_card(&mut b, "a", CardColumn::Todo, 0).unwrap();
+        b.cards.retain(|c| c.id != "gone");
+        let c = card_mut(&mut b, "b").unwrap();
+        c.agent_id = Some("worker".into());
+        c.refinement = Some(Refinement { text: "r".into(), attachments: vec![], agent_id: Some("refiner".into()), agent_title: None, at: 5 });
+        let mut added = card("n", CardColumn::Inbox);
+        added.added_by = Some(AgentRef { id: "suggester".into(), title: "S".into() });
+        b.cards.push(added);
+        let events: Vec<(String, String, Option<String>, Value)> =
+            card_events(&before, &b).into_iter().map(|e| (e.kind, e.card_id.unwrap(), e.agent_id, Value::Object(e.meta))).collect();
+        assert_eq!(
+            events,
+            vec![
+                ("card.move".into(), "a".into(), None, json!({ "from": "inbox", "to": "todo" })),
+                ("card.refined".into(), "b".into(), Some("refiner".into()), json!({})),
+                ("card.add".into(), "n".into(), Some("suggester".into()), json!({ "column": "inbox", "byAgent": true })),
+                ("card.delete".into(), "gone".into(), None, json!({})),
+            ]
+        );
+        assert!(card_events(&card_marks(&b), &b).is_empty(), "an unchanged board reports nothing");
     }
 
     #[test]

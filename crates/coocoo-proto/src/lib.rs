@@ -5,6 +5,7 @@
 //! - [`bus`]: in-process event fan-out ([`Emitter`]) and per-connection sinks ([`ConnSink`]).
 //! - [`ApiError`]: the only error type that crosses a subsystem boundary.
 //! - [`Orchestrator`]: routed calls back into the daemon (local or peer host).
+//! - [`insights`]: the usage log contract (events, agent ledger, who caused a request).
 //! - [`paths`], [`util`]: storage locations, atomic JSON persistence, ids, clocks.
 //!
 //! Subsystem crates (`coocoo-agents`, `coocoo-browser`, `coocoo-workspace`) depend only on this
@@ -12,6 +13,7 @@
 
 pub mod bus;
 pub mod error;
+pub mod insights;
 pub mod orchestrator;
 pub mod paths;
 pub mod types;
