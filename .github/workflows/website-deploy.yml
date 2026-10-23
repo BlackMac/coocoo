@@ -72,6 +72,8 @@ jobs:
             set sftp:auto-confirm $confirm
             set net:max-retries 2
             set net:timeout 20
+            # Hetzner runs ProFTPD mod_sftp; with lftp's default protocol 6 every file open fails.
+            set sftp:protocol-version 3
             $auth
             mirror --reverse --delete --verbose --parallel=4 \
               --exclude-glob 'cache/*.json' --exclude-glob 'cache/tmp*' \
