@@ -34,6 +34,7 @@
     pushBlocker,
     pushHint,
     pushing,
+    isWorking,
     refreshPr,
     rememberMergeMethod,
     showPush,
@@ -61,6 +62,8 @@
   const ffBlocker = $derived(fastForwardBlocker(g));
   const showFastForward = $derived(!!g.wt.upstream && g.wt.behind > 0);
   const live = $derived(a.status !== 'stopped');
+  /** Mid-turn the agent may still commit, push or rewrite the branch: actions wait for the answer. */
+  const answering = $derived(isWorking(a));
   const askLabel = $derived(g.severity === 'bad' ? 'Ask agent to resolve' : 'Ask agent to update');
   const showAsk = $derived(live && (g.severity === 'bad' || g.behind > 0));
   /** The base the worktree was created from, when the project has moved to another branch. */
@@ -249,14 +252,14 @@
         <label class="chk"><input type="checkbox" bind:checked={prDraftOnly} /> Draft</label>
       </div>
       <div class="acts">
-        <button class="btn sm primary" disabled={filling || !prTitle.trim() || !!busyPr} onclick={submitPr}>
+        <button class="btn sm primary" disabled={filling || !prTitle.trim() || !!busyPr || answering} onclick={submitPr}>
           {#if busyPr === 'create'}<span class="spinner"></span>{/if}Push &amp; create
         </button>
         {#if live}
-          <button class="btn sm" disabled={!!busyPr} onclick={letAgentWrite}><Bot size={13} />Let the agent write it</button>
+          <button class="btn sm" disabled={!!busyPr || answering} onclick={letAgentWrite}><Bot size={13} />Let the agent write it</button>
         {/if}
         <button class="btn sm end" onclick={() => (form = false)}>Cancel</button>
-        <span class="why">Pushes first if needed. Base: <span class="mono">{g.base ?? 'the default branch'}</span> (the project checkout's branch).</span>
+        <span class="why">{#if answering}Unavailable while the agent is answering. {/if}Pushes first if needed. Base: <span class="mono">{g.base ?? 'the default branch'}</span> (the project checkout's branch).</span>
       </div>
     {:else}
       <div class="hd">
@@ -400,16 +403,16 @@
           <span class="ic" class:spin={busyFetch}><RefreshCw size={13} /></span>Fetch
         </button>
         {#if pushVisible}
-          <button class="btn sm" disabled={!!pushBlk || busyPush} onclick={() => (g.kind === 'checkout' ? run(() => push(a, g)) : push(a, g))}>
+          <button class="btn sm" disabled={!!pushBlk || busyPush || answering} onclick={() => (g.kind === 'checkout' ? run(() => push(a, g)) : push(a, g))}>
             {#if busyPush}<span class="spinner"></span>{:else}<ArrowUpFromLine size={13} />{/if}Push{g.kind === 'checkout' ? '…' : ''}
           </button>
         {/if}
         {#if canCreatePr}
-          <button class="btn sm" class:primary={!showAsk && !pr} onclick={openForm}><GitPullRequest size={13} />Create pull request…</button>
+          <button class="btn sm" class:primary={!showAsk && !pr} disabled={answering} onclick={openForm}><GitPullRequest size={13} />Create pull request…</button>
         {/if}
         {#if pr && prOpen && !prBlk}
           <span class="split">
-            <button class="btn sm" class:primary={!mergeBlk} disabled={!!mergeBlk || !!busyPr} onclick={() => mergePr(g, pr, method, deleteBranch)}>
+            <button class="btn sm" class:primary={!mergeBlk} disabled={!!mergeBlk || !!busyPr || answering} onclick={() => mergePr(g, pr, method, deleteBranch)}>
               {#if busyPr === 'merge'}<span class="spinner"></span>{:else}<GitMerge size={13} />{/if}{MERGE_LABEL[method]}
             </button>
             {#if methods.length > 1}
@@ -435,19 +438,22 @@
           {/if}
         {/if}
         {#if pr && prOpen && pr.checks.failed && live}
-          <button class="btn sm primary" onclick={() => run(() => askAgent(a, fixChecksPrompt(pr)))}><Bot size={13} />Ask agent to fix checks</button>
+          <button class="btn sm primary" disabled={answering} onclick={() => run(() => askAgent(a, fixChecksPrompt(pr)))}><Bot size={13} />Ask agent to fix checks</button>
         {/if}
         {#if showFastForward}
           <button class="btn sm" disabled={!!ffBlocker} onclick={() => run(() => fastForward(g))}><ArrowDownToLine size={13} />Fast-forward</button>
         {/if}
         {#if showAsk}
-          <button class="btn sm primary" onclick={() => run(() => askToUpdate(a, g, now.value))}><Bot size={13} />{askLabel}</button>
+          <button class="btn sm primary" disabled={answering} onclick={() => run(() => askToUpdate(a, g, now.value))}><Bot size={13} />{askLabel}</button>
         {/if}
         {#if g.cleanable && a.worktree && oncleanup}
-          <button class="btn sm danger" onclick={() => run(oncleanup)}><Trash2 size={13} />Clean up worktree…</button>
+          <button class="btn sm danger" disabled={answering} onclick={() => run(oncleanup)}><Trash2 size={13} />Clean up worktree…</button>
         {/if}
         {#if pr && prOpen && !prBlk}
           <label class="chk wide"><input type="checkbox" bind:checked={deleteBranch} /> Delete remote branch after merge</label>
+        {/if}
+        {#if answering}
+          <span class="why">Git actions are unavailable while the agent is answering.</span>
         {/if}
         {#if pushVisible && pushBlk}
           <span class="why">Push unavailable: {pushBlk}.</span>

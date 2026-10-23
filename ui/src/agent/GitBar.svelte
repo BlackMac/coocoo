@@ -2,7 +2,7 @@
   import { key } from '../lib/fleet.svelte';
   import { now } from '../lib/clock.svelte';
   import type { AgentSummary } from '../lib/protocol';
-  import { OPERATION_LABEL, askToUpdate, dismiss, fetchedLabel, fetchProject, fetching, isDismissed, isStale, needsBar, plural, type AgentGit } from '../lib/git.svelte';
+  import { OPERATION_LABEL, askToUpdate, dismiss, fetchedLabel, fetchProject, fetching, isDismissed, isStale, isWorking, needsBar, plural, type AgentGit } from '../lib/git.svelte';
   import { Bot, RefreshCw, TriangleAlert, X } from '../lib/icons';
 
   // Above the composer: git problems to sort out before the next prompt (a checkout behind its
@@ -11,6 +11,7 @@
 
   const visible = $derived(a.status !== 'stopped' && needsBar(g) && !isDismissed(a, g));
   const busyFetch = $derived(!!fetching[key(g.project.hostId, g.project.id)]);
+  const answering = $derived(isWorking(a));
 </script>
 
 {#if visible}
@@ -34,7 +35,7 @@
         <span class="ic" class:spin={busyFetch}><RefreshCw size={13} /></span><span class="wide">Fetch</span>
       </button>
     {/if}
-    <button class="btn sm primary" onclick={() => askToUpdate(a, g, now.value)}>
+    <button class="btn sm primary" disabled={answering} title={answering ? 'Unavailable while the agent is answering' : undefined} onclick={() => askToUpdate(a, g, now.value)}>
       <Bot size={13} /><span class="wide">{g.severity === 'bad' ? 'Ask agent to resolve' : 'Ask agent to update'}</span>
     </button>
     <button class="btn ghost icon sm" title="Hide until this changes" aria-label="Hide" onclick={() => dismiss(a, g)}><X size={13} /></button>
