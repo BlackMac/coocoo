@@ -9,6 +9,11 @@ on:
       - 'website/**'
       - '.github/workflows/website-deploy.yml'
   workflow_dispatch:
+    inputs:
+      debug:
+        description: 'Verbose SSH connection test before the upload'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -52,6 +57,11 @@ jobs:
             # Key login (Hetzner: main FTP user only). The empty password after the comma keeps
             # lftp from asking for one.
             printf '%s\n' "$SFTP_KEY" > ~/.ssh/deploy_key && chmod 600 ~/.ssh/deploy_key
+            if [ "${{ inputs.debug }}" = "true" ]; then
+              ssh-keygen -l -f ~/.ssh/deploy_key || true
+              echo pwd | sftp -v -b - -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes \
+                -o StrictHostKeyChecking=accept-new "$SFTP_USER@$SFTP_HOST" || true
+            fi
             auth="set sftp:connect-program 'ssh -a -x -i $HOME/.ssh/deploy_key -o IdentitiesOnly=yes'
             open -u '$SFTP_USER,' 'sftp://$SFTP_HOST'"
           else
