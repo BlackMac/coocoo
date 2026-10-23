@@ -62,6 +62,20 @@ struct CardAddParams {
     /// Webhooks for start and done (http/https).
     start_url: Option<String>,
     done_url: Option<String>,
+    /// Context images for the agent.
+    #[serde(default)]
+    images: Vec<ImageUpload>,
+}
+
+/// An image the client sends with a card.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImageUpload {
+    /// File name; pasted images have none.
+    name: Option<String>,
+    mime_type: String,
+    /// Base64.
+    data: String,
 }
 
 #[derive(Deserialize)]
@@ -79,6 +93,11 @@ struct CardUpdateParams {
     start_url: Option<String>,
     /// `""` clears it.
     done_url: Option<String>,
+    #[serde(default)]
+    add_images: Vec<ImageUpload>,
+    /// Names of images to remove.
+    #[serde(default)]
+    remove_images: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -211,6 +230,7 @@ fn new_card(title: String, body: Option<String>, column: CardColumn) -> Card {
         start_url: None,
         done_url: None,
         hook_error: None,
+        images: Vec::new(),
         refining: false,
         refinement: None,
     }
@@ -228,6 +248,78 @@ fn attachment_mime(path: &Path) -> Option<&'static str> {
         "html" | "htm" => "text/html",
         _ => return None,
     })
+}
+
+/// File extension for an accepted card image type (no SVG: it can carry scripts).
+fn image_ext(mime: &str) -> Option<&'static str> {
+    Some(match mime {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        _ => return None,
+    })
+}
+
+/// Decode and check uploaded card images; names are made safe and unique among `taken` (the
+/// card's images that stay) and each other.
+fn decode_images(uploads: Vec<ImageUpload>, taken: &[String]) -> ApiResult<Vec<(Attachment, Vec<u8>)>> {
+    if taken.len() + uploads.len() > MAX_ATTACHMENTS {
+        return Err(ApiError::invalid(format!("a card can have at most {MAX_ATTACHMENTS} images")));
+    }
+    let mut out: Vec<(Attachment, Vec<u8>)> = Vec::with_capacity(uploads.len());
+    for upload in uploads {
+        let label = upload.name.clone().unwrap_or_else(|| "pasted image".to_owned());
+        let ext = image_ext(&upload.mime_type)
+            .ok_or_else(|| ApiError::invalid(format!("{label}: only PNG, JPEG, GIF and WebP images can be attached")))?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(upload.data.as_bytes())
+            .map_err(|_| ApiError::invalid(format!("{label}: the image data is not valid base64")))?;
+        if bytes.len() > MAX_ATTACHMENT_BYTES {
+            return Err(ApiError::invalid(format!("{label} is larger than {} MiB", MAX_ATTACHMENT_BYTES >> 20)));
+        }
+        let mut raw = upload.name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| format!("image.{ext}"));
+        if attachment_mime(Path::new(&raw)).is_none_or(|m| !m.starts_with("image/") || m == "image/svg+xml") {
+            raw = format!("{raw}.{ext}");
+        }
+        let names = taken.iter().map(String::as_str).chain(out.iter().map(|(a, _)| a.name.as_str()));
+        let name = attachment_name(Path::new(&raw), names);
+        out.push((Attachment { name, mime: upload.mime_type, size: bytes.len() as u64 }, bytes));
+    }
+    Ok(out)
+}
+
+/// Write decoded images into `dir`; on failure the ones written are removed again.
+async fn write_images(dir: &Path, images: &[(Attachment, Vec<u8>)]) -> ApiResult<()> {
+    if images.is_empty() {
+        return Ok(());
+    }
+    tokio::fs::create_dir_all(dir).await?;
+    for (i, (attachment, bytes)) in images.iter().enumerate() {
+        if let Err(err) = tokio::fs::write(dir.join(&attachment.name), bytes).await {
+            remove_images(dir, images[..i].iter().map(|(a, _)| a.name.as_str())).await;
+            return Err(err.into());
+        }
+    }
+    Ok(())
+}
+
+/// Delete image files (missing ones are fine).
+async fn remove_images(dir: &Path, names: impl Iterator<Item = &str>) {
+    for name in names {
+        let _ = tokio::fs::remove_file(dir.join(name)).await;
+    }
+}
+
+/// Where a card's refinement attachments are kept.
+fn attachment_dir(boards_dir: &Path, card_id: &str) -> PathBuf {
+    boards_dir.join("attachments").join(card_id)
+}
+
+/// Where a card's context images are kept (apart from the refinement's, which a new refinement
+/// replaces wholesale).
+fn image_dir(boards_dir: &Path, card_id: &str) -> PathBuf {
+    boards_dir.join("cards").join(card_id)
 }
 
 /// A safe file name for an attachment, unique among `taken`: the file's name with anything but
@@ -341,8 +433,8 @@ fn move_card(board: &mut Board, card_id: &str, column: CardColumn, index: usize)
     Ok(card)
 }
 
-/// The card as the agent sees it: title, details, source link.
-fn card_brief(card: &Card) -> String {
+/// The card as the agent sees it: title, details, source link, images.
+fn card_brief(card: &Card, boards_dir: &Path) -> String {
     let mut text = format!("**{}**", card.title);
     if let Some(body) = &card.body {
         text.push_str("\n\n");
@@ -350,6 +442,13 @@ fn card_brief(card: &Card) -> String {
     }
     if let Some(url) = &card.url {
         text.push_str(&format!("\n\nSource: {url}"));
+    }
+    if !card.images.is_empty() {
+        text.push_str("\n\nImages (context from the user; look at them with your read tool):");
+        let dir = image_dir(boards_dir, &card.id);
+        for image in &card.images {
+            text.push_str(&format!("\n- {}", dir.join(&image.name).display()));
+        }
     }
     text
 }
@@ -367,8 +466,9 @@ fn refinement_brief(refinement: &Refinement, attachments: &Path) -> String {
 }
 
 /// Prompt for a started card.
-fn card_prompt(card: &Card, attachments: &Path) -> String {
-    let mut text = format!("Work on this card from the project's Kanban board (card id `{}`):\n\n{}", card.id, card_brief(card));
+fn card_prompt(card: &Card, boards_dir: &Path) -> String {
+    let attachments = &attachment_dir(boards_dir, &card.id);
+    let mut text = format!("Work on this card from the project's Kanban board (card id `{}`):\n\n{}", card.id, card_brief(card, boards_dir));
     if let Some(refinement) = &card.refinement {
         text.push_str("\n\n## Refinement (agreed with the user; follow it)\n\n");
         text.push_str(&refinement_brief(refinement, attachments));
@@ -382,11 +482,12 @@ fn card_prompt(card: &Card, attachments: &Path) -> String {
 }
 
 /// Prompt for refining a card before anyone implements it.
-fn refine_prompt(card: &Card, attachments: &Path) -> String {
+fn refine_prompt(card: &Card, boards_dir: &Path) -> String {
+    let attachments = &attachment_dir(boards_dir, &card.id);
     let mut text = format!(
         "Refine this card from the project's Kanban board (card id `{}`) before it is implemented:\n\n{}",
         card.id,
-        card_brief(card)
+        card_brief(card, boards_dir)
     );
     if let Some(refinement) = &card.refinement {
         text.push_str("\n\n## Earlier refinement (revise it)\n\n");
@@ -459,15 +560,23 @@ impl Agents {
                 let (title, body) = (clean_title(&p.title)?, clean_body(p.body));
                 let start_url = p.start_url.as_deref().map(clean_url).transpose()?.flatten();
                 let done_url = p.done_url.as_deref().map(clean_url).transpose()?.flatten();
+                let images = decode_images(p.images, &[])?;
                 self.project(&p.project_id).await?;
                 let column = p.column.unwrap_or(CardColumn::Todo);
-                ok(self.edit_board(&p.project_id, |b| {
-                    let mut card = new_card(title, body, column);
-                    (card.start_url, card.done_url) = (start_url, done_url);
+                let mut card = new_card(title, body, column);
+                (card.start_url, card.done_url) = (start_url, done_url);
+                let dir = image_dir(&self.boards_dir, &card.id);
+                write_images(&dir, &images).await?;
+                card.images = images.into_iter().map(|(a, _)| a).collect();
+                let added = self.edit_board(&p.project_id, |b| {
                     let at = insert_at(&b.cards, column, if p.top { 0 } else { usize::MAX });
                     b.cards.insert(at, card.clone());
                     Ok((card, true))
-                })?)
+                });
+                if added.is_err() {
+                    remove_dir(&dir).await?;
+                }
+                ok(added?)
             }
             "boards.cardUpdate" => {
                 let p: CardUpdateParams = params(p)?;
@@ -475,8 +584,20 @@ impl Agents {
                 let start_url = p.start_url.as_deref().map(clean_url).transpose()?;
                 let done_url = p.done_url.as_deref().map(clean_url).transpose()?;
                 self.project(&p.project_id).await?;
-                let (card, hook) = self.edit_board(&p.project_id, |b| {
+                let dir = image_dir(&self.boards_dir, &p.card_id);
+                let current = self.edit_board(&p.project_id, |b| Ok((card_mut(b, &p.card_id)?.images.clone(), false)))?;
+                let kept: Vec<String> = current.iter().map(|a| a.name.clone()).filter(|n| !p.remove_images.contains(n)).collect();
+                let added = decode_images(p.add_images, &kept)?;
+                write_images(&dir, &added).await?;
+                let added: Vec<Attachment> = added.into_iter().map(|(a, _)| a).collect();
+                let result = self.edit_board(&p.project_id, |b| {
                     let card = card_mut(b, &p.card_id)?;
+                    // Images added meanwhile by someone else still count against the limit.
+                    card.images.retain(|a| !p.remove_images.contains(&a.name));
+                    if card.images.len() + added.len() > MAX_ATTACHMENTS {
+                        return Err(ApiError::invalid(format!("a card can have at most {MAX_ATTACHMENTS} images")));
+                    }
+                    card.images.extend(added.iter().cloned());
                     if let Some(title) = title {
                         card.title = title;
                     }
@@ -497,7 +618,16 @@ impl Agents {
                     };
                     let hook = Hook::for_move(column, card.column);
                     Ok(((card, hook), true))
-                })?;
+                });
+                let (card, hook) = match result {
+                    Ok(done) => done,
+                    Err(err) => {
+                        remove_images(&dir, added.iter().map(|a| a.name.as_str())).await;
+                        return Err(err);
+                    }
+                };
+                let removed = current.iter().map(|a| a.name.as_str()).filter(|n| !card.images.iter().any(|a| a.name == *n));
+                remove_images(&dir, removed).await;
                 if let Some(hook) = hook {
                     self.fire_hook(&p.project_id, &card, hook);
                 }
@@ -515,12 +645,14 @@ impl Agents {
                     Ok(((), true))
                 })?;
                 remove_dir(&self.attachment_dir(&p.card_id)).await?;
+                remove_dir(&image_dir(&self.boards_dir, &p.card_id)).await?;
                 Ok(json!({}))
             }
             "boards.cardStart" => self.card_start(params(p)?, false).await,
             "boards.cardRefine" => self.card_start(params(p)?, true).await,
             "boards.refinementSave" => self.refinement_save(params(p)?).await,
-            "boards.attachment" => self.attachment(params(p)?).await,
+            "boards.attachment" => self.attachment(params(p)?, false).await,
+            "boards.cardImage" => self.attachment(params(p)?, true).await,
             "boards.cardDone" => self.card_done(params(p)?).await,
             "boards.sourceAdd" => {
                 let p: SourceAddParams = params(p)?;
@@ -631,9 +763,13 @@ impl Agents {
         self.boards_dir.join(format!("{project_id}.json"))
     }
 
-    /// Where a card's refinement attachments are kept.
     fn attachment_dir(&self, card_id: &str) -> PathBuf {
-        self.boards_dir.join("attachments").join(card_id)
+        attachment_dir(&self.boards_dir, card_id)
+    }
+
+    /// Path of one of a card's images, as the agent is told it.
+    pub(crate) fn card_image_path(&self, card_id: &str, name: &str) -> PathBuf {
+        image_dir(&self.boards_dir, card_id).join(name)
     }
 
     /// Working and state directory of a script importer (its files persist between runs).
@@ -678,8 +814,7 @@ impl Agents {
             let column = if card.column == CardColumn::Doing { "Doing" } else { "Done" };
             return Err(ApiError::conflict(format!("card “{}” is already in {column}", card.title)));
         }
-        let attachments = self.attachment_dir(&card.id);
-        let prompt = if refine { refine_prompt(&card, &attachments) } else { card_prompt(&card, &attachments) };
+        let prompt = if refine { refine_prompt(&card, &self.boards_dir) } else { card_prompt(&card, &self.boards_dir) };
         let summary = match p.agent_id.filter(|a| !a.is_empty()) {
             Some(agent_id) => {
                 let agent = self.get(&agent_id)?;
@@ -781,16 +916,19 @@ impl Agents {
         })?)
     }
 
-    /// `boards.attachment`: one file of a card's refinement as `{ mime, data }` (base64).
-    async fn attachment(&self, p: AttachmentParams) -> ApiResult<Value> {
+    /// `boards.attachment` / `boards.cardImage`: one file of a card's refinement, or one of its
+    /// images, as `{ mime, data }` (base64).
+    async fn attachment(&self, p: AttachmentParams, image: bool) -> ApiResult<Value> {
         self.project(&p.project_id).await?;
         let found = self.edit_board(&p.project_id, |b| {
             let card = card_mut(b, &p.card_id)?;
-            Ok((card.refinement.as_ref().and_then(|r| r.attachments.iter().find(|a| a.name == p.name).cloned()), false))
+            let list = if image { Some(&card.images) } else { card.refinement.as_ref().map(|r| &r.attachments) };
+            Ok((list.and_then(|l| l.iter().find(|a| a.name == p.name).cloned()), false))
         })?;
         // Only names on the card are read, so a name cannot point outside the directory.
-        let attachment = found.ok_or_else(|| ApiError::not_found(format_args!("attachment {}", p.name)))?;
-        let bytes = tokio::fs::read(self.attachment_dir(&p.card_id).join(&attachment.name)).await?;
+        let attachment = found.ok_or_else(|| ApiError::not_found(format_args!("{} {}", if image { "image" } else { "attachment" }, p.name)))?;
+        let dir = if image { image_dir(&self.boards_dir, &p.card_id) } else { self.attachment_dir(&p.card_id) };
+        let bytes = tokio::fs::read(dir.join(&attachment.name)).await?;
         Ok(json!({ "mime": attachment.mime, "data": base64::engine::general_purpose::STANDARD.encode(bytes) }))
     }
 
@@ -1224,6 +1362,35 @@ mod tests {
 
     fn columns(board: &Board, column: CardColumn) -> Vec<&str> {
         board.cards.iter().filter(|c| c.column == column).map(|c| c.id.as_str()).collect()
+    }
+
+    fn upload(name: Option<&str>, mime: &str, bytes: &[u8]) -> ImageUpload {
+        ImageUpload { name: name.map(Into::into), mime_type: mime.into(), data: base64::engine::general_purpose::STANDARD.encode(bytes) }
+    }
+
+    #[test]
+    fn card_images_are_checked_and_named() {
+        let taken = vec!["image.png".to_owned()];
+        let out = decode_images(vec![upload(None, "image/png", b"a"), upload(Some("shot"), "image/jpeg", b"b"), upload(Some("x.gif"), "image/gif", b"c")], &taken).unwrap();
+        let names: Vec<&str> = out.iter().map(|(a, _)| a.name.as_str()).collect();
+        assert_eq!(names, ["2-image.png", "shot.jpg", "x.gif"]);
+        assert_eq!((out[1].0.size, out[1].1.as_slice()), (1, b"b".as_slice()));
+        // SVG can carry scripts; a disguised name gets the real type's extension.
+        assert!(decode_images(vec![upload(Some("a.svg"), "image/svg+xml", b"<svg/>")], &[]).is_err());
+        assert_eq!(decode_images(vec![upload(Some("a.svg"), "image/png", b"x")], &[]).unwrap()[0].0.name, "a.svg.png");
+        assert!(decode_images(vec![ImageUpload { name: None, mime_type: "image/png".into(), data: "!!".into() }], &[]).is_err());
+        assert!(decode_images(vec![upload(None, "image/png", &vec![0; MAX_ATTACHMENT_BYTES + 1])], &[]).is_err());
+        let ten: Vec<String> = (0..10).map(|i| format!("{i}.png")).collect();
+        assert!(decode_images(vec![upload(None, "image/png", b"a")], &ten).is_err());
+    }
+
+    #[test]
+    fn prompts_list_card_images() {
+        let mut c = card("c1", CardColumn::Todo);
+        c.images = vec![Attachment { name: "screen.png".into(), mime: "image/png".into(), size: 1 }];
+        let prompt = card_prompt(&c, Path::new("/data/boards"));
+        assert!(prompt.contains("look at them with your read tool):\n- /data/boards/cards/c1/screen.png"), "{prompt}");
+        assert!(refine_prompt(&c, Path::new("/data/boards")).contains("/data/boards/cards/c1/screen.png"));
     }
 
     #[test]

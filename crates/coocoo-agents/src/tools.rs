@@ -274,6 +274,7 @@ impl ToolEnv {
 
     fn kanban_list(&self) -> ToolResult {
         let board = self.call(None, "boards.get", json!({ "projectId": self.project_id()? }))?;
+        let agents = self.agents.upgrade();
         let mut columns = Map::new();
         for column in COLUMNS {
             let cards: Vec<Value> = board["cards"]
@@ -291,6 +292,16 @@ impl ToolEnv {
                     }
                     if c.get("refinement").is_some_and(|r| !r.is_null()) {
                         card["refined"] = json!(true);
+                    }
+                    let images: Vec<String> = c["images"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|i| i["name"].as_str())
+                        .filter_map(|name| Some(agents.as_ref()?.card_image_path(c["id"].as_str()?, name).display().to_string()))
+                        .collect();
+                    if !images.is_empty() {
+                        card["images"] = json!(images);
                     }
                     card
                 })

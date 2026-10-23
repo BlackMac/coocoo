@@ -6,6 +6,7 @@
   import { ArrowUp, Image, MousePointerClick, Paperclip, Square, X } from '../lib/icons';
   import { slashMenu } from '../lib/slash';
   import UsageMeter from './UsageMeter.svelte';
+  import { imageFiles, onImagePaste, readImage, type PickedImage } from '../lib/images';
   import ModelPicker from '../components/ModelPicker.svelte';
   import SlashMenu from './SlashMenu.svelte';
 
@@ -172,28 +173,14 @@
     }
   }
 
-  function readFile(file: File) {
-    if (!file.type.startsWith('image/')) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const url = String(reader.result);
-      const data = url.slice(url.indexOf(',') + 1);
-      ui.attachImage(k, file.name || 'pasted image', { mimeType: file.type, data });
-    };
-    reader.readAsDataURL(file);
-  }
-
-  function onpaste(e: ClipboardEvent) {
-    const files = [...(e.clipboardData?.files ?? [])].filter((f) => f.type.startsWith('image/'));
-    if (!files.length) return;
-    e.preventDefault();
-    files.forEach(readFile);
-  }
+  const attach = (im: PickedImage) => ui.attachImage(k, im.name, im.image);
+  const readFile = (file: File) => void readImage(file).then((im) => im && attach(im));
+  const onpaste = (e: ClipboardEvent) => onImagePaste(e, attach);
 
   function ondrop(e: DragEvent) {
     e.preventDefault();
     dragOver = false;
-    [...(e.dataTransfer?.files ?? [])].forEach(readFile);
+    imageFiles(e.dataTransfer?.files).forEach(readFile);
   }
 
   async function setModel(model: string) {

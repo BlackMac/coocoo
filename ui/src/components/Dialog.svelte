@@ -15,7 +15,8 @@
   $effect(() => {
     const prev = document.activeElement as HTMLElement | null;
     const first = box.querySelector<HTMLElement>('[autofocus], input:not([type=hidden]), textarea, select, button.primary');
-    first?.focus();
+    // Without a field, the dialog itself takes focus so Escape reaches it.
+    (first ?? box).focus();
     return () => prev?.focus?.();
   });
 
@@ -29,7 +30,7 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="overlay" onmousedown={(e) => e.target === e.currentTarget && onclose()} {onkeydown}>
-  <div class="dialog" role="dialog" aria-modal="true" aria-label={title} style:max-width="{width}px" bind:this={box}>
+  <div class="dialog" role="dialog" aria-modal="true" aria-label={title} tabindex="-1" style:max-width="{width}px" bind:this={box}>
     <header>
       <h2>{title}</h2>
       <button class="btn ghost icon sm" onclick={onclose} aria-label="Close"><X size={15} /></button>
@@ -53,6 +54,7 @@
   }
   .dialog {
     width: 100%;
+    outline: none;
     max-height: 80vh;
     display: flex;
     flex-direction: column;

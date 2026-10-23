@@ -1,26 +1,3 @@
-<script lang="ts" module>
-  import { fleet } from '../lib/fleet.svelte';
-
-  /** Loaded attachments: image data URLs and HTML sources, by host, card, refinement and name. */
-  const loaded = $state<Record<string, string>>({});
-  const pending = new Set<string>();
-
-  function load(host: string, projectId: string, cardId: string, at: number, a: Attachment): string {
-    const k = `${host}:${cardId}:${at}:${a.name}`;
-    if (!(k in loaded) && !pending.has(k)) {
-      pending.add(k);
-      fleet
-        .call('boards.attachment', { projectId, cardId, name: a.name }, host)
-        .then(({ mime, data }) => {
-          loaded[k] = mime === 'text/html' ? new TextDecoder().decode(Uint8Array.from(atob(data), (c) => c.charCodeAt(0))) : `data:${mime};base64,${data}`;
-        })
-        .catch(() => (loaded[k] = ''))
-        .finally(() => pending.delete(k));
-    }
-    return k;
-  }
-</script>
-
 <script lang="ts">
   import { renderMarkdown } from '../lib/markdown';
   import { ago } from '../lib/format';
@@ -28,6 +5,7 @@
   import type { Attachment, Card } from '../lib/protocol';
   import { NotebookPen } from '../lib/icons';
   import Dialog from '../components/Dialog.svelte';
+  import { cardFiles as loaded, loadCardFile } from '../lib/cardfiles.svelte';
 
   // A card's refinement: the agent's Markdown plan and its mocks (images, HTML). HTML mocks run
   // in sandboxed frames without the app's origin, so their scripts cannot reach the token.
@@ -43,7 +21,7 @@
 
   const r = $derived(card.refinement!);
   const html = $derived(renderMarkdown(r.text, `refinement:${card.id}:${r.at}`));
-  const keys = $derived((r.attachments ?? []).map((a) => ({ a, k: load(host, projectId, card.id, r.at, a) })));
+  const keys = $derived((r.attachments ?? []).map((a) => ({ a, k: loadCardFile(host, projectId, card.id, 'attachment', a, r.at) })));
   let view = $state<{ a: Attachment; k: string } | null>(null);
   const isHtml = (a: Attachment) => a.mime === 'text/html';
 </script>

@@ -200,6 +200,11 @@ export interface AgentSummary {
   subagents: number;
 }
 
+/** An image sent with a card (`boards.cardAdd`/`cardUpdate`): PNG, JPEG, GIF or WebP, ≤ 5 MiB. */
+export interface ImageUpload extends ImageInput {
+  name?: string;
+}
+
 export interface ImageInput {
   mimeType: string;
   /** Base64 without the `data:` prefix. */
@@ -330,6 +335,8 @@ export interface Card {
   hookError?: string;
   /** Its agent is working out a refinement (`boards.cardRefine`). */
   refining?: boolean;
+  /** Context images from the user (`boards.cardImage`); the agent gets their paths. */
+  images?: Attachment[];
   /** The latest refinement, handed to the agent that implements the card. */
   refinement?: Refinement;
 }
@@ -663,13 +670,14 @@ export interface Methods {
   'agents.usage': [{ provider: string; model?: string }, ProviderUsage];
   'agents.subagentTimeline': [{ id: string; sessionFile: string; live?: boolean }, TimelinePage];
   'boards.get': [{ projectId: string }, Board];
-  'boards.cardAdd': [{ projectId: string; title: string; body?: string; column?: CardColumn; top?: boolean; startUrl?: string; doneUrl?: string }, Card];
-  'boards.cardUpdate': [{ projectId: string; cardId: string; title?: string; body?: string; column?: CardColumn; index?: number; startUrl?: string; doneUrl?: string }, Card];
+  'boards.cardAdd': [{ projectId: string; title: string; body?: string; column?: CardColumn; top?: boolean; startUrl?: string; doneUrl?: string; images?: ImageUpload[] }, Card];
+  'boards.cardUpdate': [{ projectId: string; cardId: string; title?: string; body?: string; column?: CardColumn; index?: number; startUrl?: string; doneUrl?: string; addImages?: ImageUpload[]; removeImages?: string[] }, Card];
   'boards.cardDelete': [{ projectId: string; cardId: string }, Ok];
   /** Without `agentId` a new agent is created for the card (optionally in a worktree). */
   'boards.cardStart': [{ projectId: string; cardId: string; agentId?: string; worktree?: boolean; model?: string }, Card];
   'boards.cardRefine': [{ projectId: string; cardId: string; agentId?: string; worktree?: boolean; model?: string }, Card];
   'boards.attachment': [{ projectId: string; cardId: string; name: string }, { mime: string; data: string }];
+  'boards.cardImage': [{ projectId: string; cardId: string; name: string }, { mime: string; data: string }];
   'boards.cardDone': [{ projectId: string; cardId: string; agentId?: string; commitMessage?: string; note?: string }, { card: Card; commit?: CommitInfo; commitSkipped?: string }];
   'boards.sourceAdd': [
     { projectId: string; kind: SourceKind; target?: string; name?: string; script?: string; intervalMins?: number; agentId?: string },

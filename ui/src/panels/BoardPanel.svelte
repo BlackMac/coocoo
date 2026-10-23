@@ -6,9 +6,10 @@
   import { href } from '../lib/router.svelte';
   import { agentState } from '../lib/status';
   import { IMPORT_INTERVALS, type AgentSummary, type BoardSource, type Card, type CardColumn } from '../lib/protocol';
-  import { ArrowUp, ExternalLink, FileCode, NotebookPen, GitCommitHorizontal, Inbox, Plus, RotateCw, Rss, ShieldCheck, ShieldOff, Terminal, Trash2, Webhook, X } from '../lib/icons';
+  import { ArrowUp, ExternalLink, FileCode, Image, NotebookPen, GitCommitHorizontal, Inbox, Plus, RotateCw, Rss, ShieldCheck, ShieldOff, Terminal, Trash2, Webhook, X } from '../lib/icons';
   import StartCard from '../agent/StartCard.svelte';
   import RefinementView from '../agent/RefinementView.svelte';
+  import CardFields, { type EditImage } from './CardFields.svelte';
   import StatusDot from '../components/StatusDot.svelte';
 
   // A project's Kanban board: inbox (from sources) → todo → doing → done. Cards move by drag and
@@ -49,40 +50,104 @@
   }
 
   // ─── Cards ─────────────────────────────────────────────────────────────────────────────────
-  let newTitle = $state('');
-  async function add(e: SubmitEvent) {
-    e.preventDefault();
-    const title = newTitle.trim();
-    if (!title) return;
-    newTitle = '';
-    await run('Could not add the card', () => fleet.call('boards.cardAdd', { projectId, title }, host));
+  /** Upload picked images one at a time (a single call with all of them could exceed the
+   *  socket's message limit). `progress` shows "n/m" while it runs. */
+  let progress = $state('');
+  async function upload(cardId: string, images: EditImage[]) {
+    const picked = images.flatMap((im) => ('picked' in im ? [im.picked] : []));
+    for (const [i, p] of picked.entries()) {
+      progress = `Uploading image ${i + 1}/${picked.length}…`;
+      await fleet.call('boards.cardUpdate', { projectId, cardId, addImages: [{ name: p.name, ...p.image }] }, host, 120_000);
+    }
+  }
+
+  const SUBMIT_KEY = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘↵' : 'Ctrl+↵';
+
+  // New card: an editor at the top of Todo.
+  let creating = $state(false);
+  let saving = $state(false);
+  let draft = $state({ title: '', body: '', startUrl: '', doneUrl: '', images: [] as EditImage[] });
+  const draftEmpty = $derived(!draft.title.trim() && !draft.body.trim() && !draft.images.length && !draft.startUrl && !draft.doneUrl);
+  const resetDraft = () => (draft = { title: '', body: '', startUrl: '', doneUrl: '', images: [] });
+
+  function startNew() {
+    creating = true;
+    openId = null;
+  }
+  function cancelNew() {
+    if (draftEmpty) return void (creating = false);
+    ui.dialog = {
+      kind: 'confirm',
+      title: 'Discard the new card?',
+      message: 'What you typed and the images you added are lost.',
+      action: 'Discard',
+      danger: true,
+      run: () => {
+        resetDraft();
+        creating = false;
+      },
+    };
+  }
+  async function addCard() {
+    const title = draft.title.trim();
+    if (!title) return ui.toast('error', 'The card needs a title');
+    if (saving) return;
+    saving = true;
+    try {
+      const card = await fleet.call('boards.cardAdd', { projectId, title, body: draft.body, startUrl: draft.startUrl, doneUrl: draft.doneUrl }, host);
+      try {
+        await upload(card.id, draft.images);
+      } catch (err) {
+        ui.error('The card was added, but an image could not be uploaded', err);
+      }
+      resetDraft();
+      creating = false;
+    } catch (err) {
+      ui.error('Could not add the card', err);
+    } finally {
+      saving = false;
+      progress = '';
+    }
   }
 
   const move = (card: Card, column: CardColumn, index?: number) =>
     run('Could not move the card', () => fleet.call('boards.cardUpdate', { projectId, cardId: card.id, column, index }, host));
   const remove = (card: Card) => run('Could not delete the card', () => fleet.call('boards.cardDelete', { projectId, cardId: card.id }, host));
 
+  // Opened card: the same editor in place.
   let openId = $state<string | null>(null);
-  let editTitle = $state('');
-  let editBody = $state('');
-  let editStartUrl = $state('');
-  let editDoneUrl = $state('');
+  let edit = $state({ title: '', body: '', startUrl: '', doneUrl: '', images: [] as EditImage[] });
   function toggle(card: Card) {
     openId = openId === card.id ? null : card.id;
-    editTitle = card.title;
-    editBody = card.body ?? '';
-    editStartUrl = card.startUrl ?? '';
-    editDoneUrl = card.doneUrl ?? '';
+    edit = {
+      title: card.title,
+      body: card.body ?? '',
+      startUrl: card.startUrl ?? '',
+      doneUrl: card.doneUrl ?? '',
+      images: (card.images ?? []).map((a) => ({ stored: a })),
+    };
+    // One editor at a time, unless the new card has content.
+    if (openId && draftEmpty) creating = false;
   }
   async function save(card: Card) {
-    const ok = await run('Could not save the card', () =>
-      fleet.call(
+    if (saving) return;
+    saving = true;
+    try {
+      const keep = new Set(edit.images.flatMap((im) => ('stored' in im ? [im.stored.name] : [])));
+      const removeImages = (card.images ?? []).map((a) => a.name).filter((n) => !keep.has(n));
+      await fleet.call(
         'boards.cardUpdate',
-        { projectId, cardId: card.id, title: editTitle, body: editBody, startUrl: editStartUrl, doneUrl: editDoneUrl },
+        { projectId, cardId: card.id, title: edit.title, body: edit.body, startUrl: edit.startUrl, doneUrl: edit.doneUrl, removeImages },
         host,
-      ),
-    );
-    if (ok) openId = null;
+      );
+      await upload(card.id, edit.images);
+      openId = null;
+    } catch (err) {
+      ui.error('Could not save the card', err);
+    } finally {
+      saving = false;
+      progress = '';
+    }
   }
 
   // ─── Drag and drop (desktop) ───────────────────────────────────────────────────────────────
@@ -187,10 +252,30 @@
               {col.label}<span class="count num">{cards.length}</span>
             </h3>
             {#if col.id === 'todo'}
-              <form class="add" onsubmit={add}>
-                <Plus size={13} />
-                <input class="input" bind:value={newTitle} placeholder="Add a card…" />
-              </form>
+              {#if creating}
+                <div class="card open newcard">
+                  <CardFields
+                    {host}
+                    {projectId}
+                    bind:title={draft.title}
+                    bind:body={draft.body}
+                    bind:startUrl={draft.startUrl}
+                    bind:doneUrl={draft.doneUrl}
+                    bind:images={draft.images}
+                    autofocus
+                    onsubmit={addCard}
+                    oncancel={cancelNew}
+                  />
+                  <div class="acts">
+                    <button class="btn primary sm" disabled={saving || !draft.title.trim()} onclick={addCard}>{#if saving}<span class="spinner"></span>{/if}Add card</button>
+                    <button class="btn sm" disabled={saving} onclick={cancelNew}>Cancel</button>
+                    <span class="grow"></span>
+                    <span class="faint kbd">{saving && progress ? progress : SUBMIT_KEY}</span>
+                  </div>
+                </div>
+              {:else}
+                <button class="newbtn" onclick={startNew}><Plus size={13} />New card</button>
+              {/if}
             {/if}
             {#each cards as card, i (card.id)}
               {@const open = openId === card.id}
@@ -220,13 +305,14 @@
                     <StartCard {host} {projectId} {card} {agent} primary offerRefine />
                   {/if}
                 </div>
-                {#if !open && (card.agentId || card.source || card.commit || card.note || card.startUrl || card.doneUrl || card.refinement || card.refining)}
+                {#if !open && (card.agentId || card.source || card.commit || card.note || card.startUrl || card.doneUrl || card.refinement || card.refining || card.images?.length)}
                   <div class="sub faint">
                     {#if card.refining || card.refinement}
                       <span class="refb" class:on={card.refining} title={card.refining ? 'An agent is refining it' : 'Has a refinement; open the card to read it'}>
                         <NotebookPen size={11} />{card.refining ? 'Refining…' : 'Refined'}
                       </span>
                     {/if}
+                    {#if card.images?.length}<span class="imgc" title="{card.images.length} image{card.images.length === 1 ? '' : 's'}"><Image size={11} />{card.images.length}</span>{/if}
                     {#if card.agentId}{@render agentChip(card)}{/if}
                     {#if card.commit}<span class="mono"><GitCommitHorizontal size={11} />{card.commit.sha.slice(0, 7)}</span>{/if}
                     {#if card.startUrl || card.doneUrl}<span class="hooks" class:err={!!card.hookError} title={card.hookError ?? 'Webhooks on start/done'}><Webhook size={11} /></span>{/if}
@@ -236,19 +322,27 @@
                 {#if !open && card.hookError}<div class="herr">{card.hookError}</div>{/if}
                 {#if open}
                   <div class="detail">
-                    <input class="input" bind:value={editTitle} aria-label="Title" />
-                    <textarea class="textarea" bind:value={editBody} rows="4" placeholder="Details for the agent (optional)"></textarea>
-                    <label class="hook"><span class="faint">Webhook on start</span><input class="input mono" bind:value={editStartUrl} placeholder="https://… (POSTed when it moves to Doing)" spellcheck="false" /></label>
-                    <label class="hook"><span class="faint">Webhook on done</span><input class="input mono" bind:value={editDoneUrl} placeholder="https://… (POSTed when it moves to Done)" spellcheck="false" /></label>
+                    <CardFields
+                      {host}
+                      {projectId}
+                      cardId={card.id}
+                      bind:title={edit.title}
+                      bind:body={edit.body}
+                      bind:startUrl={edit.startUrl}
+                      bind:doneUrl={edit.doneUrl}
+                      bind:images={edit.images}
+                      onsubmit={() => save(card)}
+                      oncancel={() => (openId = null)}
+                    />
                     {#if card.hookError}<div class="herr">{card.hookError}</div>{/if}
                     {#if card.agentId}<div class="faint">{col.id === 'done' ? 'Done by' : card.refining ? 'Being refined by' : 'Agent:'} {@render agentChip(card)}</div>{/if}
                     {#if card.refinement}<RefinementView {host} {projectId} {card} clamp />{/if}
                     {#if card.url}<a class="link" href={card.url} target="_blank" rel="noopener noreferrer"><ExternalLink size={11} />{card.url}</a>{/if}
                     {#if card.note}<div class="note"><span class="faint">Note:</span> {card.note}</div>{/if}
                     {#if card.commit}<div class="faint mono">{card.commit.sha.slice(0, 7)} {card.commit.summary}</div>{/if}
-                    <div class="faint meta">Added {ago(card.createdAt, now.value)} ago{card.source ? ` from ${sourceName(card.source) ?? 'a removed source'}` : ''}</div>
+                    <div class="faint meta">Added {ago(card.createdAt, now.value)} ago{card.source ? ` from ${sourceName(card.source) ?? 'a removed source'}` : ''}{saving && progress ? ` · ${progress}` : ''}</div>
                     <div class="acts">
-                      <button class="btn primary sm" onclick={() => save(card)}>Save</button>
+                      <button class="btn primary sm" disabled={saving} onclick={() => save(card)}>{#if saving}<span class="spinner"></span>{/if}Save</button>
                       {#if col.id === 'inbox' || col.id === 'todo'}
                         <StartCard {host} {projectId} {card} {agent} />
                         <StartCard {host} {projectId} {card} {agent} refine />
@@ -400,11 +494,40 @@
     color: var(--text-3);
     font-weight: 500;
   }
-  .add {
+  .newbtn {
     display: flex;
     align-items: center;
     gap: 6px;
-    color: var(--text-3);
+    height: 30px;
+    padding: 0 9px;
+    border: 1px dashed var(--border-strong);
+    border-radius: var(--r);
+    background: transparent;
+    color: var(--text-2);
+    font-size: var(--fs-sm);
+    cursor: pointer;
+  }
+  .newbtn:hover {
+    background: var(--bg-hover);
+    color: var(--text);
+  }
+  .newcard {
+    gap: 8px;
+    padding: 8px;
+    border-color: var(--accent);
+  }
+  .kbd {
+    font-size: var(--fs-xs);
+  }
+  .acts .spinner {
+    width: 10px;
+    height: 10px;
+  }
+  .imgc {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    flex: none;
   }
   .card {
     display: flex;
@@ -485,10 +608,6 @@
     padding-top: 4px;
     font-size: var(--fs-sm);
   }
-  .textarea {
-    height: auto;
-    padding: 6px 9px;
-  }
   .link {
     display: inline-flex;
     align-items: center;
@@ -496,12 +615,6 @@
     color: var(--accent-text);
     font-size: var(--fs-xs);
     overflow-wrap: anywhere;
-  }
-  .hook {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    font-size: var(--fs-xs);
   }
   .refb {
     display: inline-flex;

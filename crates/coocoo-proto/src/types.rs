@@ -552,6 +552,9 @@ pub struct Card {
     /// Why the last webhook call failed; cleared by the next successful one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hook_error: Option<String>,
+    /// Context images from the user (`boards.cardImage`); the agent gets their paths.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<Attachment>,
     /// Its agent is working out a refinement (`boards.cardRefine`) instead of implementing it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub refining: bool,
