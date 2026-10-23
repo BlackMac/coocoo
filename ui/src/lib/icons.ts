@@ -18,6 +18,7 @@ export { default as CircleDashed } from '@lucide/svelte/icons/circle-dashed';
 export { default as Cloud } from '@lucide/svelte/icons/cloud';
 export { default as Copy } from '@lucide/svelte/icons/copy';
 export { default as CornerDownLeft } from '@lucide/svelte/icons/corner-down-left';
+export { default as Download } from '@lucide/svelte/icons/download';
 export { default as Ellipsis } from '@lucide/svelte/icons/ellipsis';
 export { default as ExternalLink } from '@lucide/svelte/icons/external-link';
 export { default as FileDiff } from '@lucide/svelte/icons/file-diff';

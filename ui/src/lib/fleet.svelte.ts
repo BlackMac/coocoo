@@ -136,7 +136,7 @@ export interface AttentionItem {
 
 export class Fleet {
   client: Client | null = null;
-  native = false;
+  native = $state(false);
   conn = $state<ConnState>('connecting');
   /** True once the first hello completed (initial data present). */
   ready = $state(false);

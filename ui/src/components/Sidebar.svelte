@@ -4,9 +4,12 @@
   import { agentState, STATE_RANK, type AgentState } from '../lib/status';
   import { ui } from '../lib/ui.svelte';
   import type { AgentSummary, Project } from '../lib/protocol';
-  import { ChevronRight, FolderGit2, LayoutDashboard, Moon, Plus, Search, Server, Sun, Bot } from '../lib/icons';
+  import { ChevronRight, Download, FolderGit2, LayoutDashboard, Moon, Plus, Search, Server, Sun, Bot } from '../lib/icons';
   import StatusDot from './StatusDot.svelte';
   import HostDot from './HostDot.svelte';
+
+  /** Desktop installers (deb, AppImage, dmg, nsis) built by .github/workflows/desktop-release.yml. */
+  const DESKTOP_DOWNLOAD_URL = 'https://github.com/BlackMac/coocoo/releases/latest';
 
   const COLLAPSE_KEY = 'coocoo.collapsed';
   let collapsed = $state<Record<string, boolean>>(JSON.parse(localStorage.getItem(COLLAPSE_KEY) ?? '{}'));
@@ -81,6 +84,11 @@
       <svg viewBox="0 0 32 32" width="22" height="22"><rect width="32" height="32" rx="8" fill="var(--accent)" /><circle cx="12.5" cy="16" r="5" fill="none" stroke="#fff" stroke-width="2.6" /><circle cx="20.5" cy="16" r="5" fill="none" stroke="#fff" stroke-width="2.6" opacity=".85" /></svg>
     </span>
     <span class="name">Coocoo</span>
+    {#if !fleet.native}
+      <a class="btn ghost icon sm dl" href={DESKTOP_DOWNLOAD_URL} target="_blank" rel="noopener noreferrer" title="Download the desktop app" aria-label="Download the desktop app">
+        <Download size={14} />
+      </a>
+    {/if}
     <span class="conn" data-state={fleet.conn} title={`Daemon: ${fleet.conn}`}></span>
   </div>
 
@@ -198,6 +206,9 @@
     font-weight: 600;
     font-size: 14px;
     letter-spacing: -0.01em;
+  }
+  .dl {
+    margin-left: -4px;
   }
   .conn {
     width: 6px;

@@ -42,9 +42,12 @@ You need [omp](https://github.com/can1357/oh-my-pi) installed and logged in on e
 runs agents, plus `git`. A Chromium-family browser is needed for browser features. Coocoo finds
 Chrome, Chromium, Edge or Brave on `PATH`, or Playwright's cache, or `COOCOO_CHROME`.
 
-**Desktop:** build and run the Tauri app (see [Development](#development)). It starts the daemon
-in-process. If a `coocoo serve` is already running with the same config, it attaches to that one
-instead. Closing the window hides it to the tray and the agents keep running.
+**Desktop:** download the installer from the
+[latest release](https://github.com/BlackMac/coocoo/releases/latest) (also linked from the
+download icon next to the logo in the web UI) or build the Tauri app yourself (see
+[Development](#development)). It starts the daemon in-process. If a `coocoo serve` is already
+running with the same config, it attaches to that one instead. Closing the window hides it to the
+tray and the agents keep running.
 
 **Server (headless):**
 
@@ -139,11 +142,16 @@ cargo test --workspace
 cd src-tauri && npm install && npm run build   # deb / AppImage / dmg / nsis bundles
 ```
 
+Releases: pushing a `v*` tag (or running *Desktop release* manually) makes
+`.github/workflows/desktop-release.yml` build the Linux, macOS (universal, unsigned) and Windows
+installers and publish them as a GitHub release.
+
 ## Status and known limitations
 
 - Verified end to end on Linux: daemon, web UI, real omp agents, the browser live view with
   human takeover, design mode, two-host fleet with cross-host orchestration, and the desktop app
-  under Xvfb. macOS and Windows builds have not been produced yet.
+  under Xvfb. macOS and Windows builds exist only through the release workflow and have not been
+  tested by hand.
 - SSH peers (tunnel, token fetch, install over SSH) are covered by tests that use fake
   `ssh`/`scp`; they have not been run against a real remote host yet.
 - Direct peer links are plain `ws://` with a bearer token. Use them on a LAN or VPN (Tailscale,
