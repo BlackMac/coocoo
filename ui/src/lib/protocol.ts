@@ -109,6 +109,8 @@ export interface GitInfo {
   changed: number;
   lastCommit?: CommitInfo | null;
   worktrees: Worktree[];
+  /** Newest `FETCH_HEAD` mtime (ms) over all worktrees: how current `ahead`/`behind` are. */
+  fetchedAt?: number;
 }
 
 export interface CommitInfo {
@@ -124,7 +126,19 @@ export interface Worktree {
   head?: string | null;
   isMain: boolean;
   changed?: number;
+  /** Upstream of the checked-out branch, with counts against it. */
+  upstream?: string;
+  ahead: number;
+  behind: number;
+  /** Linked worktrees on a branch: counts against the main worktree's branch. */
+  baseAhead?: number;
+  baseBehind?: number;
+  /** Unmerged paths. */
+  conflicts: number;
+  operation?: GitOperation;
 }
+
+export type GitOperation = 'merge' | 'rebase' | 'cherryPick' | 'revert' | 'bisect';
 
 export type DiffFileStatus = 'M' | 'A' | 'D' | 'R' | '?';
 
@@ -639,6 +653,8 @@ export interface Methods {
   'git.log': [{ cwd: string; limit?: number }, CommitInfo[]];
   'git.commit': [{ cwd: string; message: string }, CommitInfo];
   'git.merge': [{ projectId: string; branch: string }, { ok: boolean; output: string }];
+  'git.fetch': [{ projectId: string }, { ok: boolean; output: string }];
+  'git.fastForward': [{ projectId: string; path: string }, { ok: boolean; output: string }];
   'git.worktreeCreate': [{ projectId: string; branch?: string; base?: string }, WorktreeRef];
   'git.worktreeRemove': [{ projectId: string; path: string; deleteBranch?: boolean }, Ok];
   'fs.list': [{ path?: string }, { path: string; parent?: string; entries: FsEntry[] }];
@@ -693,7 +709,7 @@ export interface Methods {
   'boards.sourceRefresh': [{ projectId: string; sourceId: string }, SourceRun];
   'agents.hibernate': [{ id: string }, AgentSummary];
   'agents.archive': [{ id: string }, AgentSummary];
-  'agents.delete': [{ id: string; removeWorktree?: boolean }, Ok];
+  'agents.delete': [{ id: string; removeWorktree?: boolean; deleteBranch?: boolean }, Ok];
 
   'browser.profiles': [Empty | undefined, BrowserProfileInfo[]];
   'browser.start': [{ profile: string }, BrowserProfileInfo];

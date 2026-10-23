@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
+use std::time::Duration;
 
 use coocoo_proto::error::{ok, params};
 use coocoo_proto::util::{new_id, now_ms, read_json, write_json_atomic};
@@ -100,6 +101,19 @@ struct MergeParams {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ProjectParams {
+    project_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FastForwardParams {
+    project_id: String,
+    path: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct WorktreeCreateParams {
     project_id: String,
     branch: Option<String>,
@@ -169,6 +183,15 @@ impl Workspace {
             "git.merge" => {
                 let p: MergeParams = params(p)?;
                 let (ok_, output) = self.merge(&p.project_id, &p.branch).await?;
+                ok(json!({ "ok": ok_, "output": output }))
+            }
+            "git.fetch" => {
+                let (ok_, output) = self.fetch(&params::<ProjectParams>(p)?.project_id).await?;
+                ok(json!({ "ok": ok_, "output": output }))
+            }
+            "git.fastForward" => {
+                let p: FastForwardParams = params(p)?;
+                let (ok_, output) = self.fast_forward(&p.project_id, &p.path).await?;
                 ok(json!({ "ok": ok_, "output": output }))
             }
             "git.worktreeCreate" => {
@@ -415,6 +438,67 @@ impl Workspace {
         };
         self.refresh(project_id, Emit::IfChanged).await?;
         Ok(result)
+    }
+
+    /// `git fetch --all` in the project's checkout. Never prompts: credentials come from the
+    /// configured helpers/keys or the fetch fails with git's message.
+    async fn fetch(&self, project_id: &str) -> ApiResult<(bool, String)> {
+        const TIMEOUT: Duration = Duration::from_secs(60);
+        let project = self.git_project(project_id)?;
+        let path = PathBuf::from(&project.path);
+        let mut cmd = git::command(&path);
+        cmd.args(["fetch", "--all", "--no-auto-gc", "--quiet"]);
+        // Without a terminal ssh would wait forever for a passphrase or host-key answer.
+        let custom_ssh = std::env::var_os("GIT_SSH_COMMAND").is_some()
+            || std::env::var_os("GIT_SSH").is_some()
+            || git::run(&path, &["config", "core.sshCommand"]).await?.ok;
+        if !custom_ssh {
+            cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+        }
+        let result = match tokio::time::timeout(TIMEOUT, cmd.output()).await {
+            Ok(out) => {
+                let out = out.map_err(git::spawn_error)?;
+                let out = git::GitOutput { ok: out.status.success(), stdout: out.stdout, stderr: out.stderr };
+                (out.ok, out.combined())
+            }
+            Err(_) => (false, format!("git fetch timed out after {} s", TIMEOUT.as_secs())),
+        };
+        self.refresh(project_id, Emit::IfChanged).await?;
+        Ok(result)
+    }
+
+    /// Fast-forward the worktree at `wt_path` to its upstream (as of the last fetch). Refused
+    /// with `conflict` unless the branch has an upstream, no local commits and a clean tree.
+    async fn fast_forward(&self, project_id: &str, wt_path: &str) -> ApiResult<(bool, String)> {
+        let project = self.git_project(project_id)?;
+        let path = PathBuf::from(&project.path);
+        let wanted = expand(wt_path);
+        let wanted = std::fs::canonicalize(&wanted).unwrap_or(wanted);
+        let worktrees = git::worktrees(&path).await?;
+        let wt = worktrees
+            .iter()
+            .find(|w| Path::new(&w.path) == wanted)
+            .ok_or_else(|| ApiError::not_found(format!("worktree {wt_path}")))?;
+        let wt_path = PathBuf::from(&wt.path);
+        let status = git::parse_status(&git::run_ok(&wt_path, &["status", "--porcelain=v2", "--branch", "-z"]).await?.stdout);
+        let Some(upstream) = status.upstream else {
+            return Err(ApiError::conflict("the branch has no upstream"));
+        };
+        if status.ahead > 0 {
+            return Err(ApiError::conflict(format!(
+                "the branch has {} commit(s) not on {upstream}; a fast-forward is not possible",
+                status.ahead
+            )));
+        }
+        if status.changed > 0 {
+            return Err(ApiError::conflict(format!("{} uncommitted file(s); commit or stash them first", status.changed)));
+        }
+        if status.behind == 0 {
+            return Ok((true, format!("Already up to date with {upstream}")));
+        }
+        let out = git::run(&wt_path, &["merge", "--ff-only", "-q", "@{upstream}"]).await?;
+        self.refresh(project_id, Emit::IfChanged).await?;
+        Ok((out.ok, out.combined()))
     }
 
     async fn worktree_create(

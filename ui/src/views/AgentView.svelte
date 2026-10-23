@@ -18,6 +18,9 @@
   import Transcript from '../agent/Transcript.svelte';
   import Composer from '../agent/Composer.svelte';
   import NextCard from '../agent/NextCard.svelte';
+  import GitBar from '../agent/GitBar.svelte';
+  import GitChip from '../components/GitChip.svelte';
+  import { agentGit } from '../lib/git.svelte';
   import RequestCard from '../components/RequestCard.svelte';
   import PlanPanel from '../panels/PlanPanel.svelte';
   import InfoPanel from '../panels/InfoPanel.svelte';
@@ -33,6 +36,7 @@
   const requests = $derived(fleet.requests[k] ?? []);
   const project = $derived(a ? fleet.project(host, a.projectId) : undefined);
   const todoCount = $derived(a?.projectId ? (fleet.boards[key(host, a.projectId)]?.cards.filter((c) => c.column === 'todo').length ?? 0) : 0);
+  const git = $derived(a ? agentGit(a, project, Object.values(fleet.agents)) : undefined);
 
   $effect(() => {
     void fleet.loadDetail(host, id);
@@ -69,17 +73,19 @@
     }
   }
 
-  function del(removeWorktree: boolean) {
+  function del(removeWorktree: boolean, deleteBranch = false) {
     ui.dialog = {
       kind: 'confirm',
-      title: 'Delete agent',
-      message: removeWorktree
-        ? `Delete “${a?.title}”, its session and the worktree ${a?.worktree?.path}? Uncommitted work in the worktree is lost.`
-        : `Delete “${a?.title}” and its session? The working directory is kept.`,
+      title: deleteBranch ? 'Clean up worktree' : 'Delete agent',
+      message: deleteBranch
+        ? `Delete “${a?.title}”, its session, the worktree ${a?.worktree?.path} and the branch ${a?.worktree?.branch}? Everything on it is merged.`
+        : removeWorktree
+          ? `Delete “${a?.title}”, its session and the worktree ${a?.worktree?.path}? Uncommitted work in the worktree is lost.`
+          : `Delete “${a?.title}” and its session? The working directory is kept.`,
       action: 'Delete',
       danger: true,
       run: async () => {
-        await fleet.call('agents.delete', { id, removeWorktree }, host);
+        await fleet.call('agents.delete', { id, removeWorktree, deleteBranch }, host);
         router.go(a?.projectId ? { name: 'project', host, id: a.projectId } : { name: 'overview' });
       },
     };
@@ -120,6 +126,7 @@
         <StatusDot state={st} />
         <h1><InlineEdit value={a.title} label="Agent title" onsave={(title) => fleet.call('agents.rename', { id, title }, host).then((s) => (fleet.agents[k] = s)).catch((e) => ui.error('Rename failed', e))} /></h1>
         <span class="state" data-state={st}>{STATE_LABEL[st]}</span>
+        {#if git}<GitChip agent={a} {git} oncleanup={() => del(true, true)} />{/if}
         <span class="meta num">
           <span title={a.model}>{modelName(a.model)}</span>
           {#if a.thinking}<span class="faint">· {a.thinking}</span>{/if}
@@ -147,6 +154,7 @@
         {#if requests.length}
           <div class="reqs">{#each requests as r (r.id)}<RequestCard request={r} {host} />{/each}</div>
         {/if}
+        {#if git}<GitBar agent={a} {git} />{/if}
         <NextCard agent={a} />
         <Composer agent={a} {detail} />
       </div>
@@ -252,6 +260,7 @@
   .meta {
     display: flex;
     gap: 5px;
+    min-width: 0;
     margin-left: auto;
     color: var(--text-2);
     font-size: var(--fs-xs);

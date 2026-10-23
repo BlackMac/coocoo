@@ -6,6 +6,7 @@
   import { now } from '../lib/clock.svelte';
   import type { AgentSummary } from '../lib/protocol';
   import { GitBranch, Users } from '../lib/icons';
+  import { OPERATION_LABEL, agentGit } from '../lib/git.svelte';
   import StatusDot from './StatusDot.svelte';
   import DiffCount from './DiffCount.svelte';
   import HostDot from './HostDot.svelte';
@@ -16,6 +17,17 @@
   const project = $derived(fleet.project(a.hostId, a.projectId));
   const host = $derived(fleet.host(a.hostId));
   const line2 = $derived(st === 'error' && a.error ? a.error : (a.preview ?? ''));
+  const git = $derived(agentGit(a, project, []));
+  const gitTitle = $derived.by(() => {
+    if (!git) return '';
+    const parts = [`${git.kind === 'checkout' ? 'Project checkout' : `Worktree ${git.wt.path}`} on ${git.label}`];
+    if (git.against) parts.push(`${git.ahead} ahead, ${git.behind} behind ${git.against}`);
+    if (git.merged) parts.push('fully merged');
+    if (git.operation) parts.push(`${OPERATION_LABEL[git.operation]} in progress`);
+    if (git.conflicts) parts.push(`${git.conflicts} conflicted`);
+    if (git.dirty) parts.push(`${git.dirty} uncommitted`);
+    return parts.join(' · ');
+  });
 </script>
 
 <a class="arow" data-state={st} href={href({ name: 'agent', host: a.hostId, id: a.id })}>
@@ -34,10 +46,16 @@
     <span class="chip host"><HostDot online={host?.online ?? false} size={5} />{host?.name ?? a.hostId}</span>
   </span>
   <span class="c-branch">
-    {#if a.worktree}
+    {#if git}
+      <span class="chip mono" class:faint-chip={git.kind === 'checkout'} title={gitTitle}>
+        <GitBranch size={11} /><span class="ellipsis" class:detached={git.detached}>{git.label}</span>
+        {#if git.operation || git.conflicts}<span class="g-bad">⚠</span>{/if}
+        {#if git.merged}<span class="g-ok">✓</span>{/if}
+        {#if git.ahead && !git.merged}<span>↑{git.ahead}</span>{/if}
+        {#if git.behind && !git.merged}<span class="g-warn">↓{git.behind}</span>{/if}
+      </span>
+    {:else if a.worktree}
       <span class="chip mono" title="Worktree {a.worktree.path} (from {a.worktree.base})"><GitBranch size={11} /><span class="ellipsis">{a.worktree.branch}</span></span>
-    {:else if project?.git?.branch}
-      <span class="chip mono faint-chip" title="Project checkout"><GitBranch size={11} /><span class="ellipsis">{project.git.branch}</span></span>
     {/if}
   </span>
   <span class="c-todo">
@@ -131,6 +149,21 @@
   .faint-chip {
     background: transparent;
     color: var(--text-3);
+  }
+  .c-branch .chip > span:not(.ellipsis) {
+    flex: none;
+  }
+  .detached {
+    font-style: italic;
+  }
+  .g-warn {
+    color: var(--amber);
+  }
+  .g-bad {
+    color: var(--red);
+  }
+  .g-ok {
+    color: var(--green);
   }
   .c-todo {
     display: flex;

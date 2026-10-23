@@ -259,6 +259,94 @@ async fn repo_without_commits() {
     assert_eq!(commit.summary, "first");
 }
 
+/// Run git expecting failure (merge conflicts and the like).
+fn git_fails(dir: &Path, args: &[&str]) {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "git {args:?} unexpectedly succeeded");
+}
+
+fn commit_file(dir: &Path, name: &str, content: &str, message: &str) {
+    std::fs::write(dir.join(name), content).unwrap();
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", message]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn upstream_base_fetch_and_fast_forward() {
+    let e = env();
+    let up = e.root.join("up");
+    init_repo(&up, true);
+    let repo = e.root.join("repo");
+    git(&e.root, &["clone", "-q", up.to_str().unwrap(), repo.to_str().unwrap()]);
+    for (k, v) in [("user.name", "Test"), ("user.email", "test@example.com"), ("commit.gpgsign", "false")] {
+        git(&repo, &["config", k, v]);
+    }
+    let project: Project = call(&e.ws, "projects.add", json!({ "path": repo })).await;
+    let main = |p: &Project| p.git.as_ref().unwrap().worktrees[0].clone();
+    assert_eq!(main(&project).upstream.as_deref(), Some("origin/main"));
+    assert_eq!((main(&project).ahead, main(&project).behind), (0, 0));
+    assert!(!repo.join(".git/FETCH_HEAD").exists());
+    assert_eq!(project.git.as_ref().unwrap().fetched_at, None);
+
+    // A linked worktree: counted against the main worktree's branch; its own FETCH_HEAD counts.
+    let wt: WorktreeRef = call(&e.ws, "git.worktreeCreate", json!({ "projectId": project.id })).await;
+    let wt_path = PathBuf::from(&wt.path);
+    commit_file(&wt_path, "feature.txt", "f\n", "feature");
+    commit_file(&repo, "main.txt", "m\n", "main moves");
+    git(&wt_path, &["fetch", "-q"]);
+    let p: Project = call(&e.ws, "projects.refresh", json!({ "id": project.id })).await;
+    let info = p.git.clone().unwrap();
+    assert!(info.fetched_at.is_some(), "FETCH_HEAD of the linked worktree");
+    let linked = info.worktrees.iter().find(|w| w.path == wt.path).unwrap();
+    assert_eq!((linked.base_ahead, linked.base_behind), (Some(1), Some(1)));
+    assert_eq!((linked.conflicts, linked.operation), (0, None));
+    assert_eq!((main(&p).base_ahead, main(&p).ahead), (None, 1));
+
+    // A conflicting merge in the worktree shows up as operation + conflicts.
+    commit_file(&wt_path, "a.txt", "branch\n", "branch side");
+    commit_file(&repo, "a.txt", "main\n", "main side");
+    git_fails(&wt_path, &["merge", "-q", "main"]);
+    let p: Project = call(&e.ws, "projects.refresh", json!({ "id": project.id })).await;
+    let linked = p.git.unwrap().worktrees.into_iter().find(|w| w.path == wt.path).unwrap();
+    assert_eq!(linked.operation, Some(coocoo_proto::GitOperation::Merge));
+    assert_eq!(linked.conflicts, 1);
+    git(&wt_path, &["merge", "--abort"]);
+
+    // Upstream moves: unknown until fetched, then fast-forward once the local commits are gone.
+    commit_file(&up, "u1.txt", "1\n", "upstream 1");
+    commit_file(&up, "u2.txt", "2\n", "upstream 2");
+    let fetched: Value = call(&e.ws, "git.fetch", json!({ "projectId": project.id })).await;
+    assert_eq!(fetched["ok"], true, "{fetched}");
+    let p: Project = call(&e.ws, "projects.get", json!({ "id": project.id })).await;
+    assert_eq!((main(&p).ahead, main(&p).behind), (2, 2));
+    let ff = json!({ "projectId": project.id, "path": repo });
+    let err = e.ws.dispatch("git.fastForward", ff.clone()).await.unwrap_err();
+    assert_eq!(err.code, "conflict");
+    assert!(err.message.contains("2 commit(s)"), "{}", err.message);
+
+    git(&repo, &["reset", "-q", "--hard", "HEAD~2"]);
+    std::fs::write(repo.join("loose.txt"), "x\n").unwrap();
+    let err = e.ws.dispatch("git.fastForward", ff.clone()).await.unwrap_err();
+    assert!(err.message.contains("uncommitted"), "{}", err.message);
+    std::fs::remove_file(repo.join("loose.txt")).unwrap();
+    let done: Value = call(&e.ws, "git.fastForward", ff.clone()).await;
+    assert_eq!(done["ok"], true, "{done}");
+    assert_eq!(git(&repo, &["rev-parse", "HEAD"]), git(&up, &["rev-parse", "HEAD"]));
+    let p: Project = call(&e.ws, "projects.get", json!({ "id": project.id })).await;
+    assert_eq!((main(&p).ahead, main(&p).behind), (0, 0));
+
+    // A branch without upstream cannot be fast-forwarded.
+    let err = e.ws.dispatch("git.fastForward", json!({ "projectId": project.id, "path": wt.path })).await.unwrap_err();
+    assert!(err.message.contains("no upstream"), "{}", err.message);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn fs_list_orders_and_hides() {
     let e = env();

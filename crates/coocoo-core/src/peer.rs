@@ -778,6 +778,8 @@ fn request_timeout(method: &str) -> Duration {
         "boards.sourceUpdate",
         "git.commit",
         "git.merge",
+        "git.fetch",
+        "git.fastForward",
         "git.diff",
         "git.worktreeCreate",
         "git.worktreeRemove",

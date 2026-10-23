@@ -205,9 +205,10 @@ pub(crate) fn targets(git_dir: &Path, common_dir: &Path) -> Vec<(PathBuf, Recurs
         out.push((common_dir.to_path_buf(), RecursiveMode::NonRecursive));
     }
     out.push((common_dir.join("refs"), RecursiveMode::Recursive));
+    // Recursive: a linked worktree's HEAD, index and FETCH_HEAD live in `worktrees/<name>/`.
     let worktrees = common_dir.join("worktrees");
     if worktrees.is_dir() {
-        out.push((worktrees, RecursiveMode::NonRecursive));
+        out.push((worktrees, RecursiveMode::Recursive));
     }
     out
 }

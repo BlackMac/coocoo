@@ -61,11 +61,26 @@ Params marked `?` are optional. Return types refer to `types.rs`.
 | `projects.remove` | `{ id }` | `{}` (never touches files) |
 | `projects.refresh` | `{ id }` | `Project` (recomputes `git` and `icon`) |
 | `projects.icon` | `{ id }` | `{ mime, data: base64 }` — the file named by `Project.icon` (`not_found` without one). `icon` is picked from the project's favicon/app icon/logo at the usual places (root, `public/`, `static/`, `app/`, `src/app/`, `assets/`, `src/assets/`, `src/`, `web/`, `src-tauri/icons/`, `resources/`, `build/`, `.github/`, `docs/`): icons before logos, SVG before PNG before ICO, ≤ 512 KiB; re-detected on every git refresh |
+
+`Project.git` (`GitInfo`) describes the main checkout (`branch`, `head`, `upstream`, `ahead`/`behind`
+against it, `changed`, `lastCommit`) plus `fetchedAt` (newest `FETCH_HEAD` mtime over all
+worktrees, Unix ms; absent when never fetched: the upstream counts are as old as that) and
+`worktrees: Worktree[]`. Each `Worktree` has `path`, `branch` (absent on a detached HEAD), short
+`head`, `isMain`, `changed`, `upstream`/`ahead`/`behind` of its branch, `conflicts` (unmerged
+paths), `operation` (`merge` \| `rebase` \| `cherryPick` \| `revert` \| `bisect` in progress) and,
+for linked worktrees on a branch, `baseAhead`/`baseBehind` against the main worktree's branch (the
+target of `git.merge`). It is recomputed when a watched git file changes (HEAD, index, refs,
+`FETCH_HEAD` of every worktree) and after each agent turn; Coocoo itself never fetches.
+
+| Method | Params | Result |
+|---|---|---|
 | `git.diff` | `{ cwd, base? }` | `DiffResult` — working tree (incl. untracked) vs `HEAD`, or vs `merge-base(base, HEAD)` when `base` is given |
 | `git.diffStat` | `{ cwd, base? }` | `DiffStat` — same comparison as `git.diff`, counts only |
 | `git.log` | `{ cwd, limit? (20) }` | `CommitInfo[]` |
 | `git.commit` | `{ cwd, message }` | `CommitInfo` — stages everything (`git add -A`) then commits |
 | `git.merge` | `{ projectId, branch }` | `{ ok: bool, output: String }` — merges `branch` into the project's checked-out branch (no fast-forward commit message prompt; aborts and reports on conflict) |
+| `git.fetch` | `{ projectId }` | `{ ok: bool, output: String }` — `git fetch --all --no-auto-gc` in the project's checkout, at most 60 s; never prompts (ssh runs with `BatchMode=yes` unless `GIT_SSH`/`GIT_SSH_COMMAND`/`core.sshCommand` is set), so missing credentials fail with git's message |
+| `git.fastForward` | `{ projectId, path }` | `{ ok: bool, output: String }` — `git merge --ff-only @{upstream}` in the project's worktree at `path`, using the last fetch; `conflict` when the branch has no upstream, has commits of its own, or the tree has uncommitted files |
 | `git.worktreeCreate` | `{ projectId, branch?, base? }` | `WorktreeRef` — new branch (default `coocoo/<id>`) from `base` (default current branch) under `<data_dir>/worktrees/<project-name>-<project-id>/<branch-slug>` |
 | `git.worktreeRemove` | `{ projectId, path, deleteBranch?: bool }` | `{}` |
 | `fs.list` | `{ path? }` (default home) | `{ path, parent?, entries: FsEntry[] }` — directories first, hidden entries omitted |
@@ -105,7 +120,7 @@ keeps running while nobody is attached and ends when the shell exits or on `term
 | `agents.subagentTimeline` | `{ id, sessionFile, live? }` | `TimelinePage` — read-only transcript of one of the agent's subagents, read from its omp session file (`Subagent.sessionFile`; only files below the agent's own session directory, else `forbidden`); newest 500 items. `live`: the subagent still runs, so unanswered tool calls show as running instead of interrupted |
 | `agents.hibernate` | `{ id }` | `AgentSummary` |
 | `agents.archive` | `{ id }` | `AgentSummary` (status `stopped`, process gone, read-only) |
-| `agents.delete` | `{ id, removeWorktree?: bool }` | `{}` |
+| `agents.delete` | `{ id, removeWorktree?: bool, deleteBranch?: bool }` | `{}` — `deleteBranch` (with `removeWorktree`) also deletes the worktree's branch |
 
 ### boards — `coocoo-agents` (one Kanban board per project)
 Stored in `<data_dir>/boards/<project id>.json`; boards that earlier versions kept per agent move to

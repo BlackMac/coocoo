@@ -117,6 +117,9 @@ struct DeleteParams {
     id: String,
     #[serde(default)]
     remove_worktree: bool,
+    /// With `remove_worktree`: also delete the worktree's branch.
+    #[serde(default)]
+    delete_branch: bool,
 }
 
 #[derive(Deserialize)]
@@ -621,7 +624,11 @@ impl Agents {
             && let (Some(project_id), Some(worktree)) = (project_id, worktree)
         {
             self.orch()?
-                .call(None, "git.worktreeRemove".to_owned(), json!({ "projectId": project_id, "path": worktree.path }))
+                .call(
+                    None,
+                    "git.worktreeRemove".to_owned(),
+                    json!({ "projectId": project_id, "path": worktree.path, "deleteBranch": p.delete_branch }),
+                )
                 .await?;
         }
         {

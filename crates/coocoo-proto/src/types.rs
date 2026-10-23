@@ -127,6 +127,10 @@ pub struct GitInfo {
     pub changed: u32,
     pub last_commit: Option<CommitInfo>,
     pub worktrees: Vec<Worktree>,
+    /// Newest `FETCH_HEAD` modification (Unix ms) over all worktrees: how current the
+    /// upstream counts are. `None` when the repository was never fetched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fetched_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,7 +143,7 @@ pub struct CommitInfo {
     pub ts: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Worktree {
     pub path: String,
@@ -149,6 +153,35 @@ pub struct Worktree {
     /// Changed files; `None` when not computed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub changed: Option<u32>,
+    /// Upstream of the checked-out branch, with the ahead/behind counts against it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<String>,
+    #[serde(default)]
+    pub ahead: u32,
+    #[serde(default)]
+    pub behind: u32,
+    /// Linked worktrees on a branch: commits ahead of / behind the main worktree's branch
+    /// (the target of `git.merge`). `None` for the main worktree and detached heads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_ahead: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_behind: Option<u32>,
+    /// Unmerged (conflicted) paths.
+    #[serde(default)]
+    pub conflicts: u32,
+    /// Operation in progress in this worktree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation: Option<GitOperation>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GitOperation {
+    Merge,
+    Rebase,
+    CherryPick,
+    Revert,
+    Bisect,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

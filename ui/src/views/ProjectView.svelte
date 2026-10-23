@@ -9,7 +9,8 @@
   import { href, router } from '../lib/router.svelte';
   import { ui } from '../lib/ui.svelte';
   import type { CommitInfo } from '../lib/protocol';
-  import { Copy, ExternalLink, GitBranch, GitCommitHorizontal, Plus, RefreshCw, Terminal, Trash2, X, Globe, Ellipsis } from '../lib/icons';
+  import { ArrowDownToLine, Copy, ExternalLink, GitBranch, GitCommitHorizontal, Plus, RefreshCw, Terminal, Trash2, X, Globe, Ellipsis } from '../lib/icons';
+  import { OPERATION_LABEL, fetchProject, fetchedLabel, fetching, isStale } from '../lib/git.svelte';
   import AgentRow from '../components/AgentRow.svelte';
   import BoardPanel from '../panels/BoardPanel.svelte';
   import HostDot from '../components/HostDot.svelte';
@@ -22,6 +23,7 @@
   const h = $derived(fleet.host(host));
   const agents = $derived(fleet.agentsOf(host, id));
   const active = $derived(agents.filter((a) => a.status !== 'stopped'));
+  const busyFetch = $derived(!!fetching[`${host}:${id}`]);
   const archived = $derived(agents.filter((a) => a.status === 'stopped'));
 
   let commits = $state<CommitInfo[]>([]);
@@ -124,6 +126,11 @@
             <button class="btn ghost icon" title="Refresh git status" aria-label="Refresh" onclick={refresh} disabled={refreshing}>
               <span class:spin={refreshing}><RefreshCw size={14} /></span>
             </button>
+            {#if p.git}
+              <button class="btn ghost icon" title="Fetch from the remotes ({fetchedLabel(p.git.fetchedAt, now.value)})" aria-label="Fetch" onclick={() => fetchProject(p!)} disabled={busyFetch}>
+                <span class:pulse={busyFetch}><ArrowDownToLine size={14} /></span>
+              </button>
+            {/if}
             <button class="btn ghost icon" class:active={showTerminal} title="Terminal in the project directory" aria-label="Terminal" aria-pressed={showTerminal} onclick={() => (showTerminal = !showTerminal)}>
               <Terminal size={14} />
             </button>
@@ -144,6 +151,7 @@
           <div class="stats num">
             <span class="stat mono"><GitBranch size={13} />{p.git.branch ?? p.git.head ?? 'detached'}</span>
             {#if p.git.upstream}<span class="stat faint">⇄ {p.git.upstream}</span>{/if}
+            <span class="stat faint" class:warn={isStale(p.git.fetchedAt, now.value)} title={p.git.fetchedAt ? new Date(p.git.fetchedAt).toLocaleString() : undefined}>{fetchedLabel(p.git.fetchedAt, now.value)}</span>
             <span class="stat" class:dim={!p.git.ahead}>↑ {p.git.ahead} ahead</span>
             <span class="stat" class:warn={p.git.behind > 0} class:dim={!p.git.behind}>↓ {p.git.behind} behind</span>
             <span class="stat" class:accent={p.git.changed > 0} class:dim={!p.git.changed}>{p.git.changed} changed</span>
@@ -209,6 +217,13 @@
                   <span class="mono faint ellipsis" title={w.path}>{shortPath(w.path, 2)}</span>
                   {#if w.isMain}<span class="chip">main</span>{/if}
                   {#if w.changed}<span class="accent num">{w.changed} changed</span>{/if}
+                  {#if w.operation || w.conflicts}<span class="warn-red">⚠ {w.operation ? OPERATION_LABEL[w.operation] : `${w.conflicts} conflicts`}</span>{/if}
+                  {#if w.baseAhead === 0 && !w.changed && !w.operation}
+                    <span class="merged" title="Everything on this branch is in {p.git.branch}">✓ merged</span>
+                  {:else if w.baseAhead != null}
+                    <span class="num faint" title="Against {p.git.branch}">↑{w.baseAhead}</span>
+                    <span class="num" class:warn={!!w.baseBehind} class:faint={!w.baseBehind} title="Against {p.git.branch}">↓{w.baseBehind}</span>
+                  {/if}
                   <span class="grow"></span>
                   {#if user}<a class="agent-link ellipsis" href={href({ name: 'agent', host, id: user.id })}>{user.title}</a>{/if}
                   {#if !w.isMain}
@@ -325,6 +340,23 @@
   }
   .warn {
     color: var(--amber);
+  }
+  .warn-red {
+    color: var(--red);
+    white-space: nowrap;
+  }
+  .merged {
+    color: var(--green);
+    white-space: nowrap;
+  }
+  .pulse {
+    display: flex;
+    animation: pulse 1s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    50% {
+      opacity: 0.3;
+    }
   }
   .accent {
     color: var(--accent-text);

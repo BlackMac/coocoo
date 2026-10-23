@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use coocoo_proto::{ApiError, ApiResult, CommitInfo, GitInfo, Worktree};
+use coocoo_proto::{ApiError, ApiResult, CommitInfo, GitInfo, GitOperation, Worktree};
 use tokio::process::Command;
 use tokio::task::JoinSet;
 
@@ -112,13 +112,14 @@ pub(crate) async fn has_head(cwd: &Path) -> ApiResult<bool> {
 
 // ─── status ──────────────────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct Status {
     pub branch: Option<String>,
     pub upstream: Option<String>,
     pub ahead: u32,
     pub behind: u32,
     pub changed: u32,
+    pub conflicts: u32,
 }
 
 /// Parse `git status --porcelain=v2 [--branch] -z`.
@@ -146,7 +147,11 @@ pub(crate) fn parse_status(raw: &[u8]) -> Status {
                     _ => {}
                 }
             }
-            Some(b'1' | b'u' | b'?') => status.changed += 1,
+            Some(b'u') => {
+                status.changed += 1;
+                status.conflicts += 1;
+            }
+            Some(b'1' | b'?') => status.changed += 1,
             Some(b'2') => {
                 status.changed += 1;
                 // Renamed/copied entries carry the original path as an extra record.
@@ -200,13 +205,7 @@ pub(crate) fn parse_worktrees(raw: &str) -> Vec<Worktree> {
     let mut out: Vec<Worktree> = Vec::new();
     for line in raw.lines() {
         if let Some(path) = line.strip_prefix("worktree ") {
-            out.push(Worktree {
-                path: path.to_owned(),
-                branch: None,
-                head: None,
-                is_main: out.is_empty(),
-                changed: None,
-            });
+            out.push(Worktree { path: path.to_owned(), is_main: out.is_empty(), ..Worktree::default() });
             continue;
         }
         let Some(wt) = out.last_mut() else { continue };
@@ -224,9 +223,83 @@ pub(crate) async fn worktrees(cwd: &Path) -> ApiResult<Vec<Worktree>> {
     Ok(parse_worktrees(&String::from_utf8_lossy(&out.stdout)))
 }
 
-async fn changed_count(path: PathBuf) -> Option<u32> {
-    let out = run(&path, &["status", "--porcelain=v2", "-z"]).await.ok().filter(|o| o.ok)?;
-    Some(parse_status(&out.stdout).changed)
+/// Per-worktree state that `git worktree list` does not report.
+struct Details {
+    status: Option<Status>,
+    /// `(ahead, behind)` against the base branch.
+    base: Option<(u32, u32)>,
+    operation: Option<GitOperation>,
+    fetched_at: Option<i64>,
+}
+
+/// Status (unless already `known`), counts against `base` and the operation in progress of the
+/// worktree at `path`.
+async fn worktree_details(path: PathBuf, known: Option<Status>, base: Option<String>) -> Details {
+    let status = async {
+        match known {
+            Some(status) => Some(status),
+            None => run(&path, &["status", "--porcelain=v2", "--branch", "-z"])
+                .await
+                .ok()
+                .filter(|o| o.ok)
+                .map(|o| parse_status(&o.stdout)),
+        }
+    };
+    let counts = async {
+        let range = format!("refs/heads/{}...HEAD", base?);
+        let out = run(&path, &["rev-list", "--left-right", "--count", &range, "--"]).await.ok().filter(|o| o.ok)?;
+        parse_left_right(&out.stdout_line())
+    };
+    let (status, base) = tokio::join!(status, counts);
+    let git_dir = worktree_git_dir(&path).await;
+    Details {
+        status,
+        base,
+        operation: git_dir.as_deref().and_then(operation),
+        fetched_at: git_dir.as_deref().and_then(fetched_at),
+    }
+}
+
+/// Parse `rev-list --left-right --count base...HEAD` (`<behind>\t<ahead>`) into `(ahead, behind)`.
+fn parse_left_right(line: &str) -> Option<(u32, u32)> {
+    let (behind, ahead) = line.split_once('\t')?;
+    Some((ahead.trim().parse().ok()?, behind.trim().parse().ok()?))
+}
+
+/// The git directory of the worktree at `path`: `.git` itself, or the `gitdir:` a linked
+/// worktree's `.git` file points to.
+async fn worktree_git_dir(path: &Path) -> Option<PathBuf> {
+    let dot_git = path.join(".git");
+    if tokio::fs::metadata(&dot_git).await.ok()?.is_dir() {
+        return Some(dot_git);
+    }
+    let text = tokio::fs::read_to_string(&dot_git).await.ok()?;
+    let dir = PathBuf::from(text.trim().strip_prefix("gitdir:")?.trim());
+    Some(if dir.is_absolute() { dir } else { path.join(dir) })
+}
+
+/// The operation in progress in a worktree, from the state files git keeps in its git dir.
+pub(crate) fn operation(git_dir: &Path) -> Option<GitOperation> {
+    let has = |name: &str| git_dir.join(name).exists();
+    if has("rebase-merge") || has("rebase-apply") {
+        Some(GitOperation::Rebase)
+    } else if has("MERGE_HEAD") {
+        Some(GitOperation::Merge)
+    } else if has("CHERRY_PICK_HEAD") {
+        Some(GitOperation::CherryPick)
+    } else if has("REVERT_HEAD") {
+        Some(GitOperation::Revert)
+    } else if has("BISECT_LOG") {
+        Some(GitOperation::Bisect)
+    } else {
+        None
+    }
+}
+
+/// When `git fetch` last ran in a worktree (`FETCH_HEAD` lives in each worktree's git dir).
+fn fetched_at(git_dir: &Path) -> Option<i64> {
+    let modified = std::fs::metadata(git_dir.join("FETCH_HEAD")).ok()?.modified().ok()?;
+    i64::try_from(modified.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis()).ok()
 }
 
 // ─── project summary ─────────────────────────────────────────────────────────────────────────
@@ -249,20 +322,40 @@ pub(crate) async fn info(path: &Path) -> Option<GitInfo> {
         .unwrap_or_default();
 
     let here = path.to_string_lossy();
-    let mut counts = JoinSet::new();
+    // Linked worktrees are compared with the main worktree's branch, the target of `git.merge`.
+    let main_branch = worktrees.iter().find(|w| w.is_main).and_then(|w| w.branch.clone());
+    let mut details = JoinSet::new();
     for (i, wt) in worktrees.iter_mut().enumerate() {
         if let Some(head) = &mut wt.head {
             head.truncate(abbrev);
         }
-        if wt.path == here {
-            wt.changed = Some(status.changed);
-        } else if Path::new(&wt.path).is_dir() {
-            let wt_path = PathBuf::from(&wt.path);
-            counts.spawn(async move { (i, changed_count(wt_path).await) });
+        let wt_path = PathBuf::from(&wt.path);
+        if !wt_path.is_dir() {
+            continue;
         }
+        let known = (wt.path == here).then(|| status.clone());
+        let base = match (&main_branch, &wt.branch) {
+            (Some(base), Some(own)) if !wt.is_main && base != own => Some(base.clone()),
+            _ => None,
+        };
+        details.spawn(async move { (i, worktree_details(wt_path, known, base).await) });
     }
-    while let Some(Ok((i, changed))) = counts.join_next().await {
-        worktrees[i].changed = changed;
+    let mut fetched = None;
+    while let Some(Ok((i, d))) = details.join_next().await {
+        let wt = &mut worktrees[i];
+        if let Some(s) = d.status {
+            wt.changed = Some(s.changed);
+            wt.upstream = s.upstream;
+            wt.ahead = s.ahead;
+            wt.behind = s.behind;
+            wt.conflicts = s.conflicts;
+        }
+        if let Some((ahead, behind)) = d.base {
+            wt.base_ahead = Some(ahead);
+            wt.base_behind = Some(behind);
+        }
+        wt.operation = d.operation;
+        fetched = fetched.max(d.fetched_at);
     }
 
     Some(GitInfo {
@@ -274,6 +367,7 @@ pub(crate) async fn info(path: &Path) -> Option<GitInfo> {
         changed: status.changed,
         last_commit: last.map(|l| l.commit),
         worktrees,
+        fetched_at: fetched,
     })
 }
 
@@ -298,6 +392,7 @@ mod tests {
         let raw = b"# branch.oid abc\0# branch.head main\0# branch.upstream origin/main\0# branch.ab +2 -3\0\
 1 .M N... 100644 100644 100644 a a f1\0\
 2 R. N... 100644 100644 100644 a a R100 new\0old\0\
+u UU N... 100644 100644 100644 100644 a b c both\0\
 ? untracked\0! ignored\0";
         let s = parse_status(raw);
         assert_eq!(
@@ -307,7 +402,8 @@ mod tests {
                 upstream: Some("origin/main".into()),
                 ahead: 2,
                 behind: 3,
-                changed: 3,
+                changed: 4,
+                conflicts: 1,
             }
         );
         let detached = parse_status(b"# branch.oid (initial)\0# branch.head (detached)\0");
