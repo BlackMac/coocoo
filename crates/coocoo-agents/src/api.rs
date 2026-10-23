@@ -142,6 +142,14 @@ struct SubagentTimelineParams {
     live: bool,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImageParams {
+    id: String,
+    /// `TimelineImage.name`.
+    name: String,
+}
+
 /// Default title: first non-empty prompt line, at most [`TITLE_CHARS`] characters.
 fn default_title(prompt: Option<&str>, id: &str) -> String {
     let line = prompt.and_then(|p| p.lines().map(str::trim).find(|l| !l.is_empty()));
@@ -163,6 +171,18 @@ fn image_content(image: ImageInput) -> ImageContent {
         mime_type: Some(image.mime_type),
         ..ImageContent::default()
     }
+}
+
+/// MIME type of a stored user message image name (`<seq>-<index>.<ext>`). Anything else is
+/// rejected, so a name can never point outside the agent's image directory.
+fn message_image_mime(name: &str) -> Option<&'static str> {
+    let (stem, ext) = name.split_once('.')?;
+    let (seq, index) = stem.split_once('-')?;
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if !(digits(seq) && digits(index)) {
+        return None;
+    }
+    crate::image::mime(ext)
 }
 
 fn parse_thinking(level: &str) -> ApiResult<ThinkingLevel> {
@@ -218,6 +238,7 @@ impl Agents {
             }
             "agents.usage" => ok(self.usage(params(p)?).await?),
             "agents.subagentTimeline" => self.subagent_timeline(params(p)?).await,
+            "agents.image" => self.image(params(p)?).await,
             "agents.hibernate" => {
                 let IdParams { id } = params(p)?;
                 let agent = self.get(&id)?;
@@ -623,6 +644,15 @@ impl Agents {
         ok(page)
     }
 
+    /// `agents.image`: one user message image as `{ mime, data }` (base64).
+    async fn image(&self, p: ImageParams) -> ApiResult<Value> {
+        use base64::Engine as _;
+        let mime = message_image_mime(&p.name).ok_or_else(|| ApiError::invalid(format!("invalid image name `{}`", p.name)))?;
+        let path = self.get(&p.id)?.dir.join(crate::image::DIR).join(&p.name);
+        let bytes = tokio::fs::read(path).await?;
+        Ok(json!({ "mime": mime, "data": base64::engine::general_purpose::STANDARD.encode(bytes) }))
+    }
+
     async fn delete(&self, p: DeleteParams) -> ApiResult<Value> {
         let agent = self.get(&p.id)?;
         // Hibernate first: if removing the worktree fails, the agent stays intact and resumable.
@@ -681,6 +711,15 @@ mod tests {
         let title = default_title(Some(&long), "abcdef123456");
         assert_eq!(title.chars().count(), TITLE_CHARS);
         assert!(title.ends_with('…'));
+    }
+
+    #[test]
+    fn image_names_cannot_leave_the_image_directory() {
+        assert_eq!(message_image_mime("12-0.png"), Some("image/png"));
+        assert_eq!(message_image_mime("3-2.webp"), Some("image/webp"));
+        for bad in ["../x", "a/b.png", "../1-0.png", "1-0/../../x.png", "1-0.svg", "1-0.png.png", "x-0.png", "1-.jpg", "-0.gif", "10.png", "1-0", ""] {
+            assert_eq!(message_image_mime(bad), None, "{bad}");
+        }
     }
 
     #[test]

@@ -409,7 +409,16 @@ impl Agents {
             Ok(ack) if ack.agent_invoked == Some(false) => {
                 agent.state.lock().cancel_prompt();
                 if let Some((seq, text)) = slash {
-                    let item = TimelineItem { seq, id: seq.to_string(), ts: now_ms(), kind: ItemKind::User, text: Some(text), tool: None, partial: false };
+                    let item = TimelineItem {
+                        seq,
+                        id: seq.to_string(),
+                        ts: now_ms(),
+                        kind: ItemKind::User,
+                        text: Some(text),
+                        tool: None,
+                        partial: false,
+                        images: Vec::new(),
+                    };
                     if let Err(err) = agent.timeline.lock().upsert(&item) {
                         tracing::warn!(agent = %agent.id, %err, "timeline write failed");
                     }
@@ -426,7 +435,7 @@ impl Agents {
     /// Body of the per-process event thread: map frames until the process is gone.
     fn run_events(self: Arc<Self>, agent: &Arc<Agent>, generation: u64, events: Receiver<Event>) {
         let mut mapper = Mapper::new();
-        let mut sink = LiveSink { agents: &self, agent, generation };
+        let mut sink = LiveSink { agents: &self, agent, generation, unsaved: Vec::new() };
         loop {
             let event = match mapper.deadline() {
                 Some(deadline) => match events.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
@@ -572,6 +581,8 @@ struct LiveSink<'a> {
     agents: &'a Agents,
     agent: &'a Arc<Agent>,
     generation: u64,
+    /// Images whose `SaveImage` failed; their item is upserted without them.
+    unsaved: Vec<String>,
 }
 
 impl LiveSink<'_> {
@@ -594,7 +605,18 @@ impl Sink for LiveSink<'_> {
     fn effect(&mut self, effect: Effect) {
         let (agents, agent) = (self.agents, self.agent);
         match effect {
-            Effect::Upsert(item) => {
+            Effect::SaveImage { name, bytes } => {
+                let dir = agent.dir.join(crate::image::DIR);
+                if let Err(err) = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(dir.join(&name), bytes)) {
+                    tracing::warn!(agent = %agent.id, image = %name, %err, "image write failed");
+                    self.unsaved.push(name);
+                }
+            }
+            Effect::Upsert(mut item) => {
+                if !self.unsaved.is_empty() {
+                    item.images.retain(|image| !self.unsaved.contains(&image.name));
+                    self.unsaved.clear();
+                }
                 if let Err(err) = agent.timeline.lock().upsert(&item) {
                     tracing::warn!(agent = %agent.id, %err, "timeline write failed");
                 }

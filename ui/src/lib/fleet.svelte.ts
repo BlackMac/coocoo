@@ -43,7 +43,8 @@ export interface Outgoing {
   id: number;
   message: string;
   images: ImageInput[];
-  /** The text omp's `user` item will carry: the message plus `[N images]` (see mapper.rs `content_text`). */
+  /** One-line form: the message plus `[N images]`. omp's `user` item matches it with its `images`
+   *  counted the same way (daemons before `TimelineItem.images` put the marker into the text). */
   text: string;
   /** What the composer held, for Edit. */
   draft: Draft;
@@ -410,7 +411,8 @@ export class Fleet {
     if (!list?.length) return;
     // The same text first (also a failed entry: its call timed out, but the daemon took it);
     // else the oldest open turn prompt (omp may have expanded a skill or template).
-    const text = (item.text ?? '').trim();
+    const n = item.images?.length ?? 0;
+    const text = [(item.text ?? '').trim(), n ? `[${n} image${n === 1 ? '' : 's'}]` : ''].filter(Boolean).join('\n');
     let i = list.findIndex((e) => e.text === text);
     if (i < 0) i = list.findIndex((e) => e.target === 'transcript' && e.state !== 'failed');
     if (i < 0) return;

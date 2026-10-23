@@ -365,6 +365,19 @@ export interface TimelineItem {
   text?: string;
   tool?: ToolCall;
   partial?: boolean;
+  /** Images of a user message, as the agent got them (fetch with `agents.image`). */
+  images?: TimelineImage[];
+}
+
+/** One image of a user message, stored with the agent. */
+export interface TimelineImage {
+  /** `<seq>-<index>.<ext>`, the key for `agents.image`. */
+  name: string;
+  mime: string;
+  size: number;
+  /** Pixel size from the image header; absent when it could not be read. */
+  width?: number;
+  height?: number;
 }
 
 export interface TimelineEvent {
@@ -792,6 +805,7 @@ export interface Methods {
   'agents.commands': [{ id: string }, SlashCommand[]];
   'agents.usage': [{ provider: string; model?: string }, ProviderUsage];
   'agents.subagentTimeline': [{ id: string; sessionFile: string; live?: boolean }, TimelinePage];
+  'agents.image': [{ id: string; name: string }, { mime: string; data: string }];
   'boards.get': [{ projectId: string }, Board];
   'boards.cardAdd': [{ projectId: string; title: string; body?: string; column?: CardColumn; top?: boolean; startUrl?: string; doneUrl?: string; images?: ImageUpload[] }, Card];
   'boards.cardUpdate': [{ projectId: string; cardId: string; title?: string; body?: string; column?: CardColumn; index?: number; startUrl?: string; doneUrl?: string; addImages?: ImageUpload[]; removeImages?: string[] }, Card];

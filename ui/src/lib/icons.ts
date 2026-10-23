@@ -13,6 +13,7 @@ export { default as Brain } from '@lucide/svelte/icons/brain';
 export { default as Camera } from '@lucide/svelte/icons/camera';
 export { default as Check } from '@lucide/svelte/icons/check';
 export { default as ChevronDown } from '@lucide/svelte/icons/chevron-down';
+export { default as ChevronLeft } from '@lucide/svelte/icons/chevron-left';
 export { default as ChevronRight } from '@lucide/svelte/icons/chevron-right';
 export { default as CircleAlert } from '@lucide/svelte/icons/circle-alert';
 export { default as CircleCheck } from '@lucide/svelte/icons/circle-check';

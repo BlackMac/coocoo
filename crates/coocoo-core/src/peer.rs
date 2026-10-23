@@ -767,6 +767,7 @@ fn request_timeout(method: &str) -> Duration {
         "agents.hibernate",
         "agents.models",
         "agents.prompt",
+        "agents.image",
         "boards.cardAdd",
         "boards.cardUpdate",
         "boards.cardImage",

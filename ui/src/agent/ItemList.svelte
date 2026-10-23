@@ -8,13 +8,15 @@
 
   // Timeline items as rendered in a transcript (an agent's, or a subagent's). Renders no wrapper
   // element, so the parent's layout applies to each block. `host`/`projectId`: the agent's project,
-  // whose board shows card refinements (`kanban_refine`) below the call.
+  // whose board shows card refinements (`kanban_refine`) below the call. `host`/`agentId`: the
+  // agent whose user message images are shown.
   let {
     items,
     onsubagent,
     host,
+    agentId,
     projectId,
-  }: { items: TimelineItem[]; onsubagent?: (s: Subagent) => void; host?: string; projectId?: string } = $props();
+  }: { items: TimelineItem[]; onsubagent?: (s: Subagent) => void; host?: string; agentId?: string; projectId?: string } = $props();
   const isRefinement = (it: TimelineItem) => it.tool?.name === 'kanban_refine' && it.tool.status === 'ok';
 
   /** Groups consecutive tool calls so they render as one compact block. */
@@ -41,7 +43,7 @@
       {#each b.items.filter(isRefinement) as it (it.id)}<RefinementItem item={it} {host} {projectId} />{/each}
     {/if}
   {:else if b.item.kind === 'user'}
-    <UserItem item={b.item} />
+    <UserItem item={b.item} {host} {agentId} />
   {:else if b.item.kind === 'assistant'}
     <AssistantItem item={b.item} />
   {:else if b.item.kind === 'thinking'}

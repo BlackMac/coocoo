@@ -2,6 +2,7 @@
   import { tick } from 'svelte';
   import { fleet, key, type Outgoing, type Timeline } from '../lib/fleet.svelte';
   import type { AgentSummary, TimelineItem } from '../lib/protocol';
+  import { base64Bytes } from '../lib/images';
   import { ui } from '../lib/ui.svelte';
   import { ArrowDown } from '../lib/icons';
   import ItemList from './ItemList.svelte';
@@ -21,7 +22,16 @@
   /** Prompts starting a turn, shown provisionally until omp's `user` item replaces them. */
   const pending = $derived(outbox.filter((e) => e.target === 'transcript'));
 
-  const asItem = (e: Outgoing): TimelineItem => ({ seq: 0, id: `outbox:${e.id}`, ts: e.sentAt, kind: 'user', text: e.text });
+  const asItem = (e: Outgoing): TimelineItem => ({
+    seq: 0,
+    id: `outbox:${e.id}`,
+    ts: e.sentAt,
+    kind: 'user',
+    text: e.message.trim(),
+    images: e.images.map((im, i) => ({ name: String(i), mime: im.mimeType, size: base64Bytes(im.data) })),
+  });
+  /** The images being sent, shown from the composer's data until the daemon stored them. */
+  const localImages = (e: Outgoing) => e.images.map((im) => `data:${im.mimeType};base64,${im.data}`);
 
   function edit(e: Outgoing) {
     fleet.discard(agentKey, e.id);
@@ -111,12 +121,14 @@
       <ItemList
         items={timeline.items}
         host={agent.hostId}
+        agentId={agent.id}
         projectId={agent.projectId}
         onsubagent={(s) => s.sessionFile && (ui.dialog = { kind: 'subagent', hostId: agent.hostId, agentId: agent.id, subagentId: s.id, sessionFile: s.sessionFile })}
       />
       {#each pending as e (e.id)}
         <UserItem
           item={asItem(e)}
+          local={localImages(e)}
           pending={e.state !== 'failed'}
           failed={e.state === 'failed' ? (e.error ?? 'Not sent') : undefined}
           onretry={() => fleet.retry(agentKey, e.id)}

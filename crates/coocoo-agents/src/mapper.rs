@@ -9,9 +9,9 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use coocoo_proto::util::{now_ms, truncate};
-use coocoo_proto::{ItemKind, SlashCommand, SlashSubcommand, Subagent, TimelineItem, ToolCall, ToolStatus};
+use coocoo_proto::{ItemKind, SlashCommand, SlashSubcommand, Subagent, TimelineImage, TimelineItem, ToolCall, ToolStatus};
 use omp_rpc::{
-    AgentMessage, AssistantContent, AssistantMessageEvent, AvailableSlashCommand, ExtensionUiRequest, MessageContent, NotifyType,
+    AgentMessage, AssistantContent, AssistantMessageEvent, AvailableSlashCommand, ExtensionUiRequest, ImageContent, MessageContent, NotifyType,
     PromptStatus, RpcAgentEvent, RpcNotification, StopReason, SubagentLifecyclePayload, SubagentLifecycleStatus,
     SubagentProgressPayload, UserContent,
 };
@@ -87,6 +87,8 @@ fn strip_ansi(text: &str) -> String {
 /// A state change derived from an omp frame.
 #[derive(Debug, Clone)]
 pub(crate) enum Effect {
+    /// Store a user message image as `images/<name>`; the `Upsert` of its item follows.
+    SaveImage { name: String, bytes: Vec<u8> },
     /// Insert or replace a timeline item (persisted + `agent.timeline`).
     Upsert(TimelineItem),
     /// Replace a tool item's live subagent progress (`agent.timeline`, memory only; the next
@@ -169,7 +171,7 @@ pub(crate) struct Mapper {
 
 fn new_item(sink: &mut dyn Sink, kind: ItemKind, text: Option<String>, partial: bool) -> TimelineItem {
     let seq = sink.seq();
-    TimelineItem { seq, id: seq.to_string(), ts: now_ms(), kind, text, tool: None, partial }
+    TimelineItem { seq, id: seq.to_string(), ts: now_ms(), kind, text, tool: None, partial, images: Vec::new() }
 }
 
 fn notice(sink: &mut dyn Sink, kind: ItemKind, text: String) {
@@ -647,10 +649,22 @@ impl Mapper {
                 if user.synthetic == Some(true) {
                     return;
                 }
-                let text = user.content.map(content_text).unwrap_or_default();
-                if !text.is_empty() {
-                    notice(sink, ItemKind::User, text);
+                let (text, images) = match user.content {
+                    Some(MessageContent::UserContentList(parts)) => user_parts(parts),
+                    Some(MessageContent::String(text)) => (text, Vec::new()),
+                    None => (String::new(), Vec::new()),
+                };
+                if text.is_empty() && images.is_empty() {
+                    return;
                 }
+                let mut item = new_item(sink, ItemKind::User, Some(text).filter(|t| !t.is_empty()), false);
+                for (index, (mime, ext, bytes)) in images.into_iter().enumerate() {
+                    let name = format!("{}-{index}.{ext}", item.seq);
+                    let (width, height) = crate::image::dimensions(&bytes).unzip();
+                    item.images.push(TimelineImage { name: name.clone(), mime, size: bytes.len() as u64, width, height });
+                    sink.effect(Effect::SaveImage { name, bytes });
+                }
+                sink.effect(Effect::Upsert(item));
             }
             AgentMessage::Assistant(assistant) => {
                 let mut visible = String::new();
@@ -725,32 +739,65 @@ fn activity(progress: &Map<String, Value>) -> Option<String> {
     Some(truncate(&line.replace('\n', " "), MAX_ACTIVITY))
 }
 
+/// `[N image(s)]`, standing in for images that are not shown.
+fn image_marker(text: &mut String, images: usize) {
+    if images > 0 {
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(&format!("[{images} image{}]", if images == 1 { "" } else { "s" }));
+    }
+}
+
+/// Text parts joined by newlines, and the image parts.
+fn split_parts(parts: Vec<UserContent>) -> (String, Vec<ImageContent>) {
+    let mut text = String::new();
+    let mut images = Vec::new();
+    for part in parts {
+        match part {
+            UserContent::Text(t) => {
+                if let Some(t) = t.text {
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    text.push_str(&t);
+                }
+            }
+            UserContent::Image(image) => images.push(image),
+        }
+    }
+    (text, images)
+}
+
+/// A decoded user message image: MIME type, file extension, bytes.
+type DecodedImage = (String, &'static str, Vec<u8>);
+
+/// Text of a user message and its images. Images of an unknown type or with broken data are
+/// left out and summarized in the text instead.
+fn user_parts(parts: Vec<UserContent>) -> (String, Vec<DecodedImage>) {
+    use base64::Engine as _;
+    let (mut text, raw) = split_parts(parts);
+    let total = raw.len();
+    let images: Vec<_> = raw
+        .into_iter()
+        .filter_map(|image| {
+            let mime = image.mime_type?;
+            let ext = crate::image::ext(&mime)?;
+            let bytes = base64::engine::general_purpose::STANDARD.decode(image.data?.as_bytes()).ok()?;
+            Some((mime, ext, bytes))
+        })
+        .collect();
+    image_marker(&mut text, total - images.len());
+    (text, images)
+}
+
 /// Visible text of user/custom content; images are summarized.
 pub(crate) fn content_text(content: MessageContent) -> String {
     match content {
         MessageContent::String(text) => text,
         MessageContent::UserContentList(parts) => {
-            let mut text = String::new();
-            let mut images = 0;
-            for part in parts {
-                match part {
-                    UserContent::Text(t) => {
-                        if let Some(t) = t.text {
-                            if !text.is_empty() {
-                                text.push('\n');
-                            }
-                            text.push_str(&t);
-                        }
-                    }
-                    UserContent::Image(_) => images += 1,
-                }
-            }
-            if images > 0 {
-                if !text.is_empty() {
-                    text.push('\n');
-                }
-                text.push_str(&format!("[{images} image{}]", if images == 1 { "" } else { "s" }));
-            }
+            let (mut text, images) = split_parts(parts);
+            image_marker(&mut text, images.len());
             text
         }
     }
@@ -782,6 +829,7 @@ pub(crate) fn tool_output(result: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[derive(Default)]
     struct Recorder {
@@ -1012,5 +1060,45 @@ mod tests {
         let items = rec.items();
         assert_eq!(items.len(), 1, "blank output adds nothing");
         assert_eq!((items[0].kind, items[0].text.as_deref()), (ItemKind::Command, Some("Context: 42% usedlink")));
+    }
+
+    fn user_message(content: Value) -> String {
+        json!({ "type": "message_end", "messageId": "u1", "message": { "role": "user", "content": content, "timestamp": 1 } }).to_string()
+    }
+
+    #[test]
+    fn user_images_are_saved_before_their_item() {
+        use base64::Engine as _;
+        let png = base64::engine::general_purpose::STANDARD.encode(crate::image::tests::png(1568, 980));
+        let (mut mapper, mut rec) = (Mapper::new(), Recorder::default());
+        let frames = [
+            user_message(json!([
+                { "type": "text", "text": "Look at this" },
+                { "type": "image", "mimeType": "image/png", "data": png },
+                { "type": "image", "mimeType": "image/svg+xml", "data": "PHN2Zz4=" },
+            ])),
+            user_message(json!([{ "type": "image", "mimeType": "image/png", "data": png }])),
+        ];
+        feed(&mut mapper, &mut rec, &frames.join("\n"));
+        let order: Vec<String> = rec
+            .effects
+            .iter()
+            .map(|e| match e {
+                Effect::SaveImage { name, bytes } => format!("save {name} {}", bytes.len()),
+                Effect::Upsert(item) => format!("upsert {}", item.seq),
+                other => format!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(order, ["save 1-0.png 29", "upsert 1", "save 2-0.png 29", "upsert 2"]);
+        let items = rec.items();
+        // The SVG is not stored and stays summarized in the text.
+        assert_eq!(items[0].text.as_deref(), Some("Look at this\n[1 image]"));
+        let image = &items[0].images[0];
+        assert_eq!(
+            (image.name.as_str(), image.mime.as_str(), image.size, image.width, image.height),
+            ("1-0.png", "image/png", 29, Some(1568), Some(980))
+        );
+        assert_eq!(items[0].images.len(), 1);
+        assert_eq!((items[1].kind, items[1].text.as_deref(), items[1].images.len()), (ItemKind::User, None, 1));
     }
 }

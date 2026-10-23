@@ -197,7 +197,7 @@ mod tests {
     use super::*;
 
     fn item(seq: u64, kind: ItemKind, text: &str, partial: bool) -> TimelineItem {
-        TimelineItem { seq, id: seq.to_string(), ts: seq as i64, kind, text: Some(text.to_owned()), tool: None, partial }
+        TimelineItem { seq, id: seq.to_string(), ts: seq as i64, kind, text: Some(text.to_owned()), tool: None, partial, images: Vec::new() }
     }
 
     fn temp_path(name: &str) -> PathBuf {

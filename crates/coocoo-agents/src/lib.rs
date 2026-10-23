@@ -6,12 +6,14 @@
 //!   resumes its omp session (`--resume <sessionFile>`) on the next prompt.
 //! - Each live process has one dedicated thread that maps its events to timeline items and
 //!   status changes ([`mapper`]); nothing polls while agents are idle.
-//! - State survives daemon restarts: `<data_dir>/agents/<id>/meta.json` + `timeline.jsonl`.
+//! - State survives daemon restarts: `<data_dir>/agents/<id>/meta.json` + `timeline.jsonl`,
+//!   plus the images of user messages in `images/` (`<seq>-<index>.<ext>`, `agents.image`).
 //!   A restarting daemon lets running agents pause first and tells them when it is back
 //!   ([`restart`]).
 
 mod api;
 mod board;
+mod image;
 mod mapper;
 mod process;
 mod restart;
@@ -238,7 +240,7 @@ impl Agents {
         let item = {
             let mut tl = agent.timeline.lock();
             let seq = tl.alloc();
-            let item = TimelineItem { seq, id: seq.to_string(), ts: now_ms(), kind, text: Some(text), tool: None, partial: false };
+            let item = TimelineItem { seq, id: seq.to_string(), ts: now_ms(), kind, text: Some(text), tool: None, partial: false, images: Vec::new() };
             if let Err(err) = tl.upsert(&item) {
                 tracing::warn!(agent = %agent.id, %err, "timeline write failed");
             }

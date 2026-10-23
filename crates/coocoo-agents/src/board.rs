@@ -282,17 +282,6 @@ fn attachment_mime(path: &Path) -> Option<&'static str> {
     })
 }
 
-/// File extension for an accepted card image type (no SVG: it can carry scripts).
-fn image_ext(mime: &str) -> Option<&'static str> {
-    Some(match mime {
-        "image/png" => "png",
-        "image/jpeg" => "jpg",
-        "image/gif" => "gif",
-        "image/webp" => "webp",
-        _ => return None,
-    })
-}
-
 /// Decode and check uploaded card images; names are made safe and unique among `taken` (the
 /// card's images that stay) and each other.
 fn decode_images(uploads: Vec<ImageUpload>, taken: &[String]) -> ApiResult<Vec<(Attachment, Vec<u8>)>> {
@@ -302,7 +291,7 @@ fn decode_images(uploads: Vec<ImageUpload>, taken: &[String]) -> ApiResult<Vec<(
     let mut out: Vec<(Attachment, Vec<u8>)> = Vec::with_capacity(uploads.len());
     for upload in uploads {
         let label = upload.name.clone().unwrap_or_else(|| "pasted image".to_owned());
-        let ext = image_ext(&upload.mime_type)
+        let ext = crate::image::ext(&upload.mime_type)
             .ok_or_else(|| ApiError::invalid(format!("{label}: only PNG, JPEG, GIF and WebP images can be attached")))?;
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(upload.data.as_bytes())

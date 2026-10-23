@@ -5,7 +5,7 @@
   import type { Attachment, Card } from '../lib/protocol';
   import { NotebookPen } from '../lib/icons';
   import Dialog from '../components/Dialog.svelte';
-  import { cardFiles as loaded, loadCardFile } from '../lib/cardfiles.svelte';
+  import { files as loaded, loadCardFile } from '../lib/files.svelte';
 
   // A card's refinement: the agent's Markdown plan and its mocks (images, HTML). HTML mocks run
   // in sandboxed frames without the app's origin, so their scripts cannot reach the token.

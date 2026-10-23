@@ -15,7 +15,7 @@
   import { tick } from 'svelte';
   import { ui } from '../lib/ui.svelte';
   import { base64Bytes, imageFiles, onImagePaste, readImage } from '../lib/images';
-  import { cardFiles, loadCardFile } from '../lib/cardfiles.svelte';
+  import { files, loadCardFile } from '../lib/files.svelte';
   import { ChevronRight, Image, X } from '../lib/icons';
   import Dialog from '../components/Dialog.svelte';
 
@@ -84,7 +84,7 @@
     'picked' in im
       ? `data:${im.picked.image.mimeType};base64,${im.picked.image.data}`
       : cardId
-        ? cardFiles[loadCardFile(host, projectId, cardId, 'image', im.stored, im.stored.size)]
+        ? files[loadCardFile(host, projectId, cardId, 'image', im.stored, im.stored.size)]
         : undefined;
   const nameOf = (im: EditImage) => ('picked' in im ? im.picked.name : im.stored.name);
   const keyOf = (im: EditImage) => ('picked' in im ? `p${im.id}` : `s${im.stored.name}`);

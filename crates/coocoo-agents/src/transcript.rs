@@ -52,7 +52,7 @@ pub(crate) fn read(path: &Path, live: bool) -> ApiResult<TimelinePage> {
         let Ok(message) = AgentMessage::deserialize(&raw) else { continue };
         let mut push = |kind: ItemKind, text: Option<String>, tool: Option<ToolCall>, partial: bool| {
             let seq = items.len() as u64 + 1;
-            items.push(TimelineItem { seq, id: seq.to_string(), ts, kind, text, tool, partial });
+            items.push(TimelineItem { seq, id: seq.to_string(), ts, kind, text, tool, partial, images: Vec::new() });
             items.len() - 1
         };
         match message {
