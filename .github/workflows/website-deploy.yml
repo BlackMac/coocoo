@@ -1,0 +1,59 @@
+# Uploads website/public to the Hetzner webhosting (coocoo.dev) over SFTP on every push to main
+# that touches the website. Setup (secrets, host key): website/README.md.
+name: Website deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'website/**'
+      - '.github/workflows/website-deploy.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: website-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: PHP syntax check
+        run: find website -name '*.php' -print0 | xargs -0 -n1 php -l
+
+      - name: Upload over SFTP
+        env:
+          SFTP_HOST: ${{ secrets.HETZNER_SFTP_HOST }}
+          SFTP_USER: ${{ secrets.HETZNER_SFTP_USER }}
+          LFTP_PASSWORD: ${{ secrets.HETZNER_SFTP_PASSWORD }}
+          SFTP_PATH: ${{ secrets.HETZNER_SFTP_PATH }}
+          SFTP_KNOWN_HOSTS: ${{ secrets.HETZNER_SFTP_KNOWN_HOSTS }}
+        run: |
+          if [ -z "$SFTP_HOST" ] || [ -z "$SFTP_USER" ] || [ -z "$LFTP_PASSWORD" ] || [ -z "$SFTP_PATH" ]; then
+            echo "::warning::HETZNER_SFTP_* secrets are not set; skipping the upload (see website/README.md)."
+            exit 0
+          fi
+          sudo apt-get update -qq && sudo apt-get install -y -qq lftp
+          mkdir -p ~/.ssh
+          if [ -n "$SFTP_KNOWN_HOSTS" ]; then
+            printf '%s\n' "$SFTP_KNOWN_HOSTS" > ~/.ssh/known_hosts
+            confirm=no
+          else
+            echo "::warning::HETZNER_SFTP_KNOWN_HOSTS is not set; accepting the server's host key unverified."
+            confirm=yes
+          fi
+          # cache/*.json lives only on the server: excluded from upload and from --delete.
+          lftp -c "
+            set sftp:auto-confirm $confirm
+            set net:max-retries 2
+            set net:timeout 20
+            open --env-password -u '$SFTP_USER' 'sftp://$SFTP_HOST'
+            mirror --reverse --delete --verbose --parallel=4 \
+              --exclude-glob 'cache/*.json' --exclude-glob 'cache/tmp*' \
+              website/public/ '$SFTP_PATH'
+          "

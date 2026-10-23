@@ -3,7 +3,8 @@
 <h1 align="center">Coocoo</h1>
 
 <p align="center">An agentic development environment that stays out of your RAM.<br>
-Many <a href="https://github.com/can1357/oh-my-pi">omp</a> agents, many machines, one calm overview.</p>
+Many <a href="https://github.com/can1357/oh-my-pi">omp</a> agents, many machines, one calm overview.<br>
+<a href="https://coocoo.dev">coocoo.dev</a></p>
 
 <p align="center"><img src="docs/screenshots/overview-dark.png" alt="Coocoo overview" width="100%"></p>
 
@@ -85,6 +86,7 @@ crates/coocoo-cli        the `coocoo` binary
 crates/omp-rpc           official omp RPC client (vendored, MIT)
 src-tauri                Tauri 2 desktop shell (tray, notifications, embedded daemon)
 ui                       Svelte 5 web UI (desktop, web, phone)
+website                  coocoo.dev homepage (PHP for Hetzner Webhosting, see website/README.md)
 ```
 
 ## Resource use

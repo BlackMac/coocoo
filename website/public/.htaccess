@@ -1,0 +1,52 @@
+# coocoo.dev on Hetzner Webhosting (Apache 2.4).
+# PHP version: choose PHP 8.4 in konsoleH (Services → PHP configuration), or uncomment:
+# FcgidWrapper "/home/httpd/cgi-bin/php84-fcgi-starter.fcgi" .php
+
+Options -Indexes -MultiViews
+DirectoryIndex index.php
+ErrorDocument 404 /404.php
+
+AddType font/woff2 .woff2
+AddType image/webp .webp
+AddDefaultCharset utf-8
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+
+  # HTTPS and the bare domain (only for coocoo.dev, so local servers are left alone)
+  RewriteCond %{HTTP_HOST} ^(www\.)?coocoo\.dev$ [NC]
+  RewriteCond %{HTTPS} !=on
+  RewriteCond %{HTTP:X-Forwarded-Proto} !=https
+  RewriteRule ^ https://coocoo.dev%{REQUEST_URI} [R=301,L]
+  RewriteCond %{HTTP_HOST} ^www\.coocoo\.dev$ [NC]
+  RewriteRule ^ https://coocoo.dev%{REQUEST_URI} [R=301,L]
+
+  # Private: includes, cache, dotfiles (except .well-known)
+  RewriteRule ^(inc|cache)(/|$) - [F,L]
+  RewriteRule (^|/)\.(?!well-known/) - [F,L]
+
+  # /changelog.php → /changelog
+  RewriteCond %{THE_REQUEST} \s/+(changelog|impressum|datenschutz)\.php[\s?] [NC]
+  RewriteRule ^ /%1 [R=301,L]
+  # /index.php → /
+  RewriteCond %{THE_REQUEST} \s/+index\.php[\s?] [NC]
+  RewriteRule ^ / [R=301,L]
+
+  # Pretty URLs
+  RewriteRule ^(changelog|impressum|datenschutz)/?$ $1.php [L]
+</IfModule>
+
+<IfModule mod_headers.c>
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set Referrer-Policy "strict-origin-when-cross-origin"
+  Header always set X-Frame-Options "DENY"
+  Header always set Permissions-Policy "camera=(), microphone=(), geolocation=(), interest-cohort=()"
+  Header always set Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+  <FilesMatch "\.(svg|png|txt|xml)$">
+    Header set Cache-Control "public, max-age=86400"
+  </FilesMatch>
+</IfModule>
+
+<IfModule mod_deflate.c>
+  AddOutputFilterByType DEFLATE text/html text/css text/javascript application/javascript image/svg+xml application/json text/plain application/xml
+</IfModule>
