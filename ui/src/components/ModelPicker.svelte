@@ -31,6 +31,7 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import type { ModelInfo } from '../lib/protocol';
+  import { track } from '../lib/track';
   import { Brain, Check, ChevronDown, Search } from '../lib/icons';
 
   // Searchable model picker: recent models first, then one group per provider (newest-looking
@@ -97,6 +98,7 @@
   async function show() {
     query = '';
     open = true;
+    track('model.open');
     await tick();
     position();
     active = Math.max(0, flat.findIndex((r) => r.value === value));
@@ -125,7 +127,10 @@
       recent = [v, ...recent.filter((x) => x !== v)].slice(0, MAX_RECENT);
       localStorage.setItem(RECENT_KEY, JSON.stringify(recent));
     }
-    if (v !== value) onselect(v);
+    if (v !== value) {
+      track('model.pick', { meta: { model: v || 'default' } });
+      onselect(v);
+    }
   }
 
   async function scrollActive() {

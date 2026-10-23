@@ -24,7 +24,7 @@
 
 {#if a.projectId && a.status !== 'stopped' && (doing || next)}
   <div class="next" class:doing={!!doing}>
-    <button class="open" onclick={() => ui.showPanel('board')} title="Open the project board">
+    <button class="open" onclick={() => ui.showPanel('board', { agentId: a.id, projectId: a.projectId ?? undefined })} title="Open the project board">
       <SquareKanban size={13} />
       <span class="lbl">{doing ? (doing.column === 'doing' ? 'Doing' : 'Refining') : 'Next'}</span>
       <span class="ttl ellipsis">{(doing ?? next)!.title}</span>

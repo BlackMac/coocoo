@@ -6,10 +6,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use coocoo_agents::Agents;
+use coocoo_insights::Insights;
 use coocoo_browser::Browser;
 use coocoo_proto::bus::encode_event;
 use coocoo_proto::error::{ok, params};
 use coocoo_proto::orchestrator::BoxFuture;
+use coocoo_proto::insights::{ORIGIN, Origin, TOOL_AGENT, current_origin};
 use coocoo_proto::{
     ApiError, ApiResult, ConnSink, Emitter, HostInfo, HostKind, Orchestrator, PROTOCOL_VERSION, Paths, Response,
     events,
@@ -38,6 +40,7 @@ pub(crate) struct App {
     pub stats: Arc<Stats>,
     pub terminals: Arc<Terminals>,
     pub agents: Arc<Agents>,
+    pub insights: Arc<Insights>,
     pub browser: Arc<Browser>,
     pub peers: RwLock<Vec<Arc<PeerLink>>>,
     /// Becomes `true` once on shutdown; connection loops and the server watch it.
@@ -48,6 +51,8 @@ pub(crate) struct App {
     next_conn: AtomicU64,
     /// Sink for calls without a connection (orchestrator); everything sent to it is dropped.
     detached: ConnSink,
+    /// Last logged `browser.input` per client and profile (logged at most every 10 min).
+    pub input_logged: Mutex<std::collections::HashMap<String, i64>>,
 }
 
 /// Per-connection flags shared between the connection loop and request handlers.
@@ -57,12 +62,33 @@ pub(crate) struct ConnState {
     pub scope_local: AtomicBool,
     /// The connection is a peer daemon's link: its requests are never forwarded further.
     pub peer: AtomicBool,
+    /// `(client id, device)` the client named in `system.hello`, for the usage log.
+    pub client: Mutex<Option<(String, String)>>,
+}
+
+impl ConnState {
+    /// Who is behind a request from this connection: a person on a client, or for peer links
+    /// whoever the forwarding daemon says (`Request.origin`).
+    pub fn origin(&self, forwarded: Option<Origin>) -> Option<Origin> {
+        if self.peer.load(Ordering::Relaxed) {
+            return forwarded;
+        }
+        let client = self.client.lock().clone();
+        Some(Origin {
+            actor: coocoo_proto::insights::Actor::User,
+            device: client.as_ref().map(|(_, device)| device.clone()),
+            client_id: client.map(|(id, _)| id),
+            agent_id: None,
+        })
+    }
 }
 
 /// Who issued a request.
 pub(crate) struct Caller {
     pub sink: ConnSink,
     pub conn: Option<Arc<ConnState>>,
+    /// Who caused it (usage log); `None` for the daemon's own housekeeping.
+    pub origin: Option<Origin>,
 }
 
 impl Caller {
@@ -103,6 +129,7 @@ pub(crate) struct Subsystems {
     pub terminals: Arc<Terminals>,
     pub agents: Arc<Agents>,
     pub browser: Arc<Browser>,
+    pub insights: Arc<Insights>,
 }
 
 impl App {
@@ -119,6 +146,7 @@ impl App {
             stats: subsystems.stats,
             terminals: subsystems.terminals,
             agents: subsystems.agents,
+            insights: subsystems.insights,
             browser: subsystems.browser,
             peers: RwLock::new(Vec::new()),
             shutdown: watch::Sender::new(false),
@@ -126,6 +154,7 @@ impl App {
             omp_version: OnceCell::new(),
             next_conn: AtomicU64::new(1),
             detached: ConnSink::new(0, detached_tx),
+            input_logged: Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -134,7 +163,7 @@ impl App {
     }
 
     pub fn detached_caller(&self) -> Caller {
-        Caller { sink: self.detached.clone(), conn: None }
+        Caller { sink: self.detached.clone(), conn: None, origin: None }
     }
 
     pub fn is_shutting_down(&self) -> bool {
@@ -191,16 +220,35 @@ impl App {
     }
 
     /// Route one request: locally, or over the peer link named by `host`.
+    ///
+    /// A request with an origin that is not nested in another one (a client's, a peer's on
+    /// behalf of a client or agent, an agent tool's) runs with that [`ORIGIN`] in scope, so domain
+    /// events it causes carry the same actor, and is recorded in the usage log by the host that
+    /// executes it. Nested calls (a handler calling another method) are not recorded again.
     pub async fn call(self: &Arc<Self>, caller: &Caller, host: Option<String>, method: &str, params: Value) -> ApiResult<Reply> {
+        match caller.origin.clone().filter(|_| current_origin().is_none()) {
+            Some(origin) => ORIGIN.scope(origin.clone(), self.route(caller, host, method, params, Some(origin))).await,
+            None => self.route(caller, host, method, params, None).await,
+        }
+    }
+
+    async fn route(self: &Arc<Self>, caller: &Caller, host: Option<String>, method: &str, params: Value, origin: Option<Origin>) -> ApiResult<Reply> {
         match host {
             Some(host) if host != self.host_id => {
                 if caller.is_peer() {
                     return Err(ApiError::new("forbidden", "requests from peer links are never forwarded"));
                 }
                 let link = self.peer(&host).ok_or_else(|| ApiError::not_found(format_args!("host {host}")))?;
-                link.forward(&caller.sink, method, params).await
+                link.forward(&caller.sink, method, params, origin).await
             }
-            _ => self.local(caller, method, params).await.map(Reply::Value),
+            _ => {
+                let action = origin.and_then(|o| crate::insights::Action::begin(self, method, &params, o));
+                let result = self.local(caller, method, params).await;
+                if let Some(action) = action {
+                    action.finish(self, &result);
+                }
+                result.map(Reply::Value)
+            }
         }
     }
 
@@ -215,17 +263,33 @@ impl App {
             "actions" => self.workspace.dispatch_actions(&self.terminals, method, params).await,
             "agents" | "boards" => self.agents.dispatch(method, params).await,
             "browser" => self.browser.dispatch(method, params, &caller.sink).await,
+            "insights" => self.insights_method(caller, method, params).await,
             _ => Err(ApiError::unknown_method(method)),
         }
     }
 
     async fn system(self: &Arc<Self>, caller: &Caller, method: &str, p: Value) -> ApiResult<Value> {
         match method {
-            "system.hello" => ok(json!({
-                "protocol": PROTOCOL_VERSION,
-                "host": self.local_info().await,
-                "hosts": self.hosts_list().await,
-            })),
+            "system.hello" => {
+                #[derive(Deserialize, Default)]
+                struct Client {
+                    id: String,
+                    device: String,
+                }
+                #[derive(Deserialize, Default)]
+                struct P {
+                    client: Option<Client>,
+                }
+                let p: P = if p.is_null() { P::default() } else { params(p)? };
+                if let (Some(conn), Some(client)) = (&caller.conn, p.client) {
+                    *conn.client.lock() = Some((client.id.chars().take(32).collect(), crate::insights::device(&client.device).to_owned()));
+                }
+                ok(json!({
+                    "protocol": PROTOCOL_VERSION,
+                    "host": self.local_info().await,
+                    "hosts": self.hosts_list().await,
+                }))
+            }
             "system.subscribe" => {
                 #[derive(Deserialize)]
                 #[serde(rename_all = "lowercase")]
@@ -466,7 +530,10 @@ impl Orchestrator for Orch {
     fn call(&self, host: Option<String>, method: String, params: Value) -> BoxFuture<'_, ApiResult<Value>> {
         Box::pin(async move {
             let app = self.app.upgrade().ok_or_else(|| ApiError::unavailable("daemon is shutting down"))?;
-            let caller = app.detached_caller();
+            let mut caller = app.detached_caller();
+            // An agent's host tool acts for that agent; anything else here is the daemon's own
+            // housekeeping (or nested in a request whose origin is already in scope).
+            caller.origin = TOOL_AGENT.try_with(|id| Origin::agent(id.clone())).ok();
             app.call(&caller, host, &method, params).await?.into_value()
         })
     }

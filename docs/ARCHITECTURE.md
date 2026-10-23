@@ -24,6 +24,14 @@
   `coocoo-proto`. Cross-cutting calls (an agent creating a worktree, an agent spawning another
   agent on a different host) go through the `Orchestrator` trait, which is the same routed call
   path a client uses.
+- **Usage log and insights.** `crates/coocoo-insights` (used only by `coocoo-core`) records a
+  content-free event log per host and answers the Stats/Workflows queries. Actions are recorded at
+  the one routing point (`App::call`) by the host that executes them, with the actor carried along
+  (`Origin`: a client's user and device, an agent's host tool, or forwarded by a peer link); the
+  agents subsystem reports domain events (turns, dialogs, card moves, crashes) through the narrow
+  `InsightsSink` trait in `coocoo-proto`, and they inherit the actor of the request that caused
+  them via a task-local. Queries fan out to every online host and are merged once on the home
+  daemon, so the UI and the `coocoo_insights` agent tool see the same numbers.
 
 ## omp integration (the only harness)
 
@@ -64,4 +72,5 @@ driven by the official Rust client (vendored in `crates/omp-rpc`):
 | Event fan-out | Each event is serialized once into `Arc<str>` and shared by all connections; bounded queues; slow clients get `system.resync` instead of unbounded buffers |
 | Browser | One Chromium per project, headless; screencast only while a client watches, fps-capped, JPEG passed through without re-encoding; lossy queue for frames |
 | git | `git` CLI with `GIT_OPTIONAL_LOCKS=0`; no libgit2; diffs size-capped. GitHub pull requests through the `gh` CLI; their status is network, so it is looked up only after a push/PR action or fetch and when a client opens the git popover (cached, ≥ 60 s apart), never on watcher refreshes |
-| UI | Svelte 5, no UI framework, lazy-loaded heavy views, tail-rendered transcripts |
+| UI | Svelte 5, no UI framework, lazy-loaded heavy views (Stats, Workflows), tail-rendered transcripts; charts are hand-built SVG |
+| Usage log | Append-only JSONL per UTC month, buffered and written ≤ 2 s after the first event of a batch (no timer while nothing happens); clients batch their events (10 s, on hide). omp's `stats.db` is synced (`omp stats --summary`) only when a query asks, at most once a minute, and read-only; nothing polls |

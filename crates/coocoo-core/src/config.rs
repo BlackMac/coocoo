@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use coocoo_agents::AgentsConfig;
 use coocoo_browser::BrowserConfig;
+use coocoo_insights::InsightsConfig;
 use coocoo_proto::{Paths, util};
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +36,9 @@ pub struct Config {
     pub agents: AgentsConfig,
     #[serde(default)]
     pub browser: BrowserConfig,
+    /// Usage log (Stats & Workflows tabs).
+    #[serde(default)]
+    pub insights: InsightsConfig,
 }
 
 /// How a peer is reached.

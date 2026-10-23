@@ -8,6 +8,7 @@
   import { now } from '../lib/clock.svelte';
   import { href, router } from '../lib/router.svelte';
   import { ui } from '../lib/ui.svelte';
+  import { track } from '../lib/track';
   import type { CommitInfo } from '../lib/protocol';
   import { ArrowDownToLine, Copy, ExternalLink, GitBranch, GitCommitHorizontal, Plus, RefreshCw, Terminal, Trash2, X, Globe, Ellipsis } from '../lib/icons';
   import { OPERATION_LABEL, fetchProject, fetchedLabel, fetching, isStale } from '../lib/git.svelte';
@@ -33,6 +34,11 @@
   let showArchived = $state(false);
   let showTerminal = $state(false);
   const loadTerminal = () => (terminalMod ??= import('../panels/TerminalPanel.svelte'));
+
+  function toggleTerminal() {
+    showTerminal = !showTerminal;
+    if (showTerminal) track('panel', { projectId: id, meta: { panel: 'terminal' } });
+  }
 
   // An action started here opens the terminal section, which then shows its run.
   $effect(() => {
@@ -138,7 +144,7 @@
                 <span class:pulse={busyFetch}><ArrowDownToLine size={14} /></span>
               </button>
             {/if}
-            <button class="btn ghost icon" class:active={showTerminal} title="Terminal in the project directory" aria-label="Terminal" aria-pressed={showTerminal} onclick={() => (showTerminal = !showTerminal)}>
+            <button class="btn ghost icon" class:active={showTerminal} title="Terminal in the project directory" aria-label="Terminal" aria-pressed={showTerminal} onclick={toggleTerminal}>
               <Terminal size={14} />
             </button>
             <ActionsButton project={p} />

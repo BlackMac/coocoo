@@ -8,7 +8,8 @@
   import ItemList from './ItemList.svelte';
   import UserItem from './UserItem.svelte';
 
-  let { timeline, agent }: { timeline: Timeline; agent: AgentSummary } = $props();
+  /** `at`: a moment (Unix ms) to scroll to and highlight once the timeline is loaded. */
+  let { timeline, agent, at }: { timeline: Timeline; agent: AgentSummary; at?: number } = $props();
 
   let scroller = $state<HTMLDivElement>();
   let content = $state<HTMLDivElement>();
@@ -67,6 +68,36 @@
     }
   });
 
+  /** Older pages loaded at most while looking for `at`, so a far-off moment cannot load everything. */
+  const MAX_AT_PAGES = 20;
+  let highlight = $state<string>();
+  let jumpedTo: number | undefined;
+
+  $effect(() => {
+    if (!at || at === jumpedTo || !timeline.loaded || !scroller) return;
+    jumpedTo = at;
+    void jumpTo(at);
+  });
+
+  async function jumpTo(ms: number) {
+    stick = false;
+    // The first item at or after `ms` may sit in an older page while the oldest loaded one is still later.
+    for (let pages = 0; pages < MAX_AT_PAGES && timeline.hasMore && (timeline.items[0]?.ts ?? 0) >= ms; pages++) {
+      if (!(await timeline.loadOlder())) break;
+    }
+    const target = timeline.items.find((it) => it.ts >= ms) ?? timeline.items.at(-1);
+    if (!target) return;
+    highlight = target.id;
+    await tick();
+    const el = scroller?.querySelector('.at');
+    el?.scrollIntoView({ block: 'center' });
+    // Items above render lazily (`content-visibility`), so their real height can shift the target once more.
+    requestAnimationFrame(() => el?.scrollIntoView({ block: 'center' }));
+    setTimeout(() => {
+      if (highlight === target.id) highlight = undefined;
+    }, 2600);
+  }
+
   let lastTop = 0;
 
   async function onscroll() {
@@ -123,6 +154,7 @@
         host={agent.hostId}
         agentId={agent.id}
         projectId={agent.projectId}
+        {highlight}
         onsubagent={(s) => s.sessionFile && (ui.dialog = { kind: 'subagent', hostId: agent.hostId, agentId: agent.id, subagentId: s.id, sessionFile: s.sessionFile })}
       />
       {#each pending as e (e.id)}

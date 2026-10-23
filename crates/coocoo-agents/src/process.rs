@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 
 use crate::Agents;
 use crate::mapper::{Effect, Mapper, Sink};
-use crate::state::{Agent, Life, PendingPrompt, Proc, State};
+use crate::state::{Agent, Life, PendingPrompt, Proc, State, Turn};
 
 /// Session events the supervisor consumes; everything else (`agent_end` with the whole
 /// transcript, tool output streaming, turn markers) stays inside omp.
@@ -216,13 +216,13 @@ fn spawn_omp(spec: SpawnSpec) -> Result<Spawned, String> {
     Ok(Spawned { client, events, state, lost_session })
 }
 
-/// Fold `get_state` into the agent state. Returns the new model when it changed.
-fn apply_session_state(st: &mut State, state: SessionState) -> Option<String> {
+/// Fold `get_state` into the agent state. Returns the previous and the new model when it changed.
+fn apply_session_state(st: &mut State, state: SessionState) -> Option<(String, String)> {
     let mut model_change = None;
     if let Some(model) = state.model {
         let model = format!("{}/{}", model.provider, model.id);
-        if st.summary.model.as_ref().is_some_and(|m| *m != model) {
-            model_change = Some(model.clone());
+        if let Some(previous) = st.summary.model.as_ref().filter(|m| **m != model) {
+            model_change = Some((previous.clone(), model.clone()));
         }
         st.summary.model = Some(model);
     }
@@ -327,6 +327,7 @@ impl Agents {
                 tools: crate::tools::host_tools(self, &agent.id, orchestrator.clone(), done_action),
             }
         };
+        let resume = spec.resume.is_some();
         self.changed(agent);
 
         let spawned = tokio::task::spawn_blocking(move || spawn_omp(spec)).await.map_err(join_error)?;
@@ -361,11 +362,16 @@ impl Agents {
             let _ = tokio::task::spawn_blocking(move || drop(proc)).await;
             return Err(ApiError::internal(format!("cannot start event thread: {err}")));
         }
+        let resumed = resume && spawned.lost_session.is_none();
         if let Some(lost) = spawned.lost_session {
             self.push_item(agent, ItemKind::Notice, format!("Session file {lost} is gone; started a new session")).await;
         }
-        if let Some(model) = model_change {
-            self.push_item(agent, ItemKind::Notice, format!("Model: {model}")).await;
+        if resumed {
+            self.record_agent(agent, "agent.resume", |event| event);
+        }
+        if let Some((from, to)) = model_change {
+            self.record_model_change(agent, Some(&from), &to, "respawn");
+            self.push_item(agent, ItemKind::Notice, format!("Model: {to}")).await;
         }
         self.changed(agent);
         self.ensure_hibernator();
@@ -487,9 +493,8 @@ impl Agents {
         tracing::warn!(agent = %agent.id, %message, "agent process crashed");
         // Reaps the process group; this is a plain thread, so blocking is fine.
         drop(proc);
-        for request in &requests {
-            self.emit_resolved(&agent.id, &request.id);
-        }
+        self.record_agent(agent, "agent.crash", |event| event);
+        self.requests_dropped(agent, &requests);
         self.push_item_blocking(agent, ItemKind::Error, format!("{message}. Send a message to resume the session."));
         self.changed(agent);
     }
@@ -526,20 +531,22 @@ impl Agents {
             })
             .await;
             if let Ok((state, stats)) = snapshot {
-                let model_change = {
+                let (model_change, fallback) = {
                     let mut st = agent.state.lock();
                     if !st.is_live() {
                         return;
                     }
                     let change = state.and_then(|s| apply_session_state(&mut st, s));
+                    let fallback = change.is_some() && std::mem::take(&mut st.fallback_pending);
                     if let Some(stats) = stats {
                         apply_stats(&mut st, stats);
                     }
                     st.sync();
-                    change
+                    (change, fallback)
                 };
-                if let Some(model) = model_change {
-                    self.push_item(agent, ItemKind::Notice, format!("Model: {model}")).await;
+                if let Some((from, to)) = model_change {
+                    self.record_model_change(agent, Some(&from), &to, if fallback { "fallback" } else { "switch" });
+                    self.push_item(agent, ItemKind::Notice, format!("Model: {to}")).await;
                 }
                 self.changed(agent);
             }
@@ -595,6 +602,12 @@ impl LiveSink<'_> {
         }
         f(&mut st)
     }
+
+    fn turn_ended(&self, turn: Turn) {
+        self.agents.record_agent(self.agent, "turn.end", |event| {
+            event.ms(now_ms() - turn.started_at).meta("stop", turn.stop.as_str()).meta("tools", turn.tools)
+        });
+    }
 }
 
 impl Sink for LiveSink<'_> {
@@ -631,19 +644,32 @@ impl Sink for LiveSink<'_> {
                 agents.emitter.emit(events::AGENT_DELTA, &TimelineDelta { agent_id: agent.id.clone(), item_id, text });
             }
             Effect::AgentStart => {
+                let mut started = false;
                 if self.update(|st| {
-                    st.on_agent_start();
+                    started = st.on_agent_start();
                     true
                 }) {
+                    if started {
+                        agents.record_agent(agent, "turn.start", |event| event);
+                    }
                     agents.changed(agent);
                 }
             }
             Effect::PromptResult { status, settled, error } => {
-                let mut finished = false;
+                let (mut started, mut finished, mut ended) = (false, false, None);
                 if self.update(|st| {
+                    // A prompt that failed before the agent started opens (and ends) its turn here.
+                    started = st.turn.is_none();
                     finished = st.on_prompt_result(status, settled, error);
+                    ended = if finished { st.turn.take() } else { None };
                     true
                 }) {
+                    if started {
+                        agents.record_agent(agent, "turn.start", |event| event);
+                    }
+                    if let Some(turn) = ended {
+                        self.turn_ended(turn);
+                    }
                     if finished {
                         agents.schedule_refresh(agent, true);
                     }
@@ -651,11 +677,15 @@ impl Sink for LiveSink<'_> {
                 }
             }
             Effect::Settled => {
-                let mut finished = false;
+                let (mut finished, mut ended) = (false, None);
                 if self.update(|st| {
                     finished = st.on_settled();
+                    ended = if finished { st.turn.take() } else { None };
                     true
                 }) {
+                    if let Some(turn) = ended {
+                        self.turn_ended(turn);
+                    }
                     if finished {
                         agents.schedule_refresh(agent, true);
                     }
@@ -663,6 +693,7 @@ impl Sink for LiveSink<'_> {
                 }
             }
             Effect::Request { id, method, payload } => {
+                let questions = payload.get("questions").and_then(Value::as_array).map_or(1, Vec::len);
                 let request = UiRequest { id, agent_id: agent.id.clone(), method, payload, created_at: now_ms() };
                 let added = self.update(|st| {
                     st.add_request(request.clone());
@@ -670,12 +701,22 @@ impl Sink for LiveSink<'_> {
                 });
                 if added {
                     agents.emitter.emit(events::AGENT_REQUEST, &request);
+                    agents.record_agent(agent, "request.ask", |event| {
+                        event.meta("method", request.method.as_str()).meta("questions", questions)
+                    });
                     agents.changed(agent);
                 }
             }
             Effect::Resolve { id } => {
-                if self.update(|st| st.resolve_request(&id).is_some()) {
+                let mut resolved = None;
+                if self.update(|st| {
+                    resolved = st.resolve_request(&id);
+                    resolved.is_some()
+                }) {
                     agents.emit_resolved(&agent.id, &id);
+                    if let Some(request) = &resolved {
+                        agents.request_closed(agent, request, Some("omp"));
+                    }
                     agents.changed(agent);
                 }
             }
@@ -751,6 +792,35 @@ impl Sink for LiveSink<'_> {
                     agents.emitter.emit(events::AGENT_COMMANDS, &CommandsEvent { agent_id: agent.id.clone(), commands });
                     agents.changed(agent);
                 }
+            }
+            Effect::ToolStarted => {
+                self.update(|st| {
+                    if let Some(turn) = st.turn.as_mut() {
+                        turn.tools += 1;
+                    }
+                    false
+                });
+            }
+            Effect::RetryStart { attempt } => {
+                if self.update(|_| true) {
+                    agents.record_agent(agent, "retry.start", |event| event.meta("attempt", attempt));
+                }
+            }
+            Effect::RetryEnd { ok } => {
+                if self.update(|_| true) {
+                    agents.record_agent(agent, "retry.end", |event| event.meta("ok", ok));
+                }
+            }
+            Effect::Compaction { ok } => {
+                if self.update(|_| true) {
+                    agents.record_agent(agent, "compaction", |event| event.meta("ok", ok));
+                }
+            }
+            Effect::ModelFallback => {
+                self.update(|st| {
+                    st.fallback_pending = true;
+                    false
+                });
             }
         }
     }

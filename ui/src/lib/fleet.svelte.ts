@@ -24,6 +24,7 @@ import type {
 } from './protocol';
 import { href } from './router.svelte';
 import { agentState } from './status';
+import { clientId, device } from './track';
 import type { Draft } from './ui.svelte';
 
 export const key = (host: string, id: string) => `${host}:${id}`;
@@ -541,7 +542,7 @@ export class Fleet {
 
   async #hello() {
     try {
-      const hello = await this.call('system.hello');
+      const hello = await this.call('system.hello', { client: { id: clientId(), device: device() } });
       this.protocol = hello.protocol;
       this.homeId = hello.host.id;
       const hosts: Record<string, HostInfo> = {};

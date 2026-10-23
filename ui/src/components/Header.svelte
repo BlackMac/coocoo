@@ -16,6 +16,8 @@
   const crumbs = $derived.by<Crumb[]>(() => {
     const r = router.route;
     if (r.name === 'overview') return [{ label: 'Overview' }];
+    if (r.name === 'stats') return [{ label: 'Overview', href: '#/' }, { label: 'Stats' }];
+    if (r.name === 'workflows') return [{ label: 'Overview', href: '#/' }, { label: 'Workflows' }];
     if (r.name === 'settings') return [{ label: 'Hosts & Settings' }];
     const h = fleet.host(r.host);
     const hostCrumb: Crumb = { label: h?.name ?? r.host, href: '#/settings', online: h?.online ?? false };

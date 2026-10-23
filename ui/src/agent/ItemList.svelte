@@ -9,14 +9,16 @@
   // Timeline items as rendered in a transcript (an agent's, or a subagent's). Renders no wrapper
   // element, so the parent's layout applies to each block. `host`/`projectId`: the agent's project,
   // whose board shows card refinements (`kanban_refine`) below the call. `host`/`agentId`: the
-  // agent whose user message images are shown.
+  // agent whose user message images are shown. `highlight`: an item id whose block is wrapped in a
+  // briefly flashing `.at` element (a moment jumped to via `?at=`).
   let {
     items,
     onsubagent,
     host,
     agentId,
     projectId,
-  }: { items: TimelineItem[]; onsubagent?: (s: Subagent) => void; host?: string; agentId?: string; projectId?: string } = $props();
+    highlight,
+  }: { items: TimelineItem[]; onsubagent?: (s: Subagent) => void; host?: string; agentId?: string; projectId?: string; highlight?: string } = $props();
   const isRefinement = (it: TimelineItem) => it.tool?.name === 'kanban_refine' && it.tool.status === 'ok';
 
   /** Groups consecutive tool calls so they render as one compact block. */
@@ -34,7 +36,7 @@
   });
 </script>
 
-{#each blocks as b (b.id)}
+{#snippet block(b: Block)}
   {#if b.kind === 'tools'}
     <div class="tools">
       {#each b.items as it (it.id)}<ToolItem item={it} {onsubagent} />{/each}
@@ -55,9 +57,37 @@
   {:else}
     <div class="error">{b.item.text}</div>
   {/if}
+{/snippet}
+
+{#each blocks as b (b.id)}
+  {#if highlight && (b.kind === 'tools' ? b.items.some((it) => it.id === highlight) : b.item.id === highlight)}
+    <div class="at">{@render block(b)}</div>
+  {:else}
+    {@render block(b)}
+  {/if}
 {/each}
 
 <style>
+  .at {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    margin: -6px;
+    padding: 6px;
+    border-radius: var(--r-lg);
+    animation: at-flash 2.4s ease-out;
+  }
+  @keyframes at-flash {
+    0%,
+    35% {
+      background: var(--accent-soft);
+      box-shadow: 0 0 0 1px var(--accent);
+    }
+    100% {
+      background: transparent;
+      box-shadow: 0 0 0 1px transparent;
+    }
+  }
   .tools {
     display: flex;
     flex-direction: column;

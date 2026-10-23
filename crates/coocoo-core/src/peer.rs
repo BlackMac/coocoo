@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
+use coocoo_proto::insights::Origin;
 use coocoo_proto::{ApiError, ApiResult, ConnSink, HostInfo, HostKind, Request, events, util};
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
@@ -230,7 +231,7 @@ impl PeerLink {
 
     /// Forward a client request, keeping track of stream subscriptions so that several local
     /// connections can share one remote stream and remote streams stop with the last watcher.
-    pub async fn forward(self: &Arc<Self>, sink: &ConnSink, method: &str, params: Value) -> ApiResult<Reply> {
+    pub async fn forward(self: &Arc<Self>, sink: &ConnSink, method: &str, params: Value, origin: Option<Origin>) -> ApiResult<Reply> {
         // Connection id 0 is the detached orchestrator caller: it never disconnects, so it is
         // not tracked.
         if sink.id != 0 {
@@ -243,7 +244,7 @@ impl PeerLink {
                 _ => {}
             }
         }
-        self.request(method, params).await.map(Reply::Raw)
+        self.send_request(method, params, origin).await.map(Reply::Raw)
     }
 
     async fn forward_watch(&self, sink: &ConnSink, params: Value) -> ApiResult<Reply> {
@@ -425,13 +426,18 @@ impl PeerLink {
 
     /// Send one request to the peer and await its raw result.
     pub async fn request(&self, method: &str, params: Value) -> ApiResult<Box<RawValue>> {
+        self.send_request(method, params, None).await
+    }
+
+    /// [`Self::request`] on behalf of `origin` (who caused it, for the peer's usage log).
+    async fn send_request(&self, method: &str, params: Value, origin: Option<Origin>) -> ApiResult<Box<RawValue>> {
         let out = self.state.lock().out.clone();
         let out = out.ok_or_else(|| self.offline_error())?;
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         self.pending.lock().insert(id, tx);
         let _guard = PendingGuard { pending: &self.pending, id };
-        let text = serde_json::to_string(&Request { id, method: method.to_owned(), params, host: None })
+        let text = serde_json::to_string(&Request { id, method: method.to_owned(), params, host: None, origin })
             .map_err(ApiError::internal)?;
         if out.send(Message::Text(text.into())).await.is_err() {
             return Err(self.offline_error());
@@ -797,6 +803,10 @@ fn request_timeout(method: &str) -> Duration {
         "browser.screenshot",
         "browser.inspect",
         "hosts.add",
+        // May sync omp's statistics first (up to 60 s).
+        "insights.usage",
+        "insights.workflows",
+        "insights.analyze",
     ];
     if LONG.contains(&method) { Duration::from_secs(120) } else { Duration::from_secs(30) }
 }
@@ -819,7 +829,7 @@ async fn connect(url: &str) -> Result<WsStream, String> {
 
 /// One request/response during the handshake, before the session loop runs.
 async fn handshake_call(tx: &mut WsSink, rx: &mut WsSource, id: u64, method: &str, params: Value) -> Result<Value, String> {
-    let text = serde_json::to_string(&Request { id, method: method.to_owned(), params, host: None })
+    let text = serde_json::to_string(&Request { id, method: method.to_owned(), params, host: None, origin: None })
         .map_err(|e| e.to_string())?;
     let exchange = async {
         tx.send(Message::Text(text.into())).await.map_err(|e| e.to_string())?;

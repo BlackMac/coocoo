@@ -44,6 +44,32 @@ pub(crate) struct PendingPrompt {
     pub behavior: StreamingBehavior,
 }
 
+/// The turn being worked on, for the usage log: from the first `agent_start` (or a prompt that
+/// failed before the agent started) until the agent finished its work.
+pub(crate) struct Turn {
+    pub started_at: i64,
+    pub tools: u32,
+    /// The worst outcome of its prompts (error over aborted over completed).
+    pub stop: PromptStatus,
+}
+
+impl Turn {
+    fn new() -> Self {
+        Self { started_at: now_ms(), tools: 0, stop: PromptStatus::Completed }
+    }
+
+    fn note(&mut self, status: PromptStatus) {
+        let rank = |s: PromptStatus| match s {
+            PromptStatus::Completed => 0,
+            PromptStatus::Aborted => 1,
+            PromptStatus::Error => 2,
+        };
+        if rank(status) > rank(self.stop) {
+            self.stop = status;
+        }
+    }
+}
+
 /// Why an agent is told that the daemon is back once it starts again (`meta.json`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -96,6 +122,9 @@ pub(crate) struct State {
     pub pending: Vec<PendingPrompt>,
     pub deleted: bool,
     pub restart: Option<RestartMark>,
+    pub turn: Option<Turn>,
+    /// omp switched to its fallback model; the refresh that sees the new model reports why.
+    pub fallback_pending: bool,
 }
 
 impl State {
@@ -119,6 +148,8 @@ impl State {
             pending: Vec::new(),
             deleted: false,
             restart: None,
+            turn: None,
+            fallback_pending: false,
         };
         state.sync();
         state
@@ -197,16 +228,22 @@ impl State {
         self.idle_since = Instant::now();
     }
 
-    pub fn on_agent_start(&mut self) {
+    /// Returns `true` when this run starts a new turn.
+    pub fn on_agent_start(&mut self) -> bool {
         self.streaming = true;
         self.summary.error = None;
+        let started = self.turn.is_none();
+        self.turn.get_or_insert_with(Turn::new);
         self.touch();
         self.sync();
+        started
     }
 
-    /// Returns `true` when the agent finished its work (turn end).
+    /// Returns `true` when the agent finished its work (turn end); the ended turn stays in
+    /// [`State::turn`] for the caller to take.
     pub fn on_prompt_result(&mut self, status: PromptStatus, settled: bool, error: Option<String>) -> bool {
         self.outstanding = self.outstanding.saturating_sub(1);
+        self.turn.get_or_insert_with(Turn::new).note(status);
         if settled {
             self.streaming = false;
         }
@@ -221,7 +258,8 @@ impl State {
         finished
     }
 
-    /// Returns `true` when the agent finished its work (turn end).
+    /// Returns `true` when the agent finished its work (turn end); the ended turn stays in
+    /// [`State::turn`] for the caller to take.
     pub fn on_settled(&mut self) -> bool {
         let was_streaming = self.streaming;
         self.streaming = false;
@@ -272,6 +310,8 @@ impl State {
         self.outstanding = 0;
         self.streaming = false;
         self.subagents.clear();
+        self.turn = None;
+        self.fallback_pending = false;
         self.pending.clear();
         self.queued_steering.clear();
         self.queued_follow_up.clear();
@@ -445,6 +485,24 @@ mod tests {
         assert_eq!(dropped.len(), 1);
         assert_eq!(st.summary.status, AgentStatus::Error);
         assert_eq!((st.summary.pending_requests, st.summary.subagents, st.outstanding), (0, 0, 0));
+    }
+
+    #[test]
+    fn turn_keeps_its_worst_outcome() {
+        let mut st = State::new(summary(AgentStatus::Idle), Life::Live);
+        st.begin_prompt();
+        st.begin_prompt();
+        assert!(st.on_agent_start(), "the first run opens the turn");
+        st.turn.as_mut().unwrap().tools += 2;
+        assert!(!st.on_prompt_result(PromptStatus::Aborted, false, None));
+        assert!(!st.on_agent_start(), "a follow-up run continues it");
+        assert!(st.on_prompt_result(PromptStatus::Completed, true, None));
+        let turn = st.turn.take().unwrap();
+        assert_eq!((turn.stop, turn.tools), (PromptStatus::Aborted, 2));
+        // A prompt that fails before the agent starts still makes a turn.
+        st.begin_prompt();
+        assert!(st.on_prompt_result(PromptStatus::Error, true, None));
+        assert_eq!(st.turn.take().map(|t| t.stop), Some(PromptStatus::Error));
     }
 
     #[test]

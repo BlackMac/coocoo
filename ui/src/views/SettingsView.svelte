@@ -3,7 +3,7 @@
   import { bytes } from '../lib/format';
   import { notificationsEnabled, notificationsSupported, setNotifications } from '../lib/notify';
   import { ui, type ThemePref } from '../lib/ui.svelte';
-  import type { HostInfo } from '../lib/protocol';
+  import type { HostInfo, InsightsSettings } from '../lib/protocol';
   import { Copy, Laptop, Monitor, Moon, Plus, Server, Sun, Trash2, Cloud, Bell } from '../lib/icons';
   import HostDot from '../components/HostDot.svelte';
   import InlineEdit from '../components/InlineEdit.svelte';
@@ -50,6 +50,53 @@
   async function toggleNotify(on: boolean) {
     notify = await setNotifications(on);
     if (on && !notify) ui.toast('error', 'Notifications are blocked', 'Allow them for this site in the browser settings.');
+  }
+
+  // ─── Usage log: kept per host, so each online host is configured on its own ──────────────
+  const RETENTION = [
+    { days: 30, label: '30 days' },
+    { days: 90, label: '90 days' },
+    { days: 180, label: '180 days' },
+    { days: 365, label: '1 year' },
+    { days: 0, label: 'Forever' },
+  ];
+  const onlineHosts = $derived(fleet.hostList.filter((h) => h.online));
+  let usageLog = $state<Record<string, InsightsSettings>>({});
+  /** Hosts already asked (plain set: the effect must not re-run when an answer arrives). */
+  const requested = new Set<string>();
+
+  $effect(() => {
+    for (const h of onlineHosts) {
+      if (requested.has(h.id)) continue;
+      requested.add(h.id);
+      fleet
+        .call('insights.settings', undefined, h.id)
+        .then((s) => (usageLog[h.id] = s))
+        .catch((err) => {
+          requested.delete(h.id);
+          ui.error(`Could not load the usage log settings of ${h.name}`, err);
+        });
+    }
+  });
+
+  function updateLog(h: HostInfo, change: { enabled?: boolean; retentionDays?: number }) {
+    fleet
+      .call('insights.settings', change, h.id)
+      .then((s) => (usageLog[h.id] = s))
+      .catch((err) => ui.error('Could not change the usage log', err));
+  }
+
+  function clearLog(h: HostInfo) {
+    ui.dialog = {
+      kind: 'confirm',
+      title: 'Delete usage log',
+      message: `Delete the usage log of ${h.name}? The Workflows tab then only shows what can be reconstructed from agent histories.`,
+      action: 'Delete log',
+      danger: true,
+      run: async () => {
+        usageLog[h.id] = await fleet.call('insights.clear', undefined, h.id);
+      },
+    };
   }
 
   const masked = $derived(pairUrl.replace(/token=[^&]+/, 'token=••••••••••••'));
@@ -137,6 +184,35 @@
         </div>
       </section>
     {/if}
+
+    <section>
+      <h2 class="section-title">Usage log</h2>
+      <div class="card table">
+        <p class="muted explain">Records which features and commands are used — locally on each host, never prompt texts or arguments. It feeds the Workflows tab.</p>
+        {#each onlineHosts as h (h.id)}
+          {@const s = usageLog[h.id]}
+          <div class="lr">
+            <span class="name"><HostDot online={h.online} />{h.name}</span>
+            {#if s}
+              <label class="lbl"><span class="switch"><input type="checkbox" checked={s.enabled} onchange={(e) => updateLog(h, { enabled: e.currentTarget.checked })} /></span>Record usage log</label>
+              <label class="lbl">
+                Keep
+                <select class="select" value={s.retentionDays} onchange={(e) => updateLog(h, { retentionDays: Number(e.currentTarget.value) })}>
+                  {#each RETENTION as r (r.days)}<option value={r.days}>{r.label}</option>{/each}
+                  {#if !RETENTION.some((r) => r.days === s.retentionDays)}<option value={s.retentionDays}>{s.retentionDays} days</option>{/if}
+                </select>
+              </label>
+              <span class="num faint">{bytes(s.bytes)}{#if s.logSince} · since {new Date(s.logSince).toLocaleDateString()}{/if}</span>
+              <button class="btn sm danger" disabled={!s.bytes} onclick={() => clearLog(h)}><Trash2 size={13} /> Delete log</button>
+            {:else}
+              <span class="faint">Loading…</span>
+            {/if}
+          </div>
+        {:else}
+          <div class="lr"><span class="faint">No host is online.</span></div>
+        {/each}
+      </div>
+    </section>
 
     <section>
       <h2 class="section-title">Keyboard</h2>
@@ -327,9 +403,38 @@
     font-size: var(--fs-xs);
     text-align: center;
   }
+  .explain {
+    margin: 0;
+    padding: 12px 16px;
+    font-size: var(--fs-sm);
+    border-bottom: 1px solid var(--border);
+  }
+  .lr {
+    display: grid;
+    grid-template-columns: minmax(140px, 1fr) auto auto minmax(130px, auto) auto;
+    align-items: center;
+    gap: 16px;
+    min-height: 46px;
+    padding: 6px 16px;
+    font-size: var(--fs-sm);
+  }
+  .lr + .lr {
+    border-top: 1px solid var(--border);
+  }
+  .lr .select {
+    width: auto;
+    height: 28px;
+  }
+  .lr .num {
+    text-align: right;
+  }
   @media (max-width: 760px) {
     .page {
       padding: 16px 12px 40px;
+    }
+    .lr {
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px 12px;
     }
     .tr {
       grid-template-columns: minmax(0, 1fr) auto 36px;

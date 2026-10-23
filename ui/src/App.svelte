@@ -18,6 +18,11 @@
   import ProjectView from './views/ProjectView.svelte';
   import AgentView from './views/AgentView.svelte';
   import SettingsView from './views/SettingsView.svelte';
+  import { track } from './lib/track';
+
+  // Heavy and rarely opened: loaded on first visit.
+  const StatsView = () => import('./views/StatsView.svelte');
+  const WorkflowsView = () => import('./views/WorkflowsView.svelte');
 
   const endpoint = resolveEndpoint();
   let token = $state(endpoint.token);
@@ -28,9 +33,9 @@
 
   const route = $derived(router.route);
 
-  // Close the drawer whenever the route changes (mobile).
+  // Close the drawer whenever the route changes (mobile); record the page for the usage log.
   $effect(() => {
-    void route;
+    track('route', { meta: { name: route.name } });
     ui.drawerOpen = false;
   });
 
@@ -49,6 +54,7 @@
   function onkeydown(e: KeyboardEvent) {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
       e.preventDefault();
+      track('shortcut', { meta: { key: 'mod+k' } });
       ui.paletteOpen = !ui.paletteOpen;
       return;
     }
@@ -68,15 +74,22 @@
     }
     if (now - pendingG < 900) {
       pendingG = 0;
-      if (e.key === 'o') router.go({ name: 'overview' });
-      else if (e.key === 's') router.go({ name: 'settings' });
+      if (e.key === 'o') {
+        track('shortcut', { meta: { key: 'g o' } });
+        router.go({ name: 'overview' });
+      } else if (e.key === 's') {
+        track('shortcut', { meta: { key: 'g s' } });
+        router.go({ name: 'settings' });
+      }
       return;
     }
     if (e.key === 'n') {
       e.preventDefault();
+      track('shortcut', { meta: { key: 'n' } });
       newAgent();
     } else if (e.key === '/') {
       e.preventDefault();
+      track('shortcut', { meta: { key: '/' } });
       ui.paletteOpen = true;
     }
   }
@@ -107,6 +120,10 @@
           <div class="loading"><span class="spinner"></span></div>
         {:else if route.name === 'overview'}
           <Overview />
+        {:else if route.name === 'stats'}
+          {#await StatsView() then m}<m.default />{/await}
+        {:else if route.name === 'workflows'}
+          {#await WorkflowsView() then m}<m.default />{/await}
         {:else if route.name === 'project'}
           {#key `${route.host}:${route.id}`}<ProjectView host={route.host} id={route.id} />{/key}
         {:else if route.name === 'agent'}

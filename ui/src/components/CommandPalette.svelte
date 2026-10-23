@@ -4,6 +4,7 @@
   import { router } from '../lib/router.svelte';
   import { agentState, type AgentState } from '../lib/status';
   import { ui } from '../lib/ui.svelte';
+  import { track } from '../lib/track';
   import { actionDisabled, actionIcon, actionRun, actionsFor, type ActionContext, showRun, startAction } from '../lib/actions';
   import { worktreeOf } from '../lib/git.svelte';
   import { Bot, CornerDownLeft, FolderGit2, LayoutDashboard, Moon, Plus, Search, Server, Settings } from '../lib/icons';
@@ -146,8 +147,16 @@
     list?.querySelector(`[data-i="${selected}"]`)?.scrollIntoView({ block: 'nearest' });
   });
 
+  /** Stable name of what an entry does for the usage log: built-in actions by id, the rest by kind (never labels). */
+  function commandOf(e: Entry): string {
+    if (e.id.startsWith('a:')) return e.id.slice(2);
+    if (e.id.startsWith('run:')) return e.id.startsWith('run:a:') ? 'agentAction' : 'projectAction';
+    return e.group === 'Agents' ? 'agent' : e.group === 'Projects' ? 'project' : 'host';
+  }
+
   function run(e: Entry | undefined) {
     if (!e) return;
+    track('palette.run', { meta: { command: commandOf(e) } });
     close();
     e.run();
   }

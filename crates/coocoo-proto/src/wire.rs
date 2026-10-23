@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::ApiError;
+use crate::insights::Origin;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
@@ -24,6 +25,9 @@ pub struct Request {
     pub params: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
+    /// Who caused a request a peer link forwards (`Origin`); ignored from clients.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<Origin>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

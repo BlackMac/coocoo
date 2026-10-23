@@ -1,6 +1,7 @@
 // UI-only state: theme, toasts, dialogs, palette, drawer, composer drafts, panel layout.
 
 import type { ImageInput, InspectResult } from './protocol';
+import { track, type TrackRef } from './track';
 
 export type ThemePref = 'system' | 'dark' | 'light';
 export type PanelTab = 'changes' | 'browser' | 'terminal' | 'board' | 'plan' | 'info';
@@ -75,8 +76,10 @@ class Ui {
   theme = $derived<'dark' | 'light'>(this.themePref === 'system' ? (this.systemDark ? 'dark' : 'light') : this.themePref);
 
   toasts = $state<Toast[]>([]);
-  dialog = $state<Dialog | null>(null);
-  paletteOpen = $state(false);
+  #dialog = $state<Dialog | null>(null);
+  /** Set by `submitDialog` so the closing setter records a submit instead of a cancel. */
+  #submitting = false;
+  #paletteOpen = $state(false);
   drawerOpen = $state(false);
   panel = $state<{ tab: PanelTab; width: number; open: boolean }>(
     load(PANEL_KEY, { tab: 'changes' as PanelTab, width: 460, open: true }),
@@ -100,6 +103,35 @@ class Ui {
       });
       $effect(() => save(PANEL_KEY, $state.snapshot(this.panel)));
     });
+  }
+
+  // Every open and close of a dialog or the palette goes through these setters, so the usage log
+  // sees them without each call site having to remember.
+  get dialog(): Dialog | null {
+    return this.#dialog;
+  }
+
+  set dialog(next: Dialog | null) {
+    const prev = this.#dialog;
+    if (prev && prev !== next) track(this.#submitting ? 'dialog.submit' : 'dialog.cancel', { meta: { dialog: prev.kind } });
+    if (next && prev !== next) track('dialog.open', { meta: { dialog: next.kind } });
+    this.#submitting = false;
+    this.#dialog = next;
+  }
+
+  /** Closes the dialog after it did what it is for (as opposed to being dismissed). */
+  submitDialog() {
+    this.#submitting = true;
+    this.dialog = null;
+  }
+
+  get paletteOpen(): boolean {
+    return this.#paletteOpen;
+  }
+
+  set paletteOpen(open: boolean) {
+    if (open && !this.#paletteOpen) track('palette.open');
+    this.#paletteOpen = open;
   }
 
   setTheme(pref: ThemePref) {
@@ -152,7 +184,9 @@ class Ui {
     for (const el of from.elements) d.elements.push({ ...el, id: seq++ });
   }
 
-  showPanel(tab: PanelTab) {
+  /** Opens a side panel; `by` (the agent/project it is opened in) marks a user's choice for the usage log. */
+  showPanel(tab: PanelTab, by?: Pick<TrackRef, 'agentId' | 'projectId'>) {
+    if (by) track('panel', { ...by, meta: { panel: tab } });
     this.panel.tab = tab;
     this.panel.open = true;
     this.mobilePane = tab;

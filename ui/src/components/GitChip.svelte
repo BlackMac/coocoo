@@ -370,7 +370,7 @@
         <dd>
           {#if g.dirty}
             <span class="pill accent">{g.dirty} file{g.dirty === 1 ? '' : 's'}</span>
-            <button class="link" onclick={() => run(() => ui.showPanel('changes'))}>Open changes →</button>
+            <button class="link" onclick={() => run(() => ui.showPanel('changes', { agentId: a.id, projectId: a.projectId ?? undefined }))}>Open changes →</button>
           {:else}
             <span class="faint">none</span>
           {/if}

@@ -6,6 +6,7 @@ members = [
   "crates/coocoo-agents",
   "crates/coocoo-browser",
   "crates/coocoo-workspace",
+  "crates/coocoo-insights",
   "crates/coocoo-core",
   "crates/coocoo-cli",
   "src-tauri",
@@ -24,6 +25,7 @@ coocoo-proto = { path = "crates/coocoo-proto" }
 coocoo-agents = { path = "crates/coocoo-agents" }
 coocoo-browser = { path = "crates/coocoo-browser" }
 coocoo-workspace = { path = "crates/coocoo-workspace" }
+coocoo-insights = { path = "crates/coocoo-insights" }
 coocoo-core = { path = "crates/coocoo-core" }
 
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "net", "fs", "signal"] }
