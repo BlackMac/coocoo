@@ -231,7 +231,7 @@ export function mergeBlocker(pr: PullRequestInfo): string | undefined {
   const why: string[] = [];
   if (pr.draft || pr.mergeState === 'DRAFT') why.push('draft');
   if (pr.checks.failed) why.push(`${plural(pr.checks.failed, 'check')} failed`);
-  if (pr.checks.pending) why.push('checks running');
+  if (pr.checks.pending) why.push(`waiting for ${plural(pr.checks.pending, 'running check')}`);
   if (pr.review === 'changesRequested') why.push('changes requested');
   else if (pr.review === 'reviewRequired') why.push('review required');
   if (pr.mergeState === 'DIRTY') why.push('merge conflict');
@@ -243,7 +243,7 @@ export function mergeBlocker(pr: PullRequestInfo): string | undefined {
 
 export type PrSeverity = 'ok' | 'pending' | 'bad' | 'draft' | 'merged' | 'closed';
 
-/** Badge colour: green open & green, amber checks running, red failed/conflict, grey draft, violet merged. */
+/** Badge colour: green open & green, accent (neutral) checks running, red failed/conflict, grey draft, violet merged. */
 export function prSeverity(pr: PullRequestInfo): PrSeverity {
   if (pr.state === 'merged') return 'merged';
   if (pr.state === 'closed') return 'closed';
