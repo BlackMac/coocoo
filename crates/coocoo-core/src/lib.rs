@@ -66,6 +66,10 @@ impl Daemon {
             Err(err) => return Err(err).with_context(|| format!("binding {listen}")),
         };
         let local_addr = listener.local_addr().context("reading bound address")?;
+        let listen_file = paths.listen_file();
+        if let Err(err) = std::fs::write(&listen_file, local_addr.to_string()) {
+            tracing::warn!(file = %listen_file.display(), "cannot record the listen address: {err}");
+        }
 
         let emitter = Emitter::new(config.host_id.clone(), BUS_CAPACITY);
         let workspace = Workspace::new(emitter.clone(), &paths);
@@ -139,6 +143,11 @@ impl Daemon {
             return;
         }
         tracing::info!("shutting down");
+        // Only our own record: a newer daemon on this home may have replaced it.
+        let listen_file = self.app.paths.listen_file();
+        if std::fs::read_to_string(&listen_file).is_ok_and(|s| s.trim() == self.local_addr.to_string()) {
+            let _ = std::fs::remove_file(&listen_file);
+        }
         self.app.stop_peers();
         let subsystems = async { tokio::join!(self.app.agents.shutdown(), self.app.browser.shutdown()) };
         if tokio::time::timeout(Duration::from_secs(15), subsystems).await.is_err() {

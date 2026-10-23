@@ -39,7 +39,7 @@ enum Command {
     },
     /// Check whether the daemon is running (GET /api/health); exit status 1 when it is not.
     Status {
-        /// Address to probe instead of `listen` from config.toml.
+        /// Address to probe instead of the running daemon's (or `listen` from config.toml).
         #[arg(long, value_name = "ADDR")]
         listen: Option<SocketAddr>,
     },
@@ -137,9 +137,25 @@ fn token(paths: &Paths) -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// Where this home's daemon listens: the address the running daemon recorded (it may have been
+/// started with `--listen`), when it answers as this host; else `listen` from config.toml.
+fn listen_addr(paths: &Paths, config: &Config) -> SocketAddr {
+    std::fs::read_to_string(paths.listen_file())
+        .ok()
+        .and_then(|s| s.trim().parse::<SocketAddr>().ok())
+        .filter(|addr| {
+            health(loopback(*addr))
+                .ok()
+                .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
+                .is_some_and(|v| v.get("hostId").and_then(|h| h.as_str()) == Some(config.host_id.as_str()))
+        })
+        .unwrap_or(config.listen)
+}
+
 fn pair(paths: &Paths, address: Option<String>) -> anyhow::Result<ExitCode> {
     let config = Config::load_or_create(paths)?;
-    let port = config.listen.port();
+    let listen = listen_addr(paths, &config);
+    let port = listen.port();
     let host = match address {
         Some(address) => address,
         None => lan_ipv4().map_or_else(|| "127.0.0.1".to_owned(), |ip| ip.to_string()),
@@ -155,12 +171,12 @@ fn pair(paths: &Paths, address: Option<String>) -> anyhow::Result<ExitCode> {
         .build();
     println!("{art}\n");
     println!("Open on your phone or another machine:\n  {url}\n");
-    if config.listen.ip().is_loopback() {
+    if listen.ip().is_loopback() {
         eprintln!(
             "warning: this daemon listens on {} (loopback only), so the link is unreachable from other devices.\n\
              Restart it with `coocoo serve --listen 0.0.0.0:{port}` (or set `listen` in {}),\n\
              or reach it through SSH: `ssh -L {port}:127.0.0.1:{port} <this-host>` and open http://127.0.0.1:{port}/#token=…",
-            config.listen,
+            listen,
             Config::path(paths).display()
         );
     }
@@ -178,7 +194,7 @@ fn lan_ipv4() -> Option<IpAddr> {
 
 fn status(paths: &Paths, listen: Option<SocketAddr>) -> anyhow::Result<ExitCode> {
     let config = Config::load_or_create(paths)?;
-    let addr = loopback(listen.unwrap_or(config.listen));
+    let addr = loopback(listen.unwrap_or_else(|| listen_addr(paths, &config)));
     match health(addr) {
         Ok(body) => {
             let value: serde_json::Value = serde_json::from_str(&body).context("invalid /api/health response")?;

@@ -35,6 +35,12 @@ impl Paths {
         Self { config_dir: root.join("config"), data_dir: root.join("data"), cache_dir: root.join("cache") }
     }
 
+    /// Address the running daemon is bound to (`serve --listen` may differ from config.toml);
+    /// written on start, removed on shutdown.
+    pub fn listen_file(&self) -> PathBuf {
+        self.cache_dir.join("listen")
+    }
+
     pub fn ensure(&self) -> std::io::Result<()> {
         for dir in [&self.config_dir, &self.data_dir, &self.cache_dir] {
             std::fs::create_dir_all(dir)?;

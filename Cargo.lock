@@ -668,7 +668,7 @@ checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
 
 [[package]]
 name = "coocoo-agents"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.22.1",
  "coocoo-proto",
@@ -684,7 +684,7 @@ dependencies = [
 
 [[package]]
 name = "coocoo-browser"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "coocoo-proto",
  "futures-util",
@@ -699,7 +699,7 @@ dependencies = [
 
 [[package]]
 name = "coocoo-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -714,7 +714,7 @@ dependencies = [
 
 [[package]]
 name = "coocoo-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -737,7 +737,7 @@ dependencies = [
 
 [[package]]
 name = "coocoo-desktop"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "coocoo-core",
@@ -760,7 +760,7 @@ dependencies = [
 
 [[package]]
 name = "coocoo-proto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dirs 6.0.0",
  "serde",
@@ -772,7 +772,7 @@ dependencies = [
 
 [[package]]
 name = "coocoo-workspace"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.22.1",
  "coocoo-proto",
