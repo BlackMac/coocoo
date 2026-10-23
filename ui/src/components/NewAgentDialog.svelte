@@ -73,6 +73,8 @@
         60_000,
       );
       fleet.agents[`${a.hostId}:${a.id}`] = a;
+      // Shown at once while omp starts; its `user` item replaces it.
+      if (prompt.trim()) fleet.noteSent(a.hostId, a.id, prompt.trim());
       ui.dialog = null;
       router.go({ name: 'agent', host: a.hostId, id: a.id });
     } catch (err) {

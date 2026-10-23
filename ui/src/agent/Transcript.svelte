@@ -1,10 +1,11 @@
 <script lang="ts">
   import { tick } from 'svelte';
-  import type { Timeline } from '../lib/fleet.svelte';
-  import type { AgentSummary } from '../lib/protocol';
+  import { fleet, key, type Outgoing, type Timeline } from '../lib/fleet.svelte';
+  import type { AgentSummary, TimelineItem } from '../lib/protocol';
   import { ui } from '../lib/ui.svelte';
   import { ArrowDown } from '../lib/icons';
   import ItemList from './ItemList.svelte';
+  import UserItem from './UserItem.svelte';
 
   let { timeline, agent }: { timeline: Timeline; agent: AgentSummary } = $props();
 
@@ -14,6 +15,30 @@
   let stick = $state(true);
 
   const working = $derived(agent.status === 'running' || agent.status === 'starting');
+
+  const agentKey = $derived(key(agent.hostId, agent.id));
+  const outbox = $derived(fleet.outbox[agentKey] ?? []);
+  /** Prompts starting a turn, shown provisionally until omp's `user` item replaces them. */
+  const pending = $derived(outbox.filter((e) => e.target === 'transcript'));
+
+  const asItem = (e: Outgoing): TimelineItem => ({ seq: 0, id: `outbox:${e.id}`, ts: e.sentAt, kind: 'user', text: e.text });
+
+  function edit(e: Outgoing) {
+    fleet.discard(agentKey, e.id);
+    ui.restoreDraft(agentKey, e.draft);
+  }
+
+  // Sending jumps to the tail, even when scrolled up.
+  let outboxSize = 0;
+  $effect(() => {
+    const n = outbox.length;
+    if (n > outboxSize && scroller) {
+      stick = true;
+      const el = scroller;
+      void tick().then(() => (el.scrollTop = el.scrollHeight));
+    }
+    outboxSize = n;
+  });
 
   // Keep pinned to the bottom as content grows (new items, streaming text, expanding rows).
   $effect(() => {
@@ -80,7 +105,7 @@
         <div class="loading"><span class="spinner"></span></div>
       {:else if timeline.error && !timeline.loaded}
         <div class="empty"><strong>Could not load the transcript</strong><span>{timeline.error}</span><button class="btn sm" onclick={() => timeline.load()}>Retry</button></div>
-      {:else if timeline.loaded && !timeline.items.length}
+      {:else if timeline.loaded && !timeline.items.length && !pending.length}
         <div class="empty"><strong>No messages yet</strong><span>Send the first prompt below.</span></div>
       {/if}
       <ItemList
@@ -89,6 +114,16 @@
         projectId={agent.projectId}
         onsubagent={(s) => s.sessionFile && (ui.dialog = { kind: 'subagent', hostId: agent.hostId, agentId: agent.id, subagentId: s.id, sessionFile: s.sessionFile })}
       />
+      {#each pending as e (e.id)}
+        <UserItem
+          item={asItem(e)}
+          pending={e.state !== 'failed'}
+          failed={e.state === 'failed' ? (e.error ?? 'Not sent') : undefined}
+          onretry={() => fleet.retry(agentKey, e.id)}
+          onedit={() => edit(e)}
+          ondiscard={() => fleet.discard(agentKey, e.id)}
+        />
+      {/each}
       {#if working}
         <div class="working"><span class="dots"><i></i><i></i><i></i></span>{agent.todos?.current ?? 'Working…'}</div>
       {/if}

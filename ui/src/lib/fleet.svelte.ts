@@ -10,6 +10,7 @@ import type {
   BrowserProfileInfo,
   HostInfo,
   HostStats,
+  ImageInput,
   Method,
   ModelInfo,
   ParamsOf,
@@ -23,11 +24,39 @@ import type {
 } from './protocol';
 import { href } from './router.svelte';
 import { agentState } from './status';
+import type { Draft } from './ui.svelte';
 
 export const key = (host: string, id: string) => `${host}:${id}`;
 
 const TIMELINE_PAGE = 120;
 const TIMELINE_CACHE = 8;
+/** How long a delivered prompt may stay unconfirmed once its agent is idle again. */
+const OUTBOX_GRACE = 2000;
+
+export type PromptMode = 'auto' | 'steer' | 'followUp';
+
+/**
+ * A prompt sent from this client, shown provisionally until omp confirms it: in the transcript
+ * (`auto`: a new turn) or in the queued strip (`steer`/`followUp` while the agent runs).
+ */
+export interface Outgoing {
+  id: number;
+  message: string;
+  images: ImageInput[];
+  /** The text omp's `user` item will carry: the message plus `[N images]` (see mapper.rs `content_text`). */
+  text: string;
+  /** What the composer held, for Edit. */
+  draft: Draft;
+  mode: PromptMode;
+  target: 'transcript' | 'queue';
+  /** `sent`: the daemon accepted it; its `user` item (or queue entry) has not arrived yet. */
+  state: 'sending' | 'sent' | 'failed';
+  error?: string;
+  /** When it was sent (`sending`) or accepted (`sent`). */
+  sentAt: number;
+}
+
+let outgoingSeq = 1;
 
 /** One agent's transcript: loaded lazily, paginated backwards, live-updated from events. */
 export class Timeline {
@@ -160,6 +189,11 @@ export class Fleet {
   usage = $state<Record<string, ProviderUsage>>({});
   /** Terminals per `host:id` (shells and action runs), kept current by `terminal.updated/removed`. */
   terminals = $state<Record<string, TerminalInfo>>({});
+  /** Prompts sent from this client that omp has not confirmed yet, per `host:agentId`, oldest first. */
+  outbox = $state<Record<string, Outgoing[]>>({});
+  #outboxTimers = new Map<string, number>();
+  /** `user` item ids seen per agent: only a new one confirms a prompt (not a re-sent update). */
+  #seenUser = new Map<string, Set<string>>();
   /** Local receipt time per `usage` key (hosts' clocks may differ). */
   #usageAt = new Map<string, number>();
   #usageLoads = new Map<string, Promise<ProviderUsage>>();
@@ -295,8 +329,134 @@ export class Fleet {
       this.details[k] = d;
       this.agents[k] = d.summary;
       this.requests[k] = d.requests;
+      this.#settleQueued(k, d);
     } catch (err) {
       console.warn('agents.get failed', err);
+    }
+  }
+
+  // ─── Outbox (optimistic prompts) ────────────────────────────────────────────────────────────
+
+  /** Sends a prompt, shown provisionally until omp confirms it; failures stay for Retry/Edit. */
+  sendPrompt(host: string, agentId: string, out: { message: string; images: ImageInput[]; draft: Draft }, mode: PromptMode) {
+    const entry = this.#addOutgoing(key(host, agentId), { ...out, mode, state: 'sending' });
+    void this.#deliver(host, agentId, entry);
+  }
+
+  /** Records the first prompt of an agent `agents.create` started (already accepted). */
+  noteSent(host: string, agentId: string, message: string) {
+    const k = key(host, agentId);
+    this.#addOutgoing(k, { message, images: [], draft: { text: message, images: [], elements: [] }, mode: 'auto', state: 'sent' });
+    this.#sweepSoon(k);
+  }
+
+  retry(agentKey: string, id: number) {
+    const e = this.outbox[agentKey]?.find((x) => x.id === id);
+    if (!e || e.state !== 'failed') return;
+    e.state = 'sending';
+    e.error = undefined;
+    e.sentAt = Date.now();
+    const [host, agentId] = splitKey(agentKey);
+    void this.#deliver(host, agentId, id);
+  }
+
+  discard(agentKey: string, id: number) {
+    this.#dropWhere(agentKey, (e) => e.id === id);
+  }
+
+  #addOutgoing(k: string, e: Omit<Outgoing, 'id' | 'text' | 'target' | 'sentAt'>): number {
+    const id = outgoingSeq++;
+    const n = e.images.length;
+    const text = [e.message.trim(), n ? `[${n} image${n === 1 ? '' : 's'}]` : ''].filter(Boolean).join('\n');
+    // Through the store, so the push hits the reactive proxy rather than a raw literal.
+    if (!this.outbox[k]) this.outbox[k] = [];
+    this.outbox[k].push({ ...e, id, text, target: e.mode === 'auto' ? 'transcript' : 'queue', sentAt: Date.now() });
+    return id;
+  }
+
+  async #deliver(host: string, agentId: string, id: number) {
+    const k = key(host, agentId);
+    const e = this.outbox[k]?.find((x) => x.id === id);
+    if (!e) return;
+    const params = { id: agentId, message: e.message, mode: e.mode, images: e.images.length ? $state.snapshot(e.images) : undefined };
+    const queue = e.target === 'queue';
+    try {
+      await this.call('agents.prompt', params, host, 60_000);
+      // Already confirmed, discarded or failed (the agent errored) meanwhile: nothing to do.
+      const cur = this.outbox[k]?.find((x) => x.id === id);
+      if (cur?.state === 'sending') {
+        cur.state = 'sent';
+        cur.sentAt = Date.now();
+        this.#sweepSoon(k);
+      }
+      if (queue) this.#scheduleDetail(host, agentId);
+    } catch (err) {
+      const cur = this.outbox[k]?.find((x) => x.id === id);
+      if (cur?.state !== 'sending') return;
+      cur.state = 'failed';
+      cur.error = `Not sent: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
+  /** Confirms a provisional prompt with a `user` item omp just produced. */
+  #settleItem(k: string, item: TimelineItem) {
+    if (item.kind !== 'user') return;
+    // Ids, not seqs: the echo of a slash command has a seq below the output it precedes.
+    let seen = this.#seenUser.get(k);
+    if (!seen) this.#seenUser.set(k, (seen = new Set()));
+    if (seen.has(item.id)) return;
+    seen.add(item.id);
+    const list = this.outbox[k];
+    if (!list?.length) return;
+    // The same text first (also a failed entry: its call timed out, but the daemon took it);
+    // else the oldest open turn prompt (omp may have expanded a skill or template).
+    const text = (item.text ?? '').trim();
+    let i = list.findIndex((e) => e.text === text);
+    if (i < 0) i = list.findIndex((e) => e.target === 'transcript' && e.state !== 'failed');
+    if (i < 0) return;
+    list.splice(i, 1);
+    if (!list.length) delete this.outbox[k];
+  }
+
+  /** Drops provisional prompts the agent's queue now shows. */
+  #settleQueued(k: string, d: AgentDetail) {
+    if (!this.outbox[k]?.length) return;
+    const queued = new Set([...d.queuedSteering, ...d.queuedFollowUp].map((t) => t.trim()));
+    if (queued.size) this.#dropWhere(k, (e) => queued.has(e.text) || (!!e.message && queued.has(e.message.trim())));
+  }
+
+  #dropWhere(k: string, pred: (e: Outgoing) => boolean) {
+    const list = this.outbox[k];
+    if (!list) return;
+    const keep = list.filter((e) => !pred(e));
+    if (keep.length === list.length) return;
+    if (keep.length) this.outbox[k] = keep;
+    else delete this.outbox[k];
+  }
+
+  /** Safety net: accepted prompts still unconfirmed once the agent idled for a grace period go. */
+  #sweepSoon(k: string) {
+    clearTimeout(this.#outboxTimers.get(k));
+    if (!this.outbox[k]?.some((e) => e.state === 'sent')) return;
+    this.#outboxTimers.set(
+      k,
+      setTimeout(() => {
+        this.#outboxTimers.delete(k);
+        const status = this.agents[k]?.status;
+        if (status !== 'idle' && status !== 'hibernated') return;
+        const cutoff = Date.now() - OUTBOX_GRACE;
+        this.#dropWhere(k, (e) => e.state === 'sent' && e.sentAt <= cutoff);
+        this.#sweepSoon(k);
+      }, OUTBOX_GRACE),
+    );
+  }
+
+  /** The agent failed before confirming: open prompts become failed (Retry/Edit/Discard). */
+  #failOpen(k: string, error: string | undefined) {
+    for (const e of this.outbox[k] ?? []) {
+      if (e.state === 'failed') continue;
+      e.state = 'failed';
+      e.error = `Agent failed${error ? `: ${error}` : ''}`;
     }
   }
 
@@ -416,6 +576,8 @@ export class Fleet {
       const waiting = agents.filter((a) => a.pendingRequests > 0);
       await Promise.all(waiting.map((a) => this.loadDetail(host, a.id)));
       for (const a of agents) if (a.pendingRequests === 0) delete this.requests[key(host, a.id)];
+      // Confirmations may have been missed while disconnected.
+      for (const k of Object.keys(this.outbox)) if (k.startsWith(`${host}:`)) this.#sweepSoon(k);
     }
     if (profiles) this.#replace(this.profiles, host, profiles, (p) => p.id);
     if (terminals) this.#replace(this.terminals, host, terminals, (t) => t.id);
@@ -437,7 +599,7 @@ export class Fleet {
 
   /** Drops data of hosts that are gone from the fleet. */
   #pruneHosts() {
-    for (const store of [this.projects, this.agents, this.profiles, this.requests, this.details, this.terminals] as Record<string, unknown>[]) {
+    for (const store of [this.projects, this.agents, this.profiles, this.requests, this.details, this.terminals, this.outbox] as Record<string, unknown>[]) {
       for (const k of Object.keys(store)) if (!this.hosts[splitKey(k)[0]]) delete store[k];
     }
   }
@@ -507,6 +669,8 @@ export class Fleet {
         notify(ok ? 'Ready for review' : 'Agent failed', `${a.title}${a.preview ? ` — ${a.preview}` : ''}`, href({ name: 'agent', host: h, id: a.id }), k);
       }
       if (a.pendingRequests === 0 && this.requests[k]?.length) delete this.requests[k];
+      if (a.status === 'error' && prev?.status !== 'error') this.#failOpen(k, a.error);
+      else if (a.status === 'idle' || a.status === 'hibernated') this.#sweepSoon(k);
       this.#scheduleDetail(h, a.id);
     });
     c.on('agent.removed', ({ id }, host) => {
@@ -514,10 +678,14 @@ export class Fleet {
       delete this.agents[k];
       delete this.requests[k];
       delete this.details[k];
+      delete this.outbox[k];
+      this.#seenUser.delete(k);
       this.#timelines.delete(k);
     });
     c.on('agent.timeline', ({ agentId, item }, host) => {
-      this.#timelines.get(key(host, agentId))?.upsert(item);
+      const k = key(host, agentId);
+      this.#timelines.get(k)?.upsert(item);
+      this.#settleItem(k, item);
     });
     c.on('agent.delta', ({ agentId, itemId, text }, host) => {
       this.#timelines.get(key(host, agentId))?.delta(itemId, text);

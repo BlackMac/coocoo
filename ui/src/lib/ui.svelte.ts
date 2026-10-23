@@ -134,6 +134,14 @@ class Ui {
     this.draft(key).images.push({ id: seq++, name, image });
   }
 
+  /** Puts a prompt that was not sent back into the composer, after whatever is drafted already. */
+  restoreDraft(key: string, from: Draft) {
+    const d = this.draft(key);
+    d.text = [d.text.trimEnd(), from.text].filter(Boolean).join('\n\n');
+    for (const im of from.images) d.images.push({ ...im, id: seq++ });
+    for (const el of from.elements) d.elements.push({ ...el, id: seq++ });
+  }
+
   showPanel(tab: PanelTab) {
     this.panel.tab = tab;
     this.panel.open = true;
