@@ -151,7 +151,7 @@
             >
               {#snippet trigger()}<Ellipsis size={15} />{/snippet}
             </Menu>
-            <button class="btn primary" onclick={() => (ui.dialog = { kind: 'newAgent', hostId: host, projectId: id })}><Plus size={14} /> New agent</button>
+            <button class="btn primary" title="New agent" aria-label="New agent" onclick={() => (ui.dialog = { kind: 'newAgent', hostId: host, projectId: id })}><Plus size={14} /><span class="lbl">New agent</span></button>
           </div>
         </div>
         <button class="path mono" title="Copy path" onclick={() => copy(p!.path)}>{p.path}<Copy size={12} /></button>
@@ -284,7 +284,7 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-    /* The Run button drops its label when the header gets narrow. */
+    /* The Run and New agent buttons drop their labels when the header gets narrow. */
     container-type: inline-size;
   }
   .ttl {
@@ -479,8 +479,16 @@
     flex: none;
   }
   @media (max-width: 960px) {
+    /* minmax(0, …): a plain 1fr track grows to the min-content width of the
+       nowrap commit/worktree rows and makes the page scroll sideways. */
     .cols {
-      grid-template-columns: 1fr;
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  /* Smallest phones (~320 px): the action row no longer fits with the label. */
+  @container (max-width: 320px) {
+    .acts .lbl {
+      display: none;
     }
   }
   @media (max-width: 640px) {
