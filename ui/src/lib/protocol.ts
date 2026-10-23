@@ -76,7 +76,10 @@ export interface HostStats {
   procs: ProcStat[];
 }
 
-/** A login shell on a pseudo-terminal; keeps running while nobody is attached. */
+/**
+ * A pseudo-terminal: a login shell (keeps running while nobody is attached), or the run of a
+ * project action, which stays listed after it ended until restarted or closed.
+ */
 export interface TerminalInfo {
   id: string;
   cwd: string;
@@ -84,9 +87,38 @@ export interface TerminalInfo {
   cols: number;
   rows: number;
   createdAt: number;
+  action?: TerminalAction;
+  /** When the process ended (ms); only action runs are kept after that. */
+  exitedAt?: number;
+  /** Exit status; missing after a signal (stopped). */
+  exitCode?: number;
+}
+
+export interface TerminalAction {
+  projectId: string;
+  actionId: string;
+  name: string;
+  /** Directory it was started for (project path or agent cwd), before the action's own `cwd`. */
+  base: string;
 }
 
 // ─── Projects / git ───────────────────────────────────────────────────────────────────────────
+
+export type ActionScope = 'project' | 'agent' | 'both';
+
+/** One entry of `.coocoo/actions.toml`. */
+export type ProjectAction = {
+  id: string;
+  name: string;
+  icon?: string;
+  scope: ActionScope;
+  default?: boolean;
+  confirm?: string;
+} & (
+  | { kind: 'run'; command: string; cwd?: string }
+  | { kind: 'prompt'; prompt: string; worktree?: boolean }
+  | { kind: 'url'; url: string; target?: 'browser' | 'external' }
+);
 
 export interface Project {
   id: string;
@@ -98,6 +130,10 @@ export interface Project {
   devUrls?: string[];
   /** Favicon/app icon/logo found in the project; fetch with `projects.icon`. */
   icon?: { path: string; modified: number };
+  /** From `.coocoo/actions.toml`, in file order. */
+  actions?: ProjectAction[];
+  /** Problems in that file (`actions.toml:LINE:COL – …`). */
+  actionErrors?: string[];
 }
 
 export interface GitInfo {
@@ -640,6 +676,9 @@ export interface Methods {
   'terminal.input': [{ id: string; data: string }, Ok];
   'terminal.resize': [{ id: string; cols: number; rows: number }, Ok];
   'terminal.kill': [{ id: string }, Ok];
+  'terminal.close': [{ id: string }, Ok];
+
+  'actions.run': [{ projectId: string; actionId: string; cwd: string; cols?: number; rows?: number }, TerminalInfo];
 
   'projects.list': [Empty | undefined, Project[]];
   'projects.get': [{ id: string }, Project];
@@ -754,6 +793,8 @@ export interface Events {
   'browser.console': BrowserConsoleEntry;
   'terminal.output': { id: string; data: string };
   'terminal.exit': { id: string; code?: number | null };
+  'terminal.updated': TerminalInfo;
+  'terminal.removed': { id: string };
   'system.resync': Empty;
 }
 

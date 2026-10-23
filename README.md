@@ -133,6 +133,57 @@ maxFps = 12
 quality = 70
 ```
 
+## Project actions
+
+A project can put buttons into Coocoo with `.coocoo/actions.toml` in its directory (this repository
+has one). They show up under **▶ Run** in the project header (scope `project`/`both`) and in the
+header of each of its agents (`agent`/`both`), and as “Run: …” in ⌘K. The file is read from the
+main checkout, also for agents in worktrees, and reloaded on every change; problems are listed in
+the Run menu with their line. Agents can check it with the `coocoo_actions` tool.
+
+```toml
+[[action]]                # order = order in the menu
+name    = "Dev server"    # required; id defaults to its slug ("dev-server")
+icon    = "server"        # play, server, test-tube, terminal, rocket, globe, bug, package,
+                          # database, wrench, refresh, message, external-link
+scope   = "agent"         # project | agent | both (default)
+default = true            # the Run button's one-click action (else the first)
+run     = "npm run dev -- --port 5173"
+cwd     = "ui"            # relative to the project or the agent's worktree
+
+[[action]]
+name   = "Review diff"
+scope  = "agent"
+prompt = "Review the changes on {branch}."   # also {project}, {cwd}
+
+[[action]]
+name     = "Release notes"
+scope    = "project"
+prompt   = "Write release notes since the last tag."
+worktree = true           # project view: a new agent in its own worktree
+
+[[action]]
+name    = "Deploy"
+scope   = "project"
+run     = "./scripts/deploy.sh"
+confirm = "Deploy main to production?"
+
+[[action]]
+name   = "Preview"
+url    = "http://localhost:5173"   # loopback → the project's browser panel, else the system
+target = "browser"                 # browser; `target` overrides (browser | external)
+```
+
+- **`run`** starts `$SHELL -lc '<command>'` in its own terminal on the project's host: in the
+  project directory, or in the agent's directory (its worktree). It gets `COOCOO_PROJECT_DIR`,
+  `COOCOO_WORKDIR` and `COOCOO_ACTION`. Starting it again restarts it (one run per action and
+  directory; different worktrees run side by side, so pick ports per worktree yourself). A
+  finished run stays in the terminal tab with its exit code and output until restarted or closed.
+  Stop hangs up the process group: keep servers in the foreground (no daemon modes).
+- **`prompt`** goes to the agent (queued after the current turn if it is working); in the project
+  view it starts a new agent with that prompt.
+- **`url`** opens in the project's browser panel (agent view, loopback hosts) or the system browser.
+
 ## Development
 
 ```sh

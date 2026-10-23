@@ -75,6 +75,10 @@ class Ui {
   /** Mobile agent view: which pane fills the screen. */
   mobilePane = $state<'chat' | PanelTab>('chat');
   drafts = $state<Record<string, Draft>>({});
+  /** A terminal the next TerminalPanel for its directory should show (set when an action starts). */
+  terminalFocus = $state<{ host: string; id: string } | null>(null);
+  /** A browser tab the BrowserPanel should select (set when a URL action opened it). */
+  browserFocus = $state<{ host: string; profile: string; targetId: string } | null>(null);
 
   constructor() {
     matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {

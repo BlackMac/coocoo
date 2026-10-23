@@ -1,0 +1,103 @@
+# Coocoo actions for this repository: buttons under ▶ Run in the project and agent headers and
+# entries in ⌘K. Order here is the order in the menu. `scope`: project | agent | both (default).
+# Commands run in the project directory (project scope) or in the agent's directory / worktree
+# (agent scope); `cwd` is relative to that.
+
+# coocoo-desktop (src-tauri) is left out: it needs the webkit2gtk/gtk dev packages, which
+# headless servers usually lack. Test it with `cargo test -p coocoo-desktop` where they exist.
+[[action]]
+name    = "Tests"
+icon    = "test-tube"
+run     = "cargo test --workspace --exclude coocoo-desktop"
+default = true
+
+[[action]]
+name = "Check"
+icon = "bug"
+run  = "cargo clippy --workspace --exclude coocoo-desktop --all-targets && (cd ui && { [ -d node_modules ] || npm ci; } && npm run check)"
+
+[[action]]
+name  = "UI dev server"
+icon  = "server"
+scope = "agent"
+cwd   = "ui"
+# Vite with HMR against the running daemon (ws://127.0.0.1:7421). Port 5173 is fixed
+# (strictPort), so only one worktree at a time.
+run   = """
+[ -d node_modules ] || npm ci
+VITE_COOCOO_WS=ws://127.0.0.1:7421/ws VITE_COOCOO_TOKEN="$(coocoo token)" npm run dev
+"""
+
+[[action]]
+name  = "UI preview"
+icon  = "globe"
+scope = "agent"
+url   = "http://localhost:5173"
+
+[[action]]
+name  = "Test daemon"
+icon  = "play"
+scope = "agent"
+# This checkout's daemon on 127.0.0.1:7499 with its own home in target/, so changes can be
+# tried without redeploying the real one. Prints the connect link before it starts.
+run   = """
+set -e
+(cd ui && { [ -d node_modules ] || npm ci; } && npm run build)
+cargo build -p coocoo-cli
+export COOCOO_HOME="$PWD/target/dev-home"
+echo "Open: http://127.0.0.1:7499/#token=$(target/debug/coocoo token)"
+exec target/debug/coocoo serve --listen 127.0.0.1:7499
+"""
+
+[[action]]
+name   = "Review diff"
+icon   = "message"
+scope  = "agent"
+prompt = """
+Review the changes on {branch}: everything not yet on master plus uncommitted work.
+List real bugs first (with file:line), then risks and missing docs (README, docs/PROTOCOL.md).
+Do not change anything yet.
+"""
+
+[[action]]
+name   = "Onto master"
+icon   = "refresh"
+scope  = "agent"
+prompt = """
+Bring {branch} onto master: commit what belongs to the change, rebase onto master, run
+`cargo test --workspace` and `npm run check` in ui/, then fast-forward master to it and push
+origin master. Stop and report on conflicts or failing checks instead of forcing it.
+"""
+
+[[action]]
+name    = "Deploy"
+icon    = "rocket"
+scope   = "project"
+confirm = "Build master and restart the local Coocoo daemon? Running agents pause for the restart."
+# Restart without waiting: the restart also stops this action's terminal.
+run     = """
+set -e
+(cd ui && npm ci && npm run build)
+cargo build --release -p coocoo-cli
+install -m 755 target/release/coocoo ~/.local/bin/coocoo.new
+mv -f ~/.local/bin/coocoo.new ~/.local/bin/coocoo
+~/.local/bin/coocoo version
+systemctl --user --no-block restart coocoo
+"""
+
+[[action]]
+name   = "Prepare release"
+icon   = "package"
+scope  = "project"
+prompt = """
+Prepare the next Coocoo release: pick the version (ask me if unclear), bump it in the
+workspace Cargo.toml and ui/package.json (and the lockfiles), commit, tag v<version> and push
+master and the tag so .github/workflows/desktop-release.yml builds the installers. Watch the
+run and report the release URL.
+"""
+
+[[action]]
+name  = "GitHub Actions"
+icon  = "external-link"
+scope = "project"
+url   = "https://github.com/BlackMac/coocoo/actions"

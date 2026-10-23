@@ -20,6 +20,7 @@
   import NextCard from '../agent/NextCard.svelte';
   import GitBar from '../agent/GitBar.svelte';
   import GitChip from '../components/GitChip.svelte';
+  import ActionsButton from '../components/ActionsButton.svelte';
   import { agentGit } from '../lib/git.svelte';
   import RequestCard from '../components/RequestCard.svelte';
   import PlanPanel from '../panels/PlanPanel.svelte';
@@ -134,6 +135,7 @@
           <span class="sep">·</span><span>{cost(a.costUsd)}</span>
         </span>
         <div class="hacts">
+          {#if project}<ActionsButton {project} agent={a} />{/if}
           <Menu label="Agent actions" items={menu}>{#snippet trigger()}<Ellipsis size={15} />{/snippet}</Menu>
           <button class="btn ghost icon sm toggle" class:active={ui.panel.open} title="Toggle side panel" aria-label="Toggle side panel" onclick={() => (ui.panel.open = !ui.panel.open)}>
             <PanelRight size={15} />
@@ -283,6 +285,7 @@
   }
   .hacts {
     display: flex;
+    align-items: center;
     gap: 2px;
     flex: none;
   }

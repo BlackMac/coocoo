@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use coocoo_proto::util::new_id;
-use coocoo_proto::{ConnSink, DiffResult, DiffStat, Emitter, HostStats, Paths, Project, WorktreeRef};
-use coocoo_workspace::{Stats, Workspace};
+use coocoo_proto::{ConnSink, DiffResult, DiffStat, Emitter, HostStats, Paths, Project, TerminalInfo, WorktreeRef};
+use coocoo_workspace::{Stats, Terminals, Workspace};
 use serde_json::{Value, json};
 
 /// Temporary directory removed on drop.
@@ -409,6 +409,104 @@ async fn watcher_emits_after_commit() {
     .expect("project.updated after commit");
     assert!(started.elapsed() < Duration::from_millis(1200), "took {:?}", started.elapsed());
     assert_eq!(updated.git.unwrap().changed, 0);
+}
+
+/// Next `event` whose payload satisfies `pred`.
+async fn next_event<T: serde::de::DeserializeOwned>(
+    rx: &mut tokio::sync::broadcast::Receiver<Arc<coocoo_proto::bus::BusEvent>>,
+    event: &str,
+    pred: impl Fn(&T) -> bool,
+) -> T {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let ev = rx.recv().await.unwrap();
+            if ev.name != event {
+                continue;
+            }
+            let env: Value = serde_json::from_str(&ev.json).unwrap();
+            let data: T = serde_json::from_value(env["data"].clone()).unwrap();
+            if pred(&data) {
+                return data;
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("no matching {event}"))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn actions_file_is_watched_and_runs_in_worktrees() {
+    let e = env();
+    let repo = e.root.join("repo");
+    init_repo(&repo, true);
+    let project: Project = call(&e.ws, "projects.add", json!({ "path": repo })).await;
+    assert!(project.actions.is_empty() && project.action_errors.is_empty());
+    let mut rx = e.emitter.subscribe();
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    while rx.try_recv().is_ok() {}
+
+    // `.coocoo/` appears after the project was added, uncommitted.
+    std::fs::create_dir_all(repo.join(".coocoo")).unwrap();
+    std::fs::write(
+        repo.join(".coocoo/actions.toml"),
+        "[[action]]\nname = \"Where\"\nrun = \"pwd; echo \\\"$COOCOO_ACTION in $COOCOO_WORKDIR\\\"; exit 3\"\ncwd = \"sub\"\n",
+    )
+    .unwrap();
+    let started = std::time::Instant::now();
+    let p: Project = next_event(&mut rx, "project.updated", |p: &Project| p.id == project.id && !p.actions.is_empty()).await;
+    assert!(started.elapsed() < Duration::from_secs(2), "took {:?}", started.elapsed());
+    assert_eq!(p.actions[0].id, "where");
+
+    // Editing it again: a broken entry is reported, the good one stays.
+    let text = std::fs::read_to_string(repo.join(".coocoo/actions.toml")).unwrap();
+    std::fs::write(repo.join(".coocoo/actions.toml"), format!("{text}\n[[action]]\nname = \"Broken\"\n")).unwrap();
+    let p: Project = next_event(&mut rx, "project.updated", |p: &Project| p.id == project.id && !p.action_errors.is_empty()).await;
+    assert_eq!(p.actions.len(), 1);
+    assert!(p.action_errors[0].starts_with("actions.toml:6:1 – action “Broken”"), "{:?}", p.action_errors);
+
+    // Runs in an agent's worktree (its `cwd` inside it), keeps its exit code after it ended.
+    let wt: WorktreeRef = call(&e.ws, "git.worktreeCreate", json!({ "projectId": project.id })).await;
+    std::fs::create_dir_all(Path::new(&wt.path).join("sub")).unwrap();
+    let terminals = Terminals::new(e.emitter.clone());
+    let run = |cwd: String| {
+        let (ws, terminals) = (e.ws.clone(), terminals.clone());
+        let params = json!({ "projectId": project.id, "actionId": "where", "cwd": cwd });
+        async move { ws.dispatch_actions(&terminals, "actions.run", params).await }
+    };
+    let info: TerminalInfo = serde_json::from_value(run(wt.path.clone()).await.unwrap()).unwrap();
+    assert_eq!(info.cwd, format!("{}/sub", std::fs::canonicalize(&wt.path).unwrap().display()));
+    assert_eq!(info.action.as_ref().unwrap().base, wt.path);
+    let ended: TerminalInfo = next_event(&mut rx, "terminal.updated", |t: &TerminalInfo| t.id == info.id && t.exited_at.is_some()).await;
+    assert_eq!(ended.exit_code, Some(3));
+    let (tx, _out) = tokio::sync::mpsc::channel(8);
+    let conn = ConnSink::new(1, tx);
+    let attached = terminals.dispatch("terminal.attach", json!({ "id": info.id }), &conn).await.unwrap();
+    let output = attached["data"].as_str().unwrap();
+    assert!(output.contains(&format!("where in {}", std::fs::canonicalize(&wt.path).unwrap().display())), "{output}");
+
+    // Running it again replaces the finished run; another directory runs alongside, once the
+    // action's `cwd` exists there too (it is resolved per base directory).
+    let again: TerminalInfo = serde_json::from_value(run(wt.path.clone()).await.unwrap()).unwrap();
+    let err = run(repo.display().to_string()).await.unwrap_err();
+    assert!(err.code == "not_found" && err.message.contains("sub"), "{err}");
+    std::fs::create_dir_all(repo.join("sub")).unwrap();
+    let main: TerminalInfo = serde_json::from_value(run(repo.display().to_string()).await.unwrap()).unwrap();
+    let list: Vec<TerminalInfo> =
+        serde_json::from_value(terminals.dispatch("terminal.list", Value::Null, &conn).await.unwrap()).unwrap();
+    let ids: Vec<&str> = list.iter().map(|t| t.id.as_str()).collect();
+    assert!(!ids.contains(&info.id.as_str()) && ids.contains(&again.id.as_str()) && ids.contains(&main.id.as_str()), "{ids:?}");
+
+    // Outside the project and its worktrees: refused.
+    let outside = e.root.join("elsewhere");
+    std::fs::create_dir_all(&outside).unwrap();
+    let err = run(outside.display().to_string()).await.unwrap_err();
+    assert_eq!(err.code, "invalid_params", "{err}");
+
+    // Closing a finished run removes it.
+    next_event(&mut rx, "terminal.updated", |t: &TerminalInfo| t.id == again.id && t.exited_at.is_some()).await;
+    terminals.dispatch("terminal.close", json!({ "id": again.id }), &conn).await.unwrap();
+    let gone: Value = next_event(&mut rx, "terminal.removed", |v: &Value| v["id"] == again.id.as_str()).await;
+    assert_eq!(gone["id"], again.id.as_str());
 }
 
 #[tokio::test(flavor = "multi_thread")]

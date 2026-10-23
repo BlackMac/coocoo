@@ -4,6 +4,8 @@
   import { router } from '../lib/router.svelte';
   import { agentState, type AgentState } from '../lib/status';
   import { ui } from '../lib/ui.svelte';
+  import { actionDisabled, actionIcon, actionRun, actionsFor, type ActionContext, showRun, startAction } from '../lib/actions';
+  import { worktreeOf } from '../lib/git.svelte';
   import { Bot, CornerDownLeft, FolderGit2, LayoutDashboard, Moon, Plus, Search, Server, Settings } from '../lib/icons';
   import StatusDot from './StatusDot.svelte';
 
@@ -34,6 +36,27 @@
       { id: 'a:host', group: 'Actions', label: 'Add host…', icon: Server, run: () => (ui.dialog = { kind: 'addHost' }) },
       { id: 'a:theme', group: 'Actions', label: `Switch to ${ui.theme === 'dark' ? 'light' : 'dark'} theme`, icon: Moon, run: () => ui.toggleTheme() },
     ];
+    // Actions of what is open: the agent (in its directory) and its project, or the project.
+    const route = router.route;
+    const agent = route.name === 'agent' ? fleet.agent(route.host, route.id) : undefined;
+    const project = agent ? fleet.project(agent.hostId, agent.projectId) : route.name === 'project' ? fleet.project(route.host, route.id) : undefined;
+    const contexts: ActionContext[] = project ? (agent ? [{ project, agent }, { project }] : [{ project }]) : [];
+    for (const ctx of contexts) {
+      const where = ctx.agent ? [ctx.agent.title, worktreeOf(ctx.project, ctx.agent.cwd)?.branch].filter(Boolean).join(' · ') : `${ctx.project.name} · project`;
+      for (const a of actionsFor(ctx)) {
+        if (actionDisabled(a, ctx)) continue;
+        const r = actionRun(ctx, a);
+        const status = !r ? '' : !r.exitedAt ? ' · running' : r.exitCode === 0 ? ' · ✓' : r.exitCode == null ? ' · stopped' : ` · ✗ exit ${r.exitCode}`;
+        out.push({
+          id: `run:${ctx.agent ? 'a' : 'p'}:${a.id}`,
+          group: 'Actions',
+          label: `Run: ${a.name}`,
+          hint: where + status,
+          icon: actionIcon(a),
+          run: () => (r && !r.exitedAt ? showRun(ctx.project.hostId, r, !!ctx.agent) : startAction(a, ctx)),
+        });
+      }
+    }
     for (const a of Object.values(fleet.agents)) {
       const p = fleet.project(a.hostId, a.projectId);
       out.push({

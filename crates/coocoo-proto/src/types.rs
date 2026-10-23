@@ -69,8 +69,10 @@ pub struct HostStats {
     pub procs: Vec<ProcStat>,
 }
 
-/// A login shell on a pseudo-terminal (`terminal.*`). It keeps running while nobody is attached
-/// and ends when the shell exits or on `terminal.kill`.
+/// A pseudo-terminal (`terminal.*`): a login shell, or the run of a project action
+/// (`actions.run`). A shell keeps running while nobody is attached and ends when it exits or on
+/// `terminal.kill`; an action's run stays listed after it exited (with its exit code and output)
+/// until it is restarted or closed with `terminal.close`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalInfo {
@@ -81,6 +83,98 @@ pub struct TerminalInfo {
     pub cols: u16,
     pub rows: u16,
     pub created_at: i64,
+    /// Set for the run of a project action.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<TerminalAction>,
+    /// When the process ended (Unix ms); only action runs are kept after that.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exited_at: Option<i64>,
+    /// Exit status once ended; `None` after a signal (stopped).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+}
+
+/// Which action a terminal runs; `base` is the directory it was started for (project path or
+/// worktree), before the action's own `cwd`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalAction {
+    pub project_id: String,
+    pub action_id: String,
+    pub name: String,
+    pub base: String,
+}
+
+// ─── Project actions (`.coocoo/actions.toml`) ───────────────────────────────────────────────
+
+/// One entry of a project's `.coocoo/actions.toml`, validated.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectAction {
+    /// Unique within the project (explicit `id`, else derived from the name).
+    pub id: String,
+    pub name: String,
+    /// One of the icon names the UI ships; `None` = the kind's default icon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    pub scope: ActionScope,
+    /// The action the Run button starts with one click.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub default: bool,
+    /// Question shown in a confirmation dialog before it starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm: Option<String>,
+    #[serde(flatten)]
+    pub kind: ActionKind,
+}
+
+/// Where an action is offered: in the project view (runs in the project directory, a prompt
+/// starts a new agent), in agent views (runs in the agent's directory, a prompt goes to that
+/// agent), or both.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ActionScope {
+    Project,
+    Agent,
+    #[default]
+    Both,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ActionKind {
+    /// A shell command, run in its own terminal (`actions.run`).
+    #[serde(rename_all = "camelCase")]
+    Run {
+        command: String,
+        /// Relative to the project or worktree directory; never leaves it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+    },
+    /// Text sent to the agent, or the first prompt of a new agent in the project view.
+    #[serde(rename_all = "camelCase")]
+    Prompt {
+        prompt: String,
+        /// Project view: start the new agent in its own worktree.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        worktree: bool,
+    },
+    #[serde(rename_all = "camelCase")]
+    Url {
+        url: String,
+        /// `None` = the project's browser for loopback hosts, else the system browser.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<UrlTarget>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UrlTarget {
+    /// The project's Chromium (Browser panel).
+    Browser,
+    /// The system browser of the client.
+    External,
 }
 
 // ─── Projects / git ───────────────────────────────────────────────────────────────────────────
@@ -97,12 +191,18 @@ pub struct Project {
     /// `None` when the directory is not a git repository.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git: Option<GitInfo>,
-    /// Commands the user pinned for this project (dev server etc.), shown as quick actions.
+    /// URLs the user pinned for this project (dev server etc.), shown as quick tabs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dev_urls: Vec<String>,
     /// Icon file found in the project (favicon, app icon, logo); fetch it with `projects.icon`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<ProjectIcon>,
+    /// Actions from `.coocoo/actions.toml` in `path`, in file order (runtime state, like `git`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<ProjectAction>,
+    /// Problems in that file (`actions.toml:LINE:COL – …`); valid actions stay usable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub action_errors: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -25,6 +25,6 @@ tracing.workspace = true
 anyhow.workspace = true
 parking_lot.workspace = true
 libc.workspace = true
-toml = { version = "0.9", default-features = false, features = ["parse", "serde", "display"] }
+toml.workspace = true
 rust-embed = { workspace = true, optional = true }
 mime_guess = { workspace = true, optional = true }

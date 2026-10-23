@@ -461,6 +461,44 @@ impl ToolEnv {
         self.call(None, "boards.sourceRemove", json!({ "projectId": project_id, "sourceId": id }))?;
         Ok(text(&json!({ "deleted": id })))
     }
+
+    // ─── Project actions (read-only) ──────────────────────────────────────────────────────
+
+    fn actions(&self, args: Map<String, Value>) -> ToolResult {
+        let agent = self.call(None, "agents.get", json!({ "id": self.agent_id }))?;
+        let own = agent.pointer("/summary/projectId").and_then(Value::as_str).map(str::to_owned);
+        let id = str_arg(&args, "projectId")
+            .or(own)
+            .ok_or_else(|| err("you are not working in a Coocoo project; pass `projectId` (see coocoo_projects)"))?;
+        let project = self.call(self.host(&args), "projects.get", json!({ "id": id }))?;
+        let path = project["path"].as_str().unwrap_or_default();
+        let actions: Vec<Value> = project["actions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|a| {
+                let mut view = json!({ "id": a["id"], "name": a["name"], "kind": a["kind"], "scope": a["scope"] });
+                for key in ["command", "cwd", "prompt", "worktree", "url", "target", "icon", "default", "confirm"] {
+                    if let Some(value) = a.get(key) {
+                        view[key] = value.clone();
+                    }
+                }
+                view
+            })
+            .collect();
+        let mut report = json!({
+            "file": format!("{path}/.coocoo/actions.toml"),
+            "actions": actions,
+            "errors": project.get("actionErrors").cloned().unwrap_or(json!([])),
+        });
+        let cwd = agent.pointer("/summary/cwd").and_then(Value::as_str).unwrap_or_default();
+        if !cwd.is_empty() && cwd != path {
+            report["note"] = json!(format!(
+                "You work in {cwd}. Only the file in the project's main checkout ({path}) counts: edits to .coocoo/actions.toml in your directory show up once they reach that checkout (e.g. after the merge)."
+            ));
+        }
+        Ok(text(&report))
+    }
 }
 
 const COLUMNS: &[&str] = &["inbox", "todo", "doing", "done"];
@@ -693,6 +731,20 @@ pub(crate) fn host_tools(agents: &Arc<Agents>, agent_id: &str, orchestrator: Arc
             }),
             |env, args, _| env.importer_delete(args),
         ),
+        tool(
+            "coocoo_actions",
+            "Project actions",
+            ACTIONS_DOC,
+            json!({
+                "type": "object",
+                "properties": {
+                    "projectId": { "type": "string", "description": "Project id from coocoo_projects; omit for your own project." },
+                    "host": { "type": "string", "description": HOST_PROP }
+                },
+                "additionalProperties": false
+            }),
+            |env, args, _| env.actions(args),
+        ),
     ]
 }
 
@@ -702,3 +754,22 @@ plain text (the card title) or a JSON object {\"title\", \"body\"?, \"url\"?, \"
 It runs with a 60 s timeout in its own state directory (cwd, $HOME and $COOCOO_STATE_DIR; files there persist between runs), may read the project ($COOCOO_PROJECT_DIR) and use the network, but does not inherit your environment; \
 on Linux it is sandboxed: it can read the system (/usr, /etc, …) but not the rest of the home directory, and can write only its state directory, so use system interpreters and tools (python3, curl, …). \
 Saving runs it once right away and reports how many cards it imported or its error (stderr tail), so fix and save again until it works. With `id` and nothing else it just runs again.";
+
+const ACTIONS_DOC: &str = "Show the project's UI actions: the buttons Coocoo offers under ▶ Run in the project and agent views and in ⌘K, read from `.coocoo/actions.toml` in the project's main checkout. \
+Returns the file path, the parsed actions and the problems found in the file (with line). It runs nothing; to add or change actions, edit that file, then call this again to check that it parsed. \
+Format (TOML; the order of the entries is the order in the menu):\n\
+[[action]]\n\
+name = \"Dev server\"   # required\n\
+id = \"dev\"            # optional, default: slug of name; unique\n\
+icon = \"server\"       # optional: play, server, test-tube, terminal, rocket, globe, bug, package, database, wrench, refresh, message, external-link\n\
+scope = \"agent\"       # project | agent | both (default)\n\
+default = true        # the Run button's one-click action (else the first in scope)\n\
+confirm = \"Sure?\"     # optional confirmation dialog\n\
+# exactly one of:\n\
+run = \"npm run dev\"   # shell command in its own terminal ($SHELL -lc); env COOCOO_PROJECT_DIR, COOCOO_WORKDIR, COOCOO_ACTION\n\
+cwd = \"ui\"            # with run: relative to the project or the agent's worktree, never outside\n\
+prompt = \"Review the changes on {branch}.\"  # agent scope: sent to that agent; project scope: first prompt of a new agent; placeholders {branch} {project} {cwd}\n\
+worktree = true       # with prompt: the new agent gets its own worktree\n\
+url = \"http://localhost:5173\"  # opens in the project's browser for loopback hosts, else the system browser\n\
+target = \"external\"   # with url: browser | external\n\
+Scope `project` runs in the project directory, `agent` in the agent's directory (its worktree). Ports are fixed by the command, so a dev server in two worktrees collides; use foreground processes (Stop sends SIGHUP to the process group).";

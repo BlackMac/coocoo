@@ -59,7 +59,7 @@ Params marked `?` are optional. Return types refer to `types.rs`.
 | `projects.add` | `{ path, name? }` | `Project` (directory must exist; git optional) |
 | `projects.update` | `{ id, name?, devUrls? }` | `Project` |
 | `projects.remove` | `{ id }` | `{}` (never touches files) |
-| `projects.refresh` | `{ id }` | `Project` (recomputes `git` and `icon`) |
+| `projects.refresh` | `{ id }` | `Project` (recomputes `git`, `icon` and `actions`) |
 | `projects.icon` | `{ id }` | `{ mime, data: base64 }` — the file named by `Project.icon` (`not_found` without one). `icon` is picked from the project's favicon/app icon/logo at the usual places (root, `public/`, `static/`, `app/`, `src/app/`, `assets/`, `src/assets/`, `src/`, `web/`, `src-tauri/icons/`, `resources/`, `build/`, `.github/`, `docs/`): icons before logos, SVG before PNG before ICO, ≤ 512 KiB; re-detected on every git refresh |
 
 `Project.git` (`GitInfo`) describes the main checkout (`branch`, `head`, `upstream`, `ahead`/`behind`
@@ -86,18 +86,40 @@ target of `git.merge`). It is recomputed when a watched git file changes (HEAD, 
 | `fs.list` | `{ path? }` (default home) | `{ path, parent?, entries: FsEntry[] }` — directories first, hidden entries omitted |
 
 ### terminal — `coocoo-workspace` (Linux/macOS hosts)
-A terminal is a login shell (`$SHELL -l`, else `/bin/sh`, with `TERM=xterm-256color`) on a pty. It
-keeps running while nobody is attached and ends when the shell exits or on `terminal.kill`.
+A terminal is a login shell (`$SHELL -l`, else `/bin/sh`, with `TERM=xterm-256color`) on a pty, or
+the run of a project action (`actions.run`: `$SHELL -lc <command>`). A shell keeps running while
+nobody is attached and ends when it exits or on `terminal.kill`. An action run carries
+`TerminalInfo.action` (`{ projectId, actionId, name, base }`) and stays listed after its process
+ended, with `exitedAt` and `exitCode` (absent after a signal) and its scrollback, until it is
+restarted or closed. Opening and ending are broadcast (`terminal.updated` / `terminal.removed`).
 
 | Method | Params | Result |
 |---|---|---|
 | `terminal.list` | – | `TerminalInfo[]` (oldest first) |
 | `terminal.open` | `{ cwd, cols? (80), rows? (24) }` | `TerminalInfo` — `cwd` must be a directory; does not attach |
 | `terminal.attach` | `{ id, cols?, rows? }` | `{ data: String }` — the recent output (≤ 256 KiB); this connection then receives `terminal.output`/`terminal.exit` until `terminal.detach` or disconnect. Output may arrive before this reply: apply it after `data` |
-| `terminal.detach` | `{ id }` | `{}` — the shell keeps running |
-| `terminal.input` | `{ id, data }` | `{}` — keystrokes/paste as UTF-8 text (≤ 256 KiB) |
+| `terminal.detach` | `{ id }` | `{}` — the process keeps running |
+| `terminal.input` | `{ id, data }` | `{}` — keystrokes/paste as UTF-8 text (≤ 256 KiB); `conflict` once the process ended |
 | `terminal.resize` | `{ id, cols, rows }` | `{}` — last resize wins when several clients are attached |
-| `terminal.kill` | `{ id }` | `{}` — SIGHUP to the shell's process group |
+| `terminal.kill` | `{ id }` | `{}` — SIGHUP to the process group (no-op once it ended) |
+| `terminal.close` | `{ id }` | `{}` — removes an ended action run; a running one is hung up and removed when it ends |
+
+### actions — `coocoo-workspace`
+A project declares actions in `.coocoo/actions.toml` in its directory (the main checkout, also for
+agents in worktrees; format in the README). The daemon parses the file when the project is added or
+refreshed and when the file changes (watched non-recursively: the project directory filtered to
+`.coocoo`, and `.coocoo/` filtered to `actions.toml`, ~0.4 s debounce), and publishes the result as
+`Project.actions: ProjectAction[]` (file order) and `Project.actionErrors: String[]`
+(`actions.toml:LINE:COL – …`; invalid entries are skipped, a syntax error leaves no actions). Both
+are runtime state, not stored in `projects.json`. A `ProjectAction` has `id`, `name`, `icon?`,
+`scope` (`project` \| `agent` \| `both`), `default?`, `confirm?` and `kind`: `run` (`command`,
+`cwd?`), `prompt` (`prompt`, `worktree?`) or `url` (`url`, `target?`: `browser` \| `external`).
+Clients carry out `prompt` and `url` actions themselves (`agents.prompt`/`agents.create`,
+`browser.open`); only `run` goes to the daemon.
+
+| Method | Params | Result |
+|---|---|---|
+| `actions.run` | `{ projectId, actionId, cwd, cols?, rows? }` | `TerminalInfo` — starts the `run` action's command in a new terminal in `cwd` (the project directory, or an agent's directory inside it or one of its worktrees; else `invalid_params`) joined with the action's `cwd` (must exist there and stay inside). Env: `COOCOO_PROJECT_DIR` (main checkout), `COOCOO_WORKDIR` (`cwd`), `COOCOO_ACTION` (id). An earlier run of the same action for the same `cwd` is stopped first (SIGHUP, SIGKILL after 5 s) and removed; other directories run alongside. `TerminalInfo.action.base` is `cwd` as given |
 
 ### agents — `coocoo-agents` (omp only)
 | Method | Params | Result |
@@ -203,6 +225,7 @@ project's host in the background (15 s timeout); a non-2xx answer or network err
 | `browser.console` | `BrowserConsoleEntry` | watching connection only |
 | `terminal.output` | `{ id, data }` (UTF-8 text) | attached connections only |
 | `terminal.exit` | `{ id, code? }` (`null` when killed by a signal) | attached connections only |
+| `terminal.updated` / `terminal.removed` | `TerminalInfo` (opened, or its process ended) / `{ id }` | all |
 | `system.resync` | `{}` | connection that lagged; refetch everything |
 
 ## omp integration
@@ -215,7 +238,8 @@ such as `ask`; via the vendored official Rust client `crates/omp-rpc`). The daem
   own browser tool drives the daemon-managed, per-project Chromium that the UI live-views; the
   spawn fails with an agent error if the endpoint cannot be obtained;
 - registers host tools (`coocoo_hosts`, `coocoo_projects`, `coocoo_agents`, `coocoo_spawn`,
-  `coocoo_send`, `coocoo_wait`) so agents orchestrate other agents on any host of the fleet, and
+  `coocoo_send`, `coocoo_wait`) so agents orchestrate other agents on any host of the fleet,
+  `coocoo_actions` (read-only: the project's parsed `.coocoo/actions.toml` and its problems; the tool description carries the file format), and
   `kanban_list`, `kanban_add` (suggestions go to the inbox, work the user asked for to todo), `kanban_move`, `kanban_done`, `kanban_refine` (attach a refinement with mocks, see `boards.refinementSave`) for the board of the agent's project, and `kanban_importers`, `kanban_importer_save` (create/change a script or feed importer; runs it once and reports the result), `kanban_importer_delete` for its inbox importers (agents cannot create or change `command` importers);
 - enables `set_ask_dialog` and surfaces omp `extension_ui_request`s as `UiRequest`s;
 - hibernates idle agents (process exit, session kept) and resumes them with `--resume <sessionFile>`.

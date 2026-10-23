@@ -3,7 +3,7 @@
 </script>
 
 <script lang="ts">
-  import { fleet } from '../lib/fleet.svelte';
+  import { fleet, key } from '../lib/fleet.svelte';
   import { ago, shortPath } from '../lib/format';
   import { now } from '../lib/clock.svelte';
   import { href, router } from '../lib/router.svelte';
@@ -16,6 +16,7 @@
   import HostDot from '../components/HostDot.svelte';
   import Menu from '../components/Menu.svelte';
   import InlineEdit from '../components/InlineEdit.svelte';
+  import ActionsButton from '../components/ActionsButton.svelte';
 
   let { host, id }: { host: string; id: string } = $props();
 
@@ -32,6 +33,12 @@
   let showArchived = $state(false);
   let showTerminal = $state(false);
   const loadTerminal = () => (terminalMod ??= import('../panels/TerminalPanel.svelte'));
+
+  // An action started here opens the terminal section, which then shows its run.
+  $effect(() => {
+    const f = ui.terminalFocus;
+    if (f && f.host === host && p && fleet.terminals[key(host, f.id)]?.action?.base === p.path) showTerminal = true;
+  });
 
   $effect(() => {
     const path = p?.path;
@@ -134,6 +141,7 @@
             <button class="btn ghost icon" class:active={showTerminal} title="Terminal in the project directory" aria-label="Terminal" aria-pressed={showTerminal} onclick={() => (showTerminal = !showTerminal)}>
               <Terminal size={14} />
             </button>
+            <ActionsButton project={p} />
             <Menu
               label="Project actions"
               items={[
@@ -276,6 +284,8 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
+    /* The Run button drops its label when the header gets narrow. */
+    container-type: inline-size;
   }
   .ttl {
     display: flex;

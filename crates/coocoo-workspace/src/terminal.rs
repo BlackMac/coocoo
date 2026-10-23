@@ -1,15 +1,18 @@
-//! Terminals: login shells on pseudo-terminals (`terminal.*`), streamed to the connections
-//! attached to them.
+//! Terminals: login shells and project-action runs on pseudo-terminals (`terminal.*`,
+//! `actions.run`), streamed to the connections attached to them.
 //!
 //! A terminal outlives its viewers: detaching (closing the panel, a dropped connection) leaves the
-//! shell running, and attaching again replays the recent output. It ends when the shell exits or
-//! on `terminal.kill`; when the daemon exits, closing the PTY master hangs the shell up.
+//! process running, and attaching again replays the recent output. A shell ends when it exits or
+//! on `terminal.kill`; an action run stays listed after it exited, with its exit code and output,
+//! until it is restarted or closed (`terminal.close`). When the daemon exits, closing the PTY
+//! master hangs everything up. Opening and ending are broadcast (`terminal.updated` /
+//! `terminal.removed`) so every client knows which actions run.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use coocoo_proto::error::{ok, params};
-use coocoo_proto::{ApiError, ApiResult, ConnSink, Emitter, TerminalInfo};
+use coocoo_proto::{ApiError, ApiResult, ConnSink, Emitter, TerminalAction, TerminalInfo, events};
 use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -29,6 +32,15 @@ pub struct Terminals {
     emitter: Emitter,
     #[cfg_attr(not(unix), allow(dead_code))]
     terms: Mutex<HashMap<String, Arc<imp::Term>>>,
+}
+
+/// What to start on a new pseudo-terminal.
+pub(crate) struct Spawn {
+    pub cwd: String,
+    /// Run this with `$SHELL -lc` instead of an interactive login shell.
+    pub command: Option<String>,
+    pub env: Vec<(&'static str, String)>,
+    pub action: Option<TerminalAction>,
 }
 
 #[derive(Deserialize)]
@@ -65,7 +77,7 @@ struct ResizeParams {
     rows: u16,
 }
 
-fn size(cols: Option<u16>, rows: Option<u16>) -> (u16, u16) {
+pub(crate) fn size(cols: Option<u16>, rows: Option<u16>) -> (u16, u16) {
     (cols.unwrap_or(80).clamp(2, 1000), rows.unwrap_or(24).clamp(1, 500))
 }
 
@@ -88,7 +100,7 @@ impl Terminals {
                     return Err(ApiError::invalid(format!("{cwd} is not a directory")));
                 }
                 let (cols, rows) = size(cols, rows);
-                ok(self.open(cwd, cols, rows)?)
+                ok(self.open(Spawn { cwd, command: None, env: Vec::new(), action: None }, cols, rows)?)
             }
             "terminal.attach" => {
                 let AttachParams { id, cols, rows } = params(p)?;
@@ -125,14 +137,49 @@ impl Terminals {
                 self.get(&id)?.hang_up();
                 Ok(json!({}))
             }
+            "terminal.close" => {
+                let IdParams { id } = params(p)?;
+                let term = self.get(&id)?;
+                if term.info().exited_at.is_some() {
+                    self.forget(&id);
+                } else {
+                    term.close_on_exit();
+                }
+                Ok(json!({}))
+            }
             _ => Err(ApiError::unknown_method(method)),
         }
     }
 
-    /// Detach the connection from every terminal (the shells keep running).
+    /// Detach the connection from every terminal (the processes keep running).
     pub fn conn_closed(&self, conn_id: u64) {
         for term in self.terms.lock().values() {
             term.detach(conn_id);
+        }
+    }
+
+    /// Start `spawn.action` in `spawn.cwd`, replacing an earlier run of the same action for the
+    /// same base directory (stopped first, so it frees its port before the new one starts).
+    pub(crate) async fn run_action(self: &Arc<Self>, spawn: Spawn, cols: u16, rows: u16) -> ApiResult<TerminalInfo> {
+        let key = spawn.action.as_ref().ok_or_else(|| ApiError::internal("run_action without an action"))?;
+        let same = |a: &TerminalAction| a.project_id == key.project_id && a.action_id == key.action_id && a.base == key.base;
+        let earlier: Vec<Arc<imp::Term>> =
+            self.terms.lock().values().filter(|t| t.info().action.as_ref().is_some_and(same)).cloned().collect();
+        for term in earlier {
+            let id = term.info().id;
+            if term.info().exited_at.is_none() {
+                term.close_on_exit();
+                term.stop().await;
+            }
+            self.forget(&id);
+        }
+        self.open(spawn, cols, rows)
+    }
+
+    /// Drop a terminal from the list and tell every client.
+    fn forget(&self, id: &str) {
+        if self.terms.lock().remove(id).is_some() {
+            self.emitter.emit(events::TERMINAL_REMOVED, &json!({ "id": id }));
         }
     }
 
@@ -147,15 +194,21 @@ mod imp {
     use std::io;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::process::Stdio;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Weak};
+    use std::time::Duration;
 
     use coocoo_proto::util::{new_id, now_ms};
     use coocoo_proto::{ApiError, ApiResult, ConnSink, TerminalInfo, events};
     use parking_lot::Mutex;
     use serde_json::json;
     use tokio::io::unix::AsyncFd;
+    use tokio::sync::watch;
 
-    use super::{SCROLLBACK, SEND_TIMEOUT, Terminals};
+    use super::{SCROLLBACK, SEND_TIMEOUT, Spawn, Terminals};
+
+    /// How long a replaced action run gets to exit after SIGHUP before SIGKILL.
+    const STOP_GRACE: Duration = Duration::from_secs(5);
 
     pub(crate) struct Term {
         info: Mutex<TerminalInfo>,
@@ -165,6 +218,10 @@ mod imp {
         /// Serializes writers so concurrent `terminal.input` calls do not interleave.
         write_lock: tokio::sync::Mutex<()>,
         state: Mutex<State>,
+        /// Becomes `true` once the process was reaped (its pid may then be reused).
+        ended: watch::Sender<bool>,
+        /// Drop the terminal from the list when it ends, even an action run.
+        close_on_exit: AtomicBool,
     }
 
     #[derive(Default)]
@@ -201,6 +258,9 @@ mod imp {
         }
 
         pub(crate) async fn write(&self, mut data: &[u8]) -> ApiResult<()> {
+            if *self.ended.borrow() {
+                return Err(ApiError::conflict("the process in this terminal has ended"));
+            }
             let _guard = self.write_lock.lock().await;
             while !data.is_empty() {
                 let mut ready = self.master.writable().await?;
@@ -217,6 +277,9 @@ mod imp {
         }
 
         pub(crate) fn resize(&self, cols: u16, rows: u16) -> ApiResult<()> {
+            if *self.ended.borrow() {
+                return Ok(());
+            }
             let ws = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
             if unsafe { libc::ioctl(self.master.as_raw_fd(), libc::TIOCSWINSZ as _, &ws) } != 0 {
                 return Err(ApiError::internal(format!("resize: {}", io::Error::last_os_error())));
@@ -228,9 +291,29 @@ mod imp {
 
         /// SIGHUP to the shell's process group, as when a terminal window closes.
         pub(crate) fn hang_up(&self) {
-            // pid 0 would signal the daemon's own process group.
-            if self.pid > 0 {
-                unsafe { libc::kill(-self.pid, libc::SIGHUP) };
+            self.signal(libc::SIGHUP);
+        }
+
+        fn signal(&self, sig: libc::c_int) {
+            // pid 0 would signal the daemon's own process group; after the end the pid may
+            // belong to an unrelated process.
+            if self.pid > 0 && !*self.ended.borrow() {
+                unsafe { libc::kill(-self.pid, sig) };
+            }
+        }
+
+        pub(crate) fn close_on_exit(&self) {
+            self.close_on_exit.store(true, Ordering::Release);
+            self.hang_up();
+        }
+
+        /// Hang up and wait for the end; SIGKILL the group if it ignores the hangup.
+        pub(crate) async fn stop(&self) {
+            let mut ended = self.ended.subscribe();
+            self.hang_up();
+            if tokio::time::timeout(STOP_GRACE, ended.wait_for(|e| *e)).await.is_err() {
+                self.signal(libc::SIGKILL);
+                let _ = tokio::time::timeout(Duration::from_secs(2), ended.wait_for(|e| *e)).await;
             }
         }
 
@@ -316,17 +399,23 @@ mod imp {
     }
 
     impl Terminals {
-        pub(super) fn open(self: &Arc<Self>, cwd: String, cols: u16, rows: u16) -> ApiResult<TerminalInfo> {
+        pub(super) fn open(self: &Arc<Self>, spawn: Spawn, cols: u16, rows: u16) -> ApiResult<TerminalInfo> {
+            let Spawn { cwd, command: run, env, action } = spawn;
             let (master, slave) = openpty(cols, rows).map_err(|e| ApiError::internal(format!("cannot open a pty: {e}")))?;
             // SAFETY: the `OwnedFd` stays owned by the `AsyncFd` and is never replaced.
             let master = unsafe { AsyncFd::register(master) }.map_err(|e| ApiError::internal(format!("pty: {e}")))?;
             let shell = shell();
             let mut command = tokio::process::Command::new(&shell);
+            match &run {
+                // A login shell, so PATH from the profile (nvm, cargo, …) is there.
+                Some(run) => command.arg("-lc").arg(run),
+                None => command.arg("-l"),
+            };
             command
-                .arg("-l")
                 .current_dir(&cwd)
                 .env("TERM", "xterm-256color")
                 .env("COLORTERM", "truecolor")
+                .envs(env)
                 .stdin(Stdio::from(slave.try_clone()?))
                 .stdout(Stdio::from(slave.try_clone()?))
                 .stderr(Stdio::from(slave));
@@ -340,15 +429,28 @@ mod imp {
             }
             let mut child = command.spawn().map_err(|e| ApiError::internal(format!("cannot start {shell}: {e}")))?;
             let pid = child.id().map_or(0, |p| p as i32);
-            let info = TerminalInfo { id: new_id(), cwd, shell, cols, rows, created_at: now_ms() };
+            let info = TerminalInfo {
+                id: new_id(),
+                cwd,
+                shell,
+                cols,
+                rows,
+                created_at: now_ms(),
+                action,
+                exited_at: None,
+                exit_code: None,
+            };
             let term = Arc::new(Term {
                 info: Mutex::new(info.clone()),
                 master,
                 pid,
                 write_lock: tokio::sync::Mutex::new(()),
                 state: Mutex::new(State::default()),
+                ended: watch::Sender::new(false),
+                close_on_exit: AtomicBool::new(false),
             });
             self.terms.lock().insert(info.id.clone(), term.clone());
+            self.emitter.emit(events::TERMINAL_UPDATED, &info);
             // The slave copies were moved into the child's stdio and are closed here, so the
             // master reads EOF/EIO once the shell and everything it started have exited.
             drop(command);
@@ -356,12 +458,26 @@ mod imp {
             tokio::spawn(async move {
                 pump(&me, &term).await;
                 let code = child.wait().await.ok().and_then(|s| s.code());
+                term.ended.send_replace(true);
                 let Some(terminals) = me.upgrade() else { return };
-                let id = term.info.lock().id.clone();
-                terminals.terms.lock().remove(&id);
+                let info = {
+                    let mut info = term.info.lock();
+                    info.exited_at = Some(now_ms());
+                    info.exit_code = code;
+                    info.clone()
+                };
                 let watchers: Vec<ConnSink> = term.state.lock().watchers.drain().map(|(_, s)| s).collect();
                 for sink in watchers {
-                    sink.try_send_event(events::TERMINAL_EXIT, terminals.emitter.host_id(), &json!({ "id": id, "code": code }));
+                    sink.try_send_event(events::TERMINAL_EXIT, terminals.emitter.host_id(), &json!({ "id": info.id, "code": code }));
+                }
+                // An action's run stays for its exit code and output; shells go away.
+                if info.action.is_some() && !term.close_on_exit.load(Ordering::Acquire) {
+                    let current = terminals.terms.lock().get(&info.id).is_some_and(|t| Arc::ptr_eq(t, &term));
+                    if current {
+                        terminals.emitter.emit(events::TERMINAL_UPDATED, &info);
+                    }
+                } else {
+                    terminals.forget(&info.id);
                 }
             });
             Ok(info)
@@ -437,7 +553,7 @@ mod imp {
 
     use coocoo_proto::{ApiError, ApiResult, ConnSink, TerminalInfo};
 
-    use super::Terminals;
+    use super::{Spawn, Terminals};
 
     /// Never constructed: terminals need a Unix pty.
     pub(crate) enum Term {}
@@ -461,10 +577,16 @@ mod imp {
         pub(crate) fn hang_up(&self) {
             match *self {}
         }
+        pub(crate) fn close_on_exit(&self) {
+            match *self {}
+        }
+        pub(crate) async fn stop(&self) {
+            match *self {}
+        }
     }
 
     impl Terminals {
-        pub(super) fn open(self: &Arc<Self>, _cwd: String, _cols: u16, _rows: u16) -> ApiResult<TerminalInfo> {
+        pub(super) fn open(self: &Arc<Self>, _spawn: Spawn, _cols: u16, _rows: u16) -> ApiResult<TerminalInfo> {
             Err(ApiError::unavailable("terminals are only available on Linux and macOS hosts"))
         }
     }

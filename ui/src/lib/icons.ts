@@ -70,3 +70,8 @@ export { default as FileCode } from '@lucide/svelte/icons/file-code';
 export { default as ShieldCheck } from '@lucide/svelte/icons/shield-check';
 export { default as ShieldOff } from '@lucide/svelte/icons/shield-off';
 export { default as NotebookPen } from '@lucide/svelte/icons/notebook-pen';
+export { default as TestTube } from '@lucide/svelte/icons/test-tube';
+export { default as Rocket } from '@lucide/svelte/icons/rocket';
+export { default as Bug } from '@lucide/svelte/icons/bug';
+export { default as Package } from '@lucide/svelte/icons/package';
+export { default as Database } from '@lucide/svelte/icons/database';

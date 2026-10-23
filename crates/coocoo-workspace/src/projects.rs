@@ -14,14 +14,16 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::fs::expand;
-use crate::watch::{Queue, Watches};
-use crate::{Workspace, diff, fs, git, icon, watch};
+use crate::watch::{Kind, Queue, Watches};
+use crate::{Workspace, actions, diff, fs, git, icon, watch};
 
 #[derive(Default)]
 pub(crate) struct State {
     pub projects: Vec<Project>,
     /// Project id → git metadata paths currently watched for it.
     watched: HashMap<String, Vec<PathBuf>>,
+    /// Project id → paths watched for its actions file.
+    watched_actions: HashMap<String, Vec<PathBuf>>,
 }
 
 pub(crate) fn create(emitter: Emitter, paths: &Paths) -> Arc<Workspace> {
@@ -39,12 +41,14 @@ pub(crate) fn create(emitter: Emitter, paths: &Paths) -> Arc<Workspace> {
         project.host_id = emitter.host_id().to_owned();
         project.git = None;
         project.icon = None;
+        project.actions = Vec::new();
+        project.action_errors = Vec::new();
     }
     let ws = Arc::new(Workspace {
         emitter,
         data_dir: paths.data_dir.clone(),
         file,
-        state: Mutex::new(State { projects, watched: HashMap::new() }),
+        state: Mutex::new(State { projects, ..State::default() }),
         watches: Watches::new(),
         refresh_locks: Mutex::new(HashMap::new()),
         started: AtomicBool::new(false),
@@ -215,11 +219,11 @@ impl Workspace {
         }
         tokio::spawn(refresh_loop(Arc::downgrade(self), self.watches.queue()));
         for project in self.projects() {
-            self.watches.schedule(&project.id);
+            self.watches.schedule(&project.id, Kind::Git);
         }
     }
 
-    fn get(&self, id: &str) -> ApiResult<Project> {
+    pub(crate) fn get(&self, id: &str) -> ApiResult<Project> {
         self.state
             .lock()
             .projects
@@ -229,9 +233,12 @@ impl Workspace {
             .ok_or_else(|| ApiError::not_found(format!("project {id}")))
     }
 
-    /// Persist the registry (git info and icon are runtime state and not stored).
+    /// Persist the registry (git info, icon and actions are runtime state and not stored).
     fn save(&self, projects: &[Project]) -> ApiResult<()> {
-        let stored: Vec<Project> = projects.iter().map(|p| Project { git: None, icon: None, ..p.clone() }).collect();
+        let stored: Vec<Project> = projects
+            .iter()
+            .map(|p| Project { git: None, icon: None, actions: Vec::new(), action_errors: Vec::new(), ..p.clone() })
+            .collect();
         write_json_atomic(&self.file, &stored).map_err(ApiError::from)
     }
 
@@ -266,6 +273,8 @@ impl Workspace {
             git: None,
             dev_urls: Vec::new(),
             icon: None,
+            actions: Vec::new(),
+            action_errors: Vec::new(),
         };
         {
             let mut state = self.state.lock();
@@ -302,7 +311,7 @@ impl Workspace {
     }
 
     fn remove(&self, id: &str) -> ApiResult<()> {
-        let watched = {
+        let (git_paths, action_paths) = {
             let mut state = self.state.lock();
             let before = state.projects.len();
             state.projects.retain(|p| p.id != id);
@@ -310,9 +319,10 @@ impl Workspace {
                 return Err(ApiError::not_found(format!("project {id}")));
             }
             self.save(&state.projects)?;
-            state.watched.remove(id).unwrap_or_default()
+            (state.watched.remove(id).unwrap_or_default(), state.watched_actions.remove(id).unwrap_or_default())
         };
-        self.watches.remove(id, &watched);
+        self.watches.remove(id, Kind::Git, &git_paths);
+        self.watches.remove(id, Kind::Actions, &action_paths);
         self.refresh_locks.lock().remove(id);
         self.emitter.emit(events::PROJECT_REMOVED, &json!({ "id": id }));
         Ok(())
@@ -322,12 +332,13 @@ impl Workspace {
         self.refresh_locks.lock().entry(id.to_owned()).or_default().clone()
     }
 
-    /// Recompute a project's git info and icon, re-sync its watches and emit when it changed.
+    /// Recompute a project's git info, icon and actions, re-sync its watches and emit when it
+    /// changed.
     async fn refresh(&self, id: &str, emit: Emit) -> ApiResult<Project> {
         let lock = self.refresh_lock(id);
         let _guard = lock.lock().await;
         let path = PathBuf::from(self.get(id)?.path);
-        let (info, found_icon) = tokio::join!(git::info(&path), icon::find(&path));
+        let (info, found_icon, loaded) = tokio::join!(git::info(&path), icon::find(&path), actions::load(&path));
         let targets = match &info {
             Some(_) => match git::git_dirs(&path).await {
                 Some((git_dir, common)) => watch::targets(&git_dir, &common),
@@ -336,45 +347,86 @@ impl Workspace {
             None => Vec::new(),
         };
 
-        let (project, changed, old_watch) = {
+        let (project, changed) = {
             let mut state = self.state.lock();
             let project = state
                 .projects
                 .iter_mut()
                 .find(|p| p.id == id)
                 .ok_or_else(|| ApiError::not_found(format!("project {id}")))?;
-            let changed = !same_json(&project.git, &info) || project.icon != found_icon;
+            let changed = !same_json(&project.git, &info)
+                || project.icon != found_icon
+                || project.actions != loaded.actions
+                || project.action_errors != loaded.errors;
             project.git = info;
             project.icon = found_icon;
-            let project = project.clone();
-            let current = state.watched.get(id);
-            let wanted: Vec<&PathBuf> = targets.iter().map(|(p, _)| p).collect();
-            let old_watch = match current {
-                Some(cur) if cur.iter().eq(wanted.iter().copied()) => None,
-                Some(_) => state.watched.remove(id),
-                None if targets.is_empty() => None,
-                None => Some(Vec::new()),
-            };
-            (project, changed, old_watch)
+            project.actions = loaded.actions;
+            project.action_errors = loaded.errors;
+            (project.clone(), changed)
         };
-
-        if let Some(old) = old_watch {
-            self.watches.remove(id, &old);
-            let watched = self.watches.add(id, &targets);
-            let mut state = self.state.lock();
-            if state.projects.iter().any(|p| p.id == id) {
-                state.watched.insert(id.to_owned(), targets.into_iter().map(|(p, _)| p).collect());
-            } else {
-                drop(state);
-                // Removed while we were refreshing.
-                self.watches.remove(id, &watched);
-            }
-        }
+        self.sync_watches(id, Kind::Git, targets);
+        self.sync_watches(id, Kind::Actions, watch::action_targets(&path));
 
         if changed || emit == Emit::Always {
             self.emitter.emit(events::PROJECT_UPDATED, &project);
         }
         Ok(project)
+    }
+
+    /// Re-read only `.coocoo/actions.toml` (it changed on disk) and emit when that changed.
+    async fn reload_actions(&self, id: &str) -> ApiResult<()> {
+        let lock = self.refresh_lock(id);
+        let _guard = lock.lock().await;
+        let path = PathBuf::from(self.get(id)?.path);
+        let loaded = actions::load(&path).await;
+        let project = {
+            let mut state = self.state.lock();
+            let project = state
+                .projects
+                .iter_mut()
+                .find(|p| p.id == id)
+                .ok_or_else(|| ApiError::not_found(format!("project {id}")))?;
+            let changed = project.actions != loaded.actions || project.action_errors != loaded.errors;
+            project.actions = loaded.actions;
+            project.action_errors = loaded.errors;
+            changed.then(|| project.clone())
+        };
+        // `.coocoo` may have just appeared or gone.
+        self.sync_watches(id, Kind::Actions, watch::action_targets(&path));
+        if let Some(project) = project {
+            self.emitter.emit(events::PROJECT_UPDATED, &project);
+        }
+        Ok(())
+    }
+
+    /// Make the project's watches of `kind` match `targets`.
+    fn sync_watches(&self, id: &str, kind: Kind, targets: Vec<watch::Target>) {
+        fn paths(state: &mut State, kind: Kind) -> &mut HashMap<String, Vec<PathBuf>> {
+            match kind {
+                Kind::Git => &mut state.watched,
+                Kind::Actions => &mut state.watched_actions,
+            }
+        }
+        let old = {
+            let mut state = self.state.lock();
+            let map = paths(&mut state, kind);
+            match map.get(id) {
+                Some(cur) if cur.iter().eq(targets.iter().map(|t| &t.path)) => return,
+                Some(_) => map.remove(id).unwrap_or_default(),
+                None if targets.is_empty() => return,
+                None => Vec::new(),
+            }
+        };
+        self.watches.remove(id, kind, &old);
+        let watched = self.watches.add(id, kind, &targets);
+        let mut state = self.state.lock();
+        if state.projects.iter().any(|p| p.id == id) {
+            paths(&mut state, kind).insert(id.to_owned(), targets.into_iter().map(|t| t.path).collect());
+        } else {
+            drop(state);
+            // Removed while we were refreshing.
+            self.watches.remove(id, kind, &watched);
+        }
     }
 
     fn git_project(&self, id: &str) -> ApiResult<Project> {
@@ -397,7 +449,7 @@ impl Workspace {
             .map(|p| p.id.clone())
             .collect();
         for id in ids {
-            self.watches.schedule(&id);
+            self.watches.schedule(&id, Kind::Git);
         }
     }
 
@@ -601,10 +653,14 @@ fn same_json<T: serde::Serialize>(a: &T, b: &T) -> bool {
 async fn refresh_loop(ws: Weak<Workspace>, queue: Queue) {
     while let Some(due) = queue.next_due().await {
         let Some(ws) = ws.upgrade() else { return };
-        for id in due {
+        for (id, kind) in due {
             let ws = Arc::clone(&ws);
             tokio::spawn(async move {
-                if let Err(err) = ws.refresh(&id, Emit::IfChanged).await
+                let result = match kind {
+                    Kind::Git => ws.refresh(&id, Emit::IfChanged).await.map(drop),
+                    Kind::Actions => ws.reload_actions(&id).await,
+                };
+                if let Err(err) = result
                     && err.code != "not_found"
                 {
                     tracing::debug!("project {id} refresh failed: {err}");

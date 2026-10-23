@@ -17,6 +17,7 @@ import type {
   ProviderUsage,
   ResultOf,
   SlashCommand,
+  TerminalInfo,
   TimelineItem,
   UiRequest,
 } from './protocol';
@@ -157,6 +158,8 @@ export class Fleet {
   commands = $state<Record<string, SlashCommand[]>>({});
   /** `agents.usage` per `host:provider`. */
   usage = $state<Record<string, ProviderUsage>>({});
+  /** Terminals per `host:id` (shells and action runs), kept current by `terminal.updated/removed`. */
+  terminals = $state<Record<string, TerminalInfo>>({});
   /** Local receipt time per `usage` key (hosts' clocks may differ). */
   #usageAt = new Map<string, number>();
   #usageLoads = new Map<string, Promise<ProviderUsage>>();
@@ -247,6 +250,17 @@ export class Fleet {
 
   agentsOf(host: string, projectId: string): AgentSummary[] {
     return this.agentList.filter((a) => a.hostId === host && a.projectId === projectId);
+  }
+
+  /** The run of project action `actionId` started for directory `base` on `host`, if any. */
+  actionRun(host: string, projectId: string, actionId: string, base: string): TerminalInfo | undefined {
+    let found: TerminalInfo | undefined;
+    for (const [k, t] of Object.entries(this.terminals)) {
+      const a = t.action;
+      if (!a || a.projectId !== projectId || a.actionId !== actionId || a.base !== base || !k.startsWith(`${host}:`)) continue;
+      if (!found || t.createdAt > found.createdAt) found = t;
+    }
+    return found;
   }
 
   childrenOf(host: string, id: string): AgentSummary[] {
@@ -389,10 +403,11 @@ export class Fleet {
   }
 
   async #loadHost(host: string) {
-    const [projects, agents, profiles] = await Promise.all([
+    const [projects, agents, profiles, terminals] = await Promise.all([
       this.call('projects.list', undefined, host).catch(() => null),
       this.call('agents.list', undefined, host).catch(() => null),
       this.call('browser.profiles', undefined, host).catch(() => null),
+      this.call('terminal.list', undefined, host).catch(() => null),
     ]);
     if (projects) this.#replace(this.projects, host, projects, (p) => p.id);
     if (agents) {
@@ -403,6 +418,7 @@ export class Fleet {
       for (const a of agents) if (a.pendingRequests === 0) delete this.requests[key(host, a.id)];
     }
     if (profiles) this.#replace(this.profiles, host, profiles, (p) => p.id);
+    if (terminals) this.#replace(this.terminals, host, terminals, (t) => t.id);
     this.call('stats.get', undefined, host)
       .then((s) => (this.stats[host] = s))
       .catch(() => {});
@@ -421,7 +437,7 @@ export class Fleet {
 
   /** Drops data of hosts that are gone from the fleet. */
   #pruneHosts() {
-    for (const store of [this.projects, this.agents, this.profiles, this.requests, this.details] as Record<string, unknown>[]) {
+    for (const store of [this.projects, this.agents, this.profiles, this.requests, this.details, this.terminals] as Record<string, unknown>[]) {
       for (const k of Object.keys(store)) if (!this.hosts[splitKey(k)[0]]) delete store[k];
     }
   }
@@ -530,6 +546,12 @@ export class Fleet {
     });
     c.on('agent.commands', ({ agentId, commands }, host) => {
       this.commands[key(host, agentId)] = commands;
+    });
+    c.on('terminal.updated', (t, host) => {
+      this.terminals[key(host, t.id)] = t;
+    });
+    c.on('terminal.removed', ({ id }, host) => {
+      delete this.terminals[key(host, id)];
     });
     c.on('system.resync', () => void this.#hello());
   }

@@ -96,9 +96,14 @@ pub mod events {
     pub const BROWSER_CONSOLE: &str = "browser.console";
     /// `{ "id": String, "data": String }` — terminal output; sent only to attached connections.
     pub const TERMINAL_OUTPUT: &str = "terminal.output";
-    /// `{ "id": String, "code": i32? }` — the terminal's shell exited; sent only to attached
+    /// `{ "id": String, "code": i32? }` — the terminal's process exited; sent only to attached
     /// connections.
     pub const TERMINAL_EXIT: &str = "terminal.exit";
+    /// `TerminalInfo` — a terminal was opened or its process ended (broadcast, so every client
+    /// sees which actions run without attaching).
+    pub const TERMINAL_UPDATED: &str = "terminal.updated";
+    /// `{ "id": String }` — a terminal is gone (shell exited, action run closed or replaced).
+    pub const TERMINAL_REMOVED: &str = "terminal.removed";
     /// `{}` — the connection lagged behind the event stream; the client must refetch state.
     pub const SYSTEM_RESYNC: &str = "system.resync";
 }

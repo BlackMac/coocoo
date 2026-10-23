@@ -16,6 +16,15 @@
   const tab = $derived(tabs.find((t) => t.targetId === selected) ?? tabs.find((t) => t.active) ?? tabs[0]);
   const target = $derived(tab?.targetId);
 
+  // A tab a URL action just opened is shown at once.
+  $effect(() => {
+    const f = ui.browserFocus;
+    if (f && f.host === host && f.profile === profileId) {
+      selected = f.targetId;
+      ui.browserFocus = null;
+    }
+  });
+
   let url = $state('');
   let urlFocused = $state(false);
   let design = $state(false);

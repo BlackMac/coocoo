@@ -1,9 +1,10 @@
 //! Projects registry, git (status, diff, worktrees, commit, merge), filesystem browsing, host
-//! resource stats and terminals. Handles the `projects.*`, `git.*`, `fs.*`, `stats.*` and
-//! `terminal.*` methods.
+//! resource stats, terminals and project actions. Handles the `projects.*`, `git.*`, `fs.*`,
+//! `stats.*`, `terminal.*` and `actions.*` methods.
 //!
 //! git is driven through the `git` CLI (no libgit2): smaller binary, exact user semantics.
 
+mod actions;
 mod diff;
 mod fs;
 mod git;

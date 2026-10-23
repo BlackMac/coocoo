@@ -17,8 +17,10 @@ use coocoo_core::Daemon;
 use coocoo_proto::Paths;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::webview::NewWindowResponse;
 use tauri::{App, AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent};
 use tauri_plugin_notification::NotificationExt;
+use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_window_state::StateFlags;
 
 use crate::backend::Backend;
@@ -49,6 +51,7 @@ fn main() {
                 .build(),
         )
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(setup)
         .on_window_event(on_window_event)
         .build(tauri::generate_context!())
@@ -89,6 +92,19 @@ fn create_main_window(app: &AppHandle, backend: &Backend) -> tauri::Result<()> {
         // Shown once the window-state plugin has applied the saved geometry.
         .visible(false)
         .initialization_script(format!("window.__COOCOO__ = {bootstrap};"))
+        // The app has one window: links with target=_blank (chat links, URL actions, release
+        // downloads) and window.open go to the system browser.
+        .on_new_window({
+            let app = app.clone();
+            move |url, _features| {
+                if matches!(url.scheme(), "http" | "https" | "mailto")
+                    && let Err(err) = app.opener().open_url(url.as_str(), None::<&str>)
+                {
+                    tracing::warn!("cannot open {url}: {err}");
+                }
+                NewWindowResponse::Deny
+            }
+        })
         .build()?;
     // The UI is a single document fed over WebSocket: WebKit's page/resource caches only hold
     // memory. The document-viewer model disables them.
