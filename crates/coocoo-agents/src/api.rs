@@ -1,6 +1,7 @@
 //! `agents.*` request handlers.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use coocoo_proto::error::{ok, params};
@@ -270,6 +271,7 @@ impl Agents {
     }
 
     async fn create(self: &Arc<Self>, p: CreateParams) -> ApiResult<AgentSummary> {
+        self.refuse_while_draining()?;
         let orchestrator = self.orch()?;
         let mut project_id = p.project_id.filter(|s| !s.is_empty());
         let project: Option<Project> = match &project_id {
@@ -387,6 +389,7 @@ impl Agents {
             Some(other) => return Err(ApiError::invalid(format!("unknown mode `{other}`"))),
         };
         let agent = self.get(&p.id)?;
+        self.refuse_while_draining()?;
         // A builtin that makes no sense through Coocoo: explain it in the chat, wake nothing.
         if let Some((command, reason)) = crate::slash::refused(p.message.trim_start()) {
             if agent.state.lock().life == Life::Stopped {
@@ -420,6 +423,14 @@ impl Agents {
     /// Prompt (or queue a follow-up for) agent `id` with plain text.
     pub(crate) async fn prompt_text(self: &Arc<Self>, id: &str, message: String) -> ApiResult<Value> {
         self.prompt(PromptParams { id: id.to_owned(), message, mode: None, images: Vec::new() }).await
+    }
+
+    /// During a restart's drain no new turn may start ([`Agents::drain`]).
+    fn refuse_while_draining(&self) -> ApiResult<()> {
+        if self.draining.load(Ordering::Acquire) {
+            return Err(ApiError::unavailable("Coocoo is restarting; send this again once it is back"));
+        }
+        Ok(())
     }
 
     async fn abort(&self, p: IdParams) -> ApiResult<Value> {

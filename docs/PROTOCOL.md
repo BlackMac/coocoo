@@ -104,8 +104,8 @@ keeps running while nobody is attached and ends when the shell exits or on `term
 |---|---|---|
 | `agents.list` | `{ projectId? }` | `AgentSummary[]` |
 | `agents.get` | `{ id }` | `AgentDetail` |
-| `agents.create` | `{ projectId?, cwd?, title?, prompt?, worktree?: bool \| { branch?, base? }, model?, thinking?, parentId? }` | `AgentSummary` — one of `projectId`/`cwd` required |
-| `agents.prompt` | `{ id, message, mode?: "auto" \| "steer" \| "followUp", images?: ImageInput[] }` | `{}` — `auto`: prompt when idle, follow-up when running; wakes hibernated agents |
+| `agents.create` | `{ projectId?, cwd?, title?, prompt?, worktree?: bool \| { branch?, base? }, model?, thinking?, parentId? }` | `AgentSummary` — one of `projectId`/`cwd` required; `unavailable` while the daemon drains for a restart |
+| `agents.prompt` | `{ id, message, mode?: "auto" \| "steer" \| "followUp", images?: ImageInput[] }` | `{}` — `auto`: prompt when idle, follow-up when running; wakes hibernated agents; `unavailable` while the daemon drains for a restart (running agents are asked to pause, see ARCHITECTURE.md) |
 | `agents.abort` | `{ id }` | `{}` |
 | `agents.respond` | `{ id, requestId, response }` | `{}` — see `UiRequest` docs for `response` shapes |
 | `agents.timeline` | `{ id, before?: seq, limit? (200) }` | `TimelinePage` |

@@ -91,6 +91,12 @@ fn serve(paths: Paths, listen: Option<SocketAddr>) -> anyhow::Result<ExitCode> {
             eprintln!("loopback only — run `coocoo pair` for phone/LAN access options");
         }
         wait_for_signal().await;
+        // A stop is usually a restart (redeploy): let running agents pause first. A second
+        // signal stops right away.
+        tokio::select! {
+            () = daemon.drain() => {}
+            () = wait_for_signal() => tracing::warn!("second signal: stopping without waiting for agents"),
+        }
         daemon.shutdown().await;
         anyhow::Ok(())
     })?;

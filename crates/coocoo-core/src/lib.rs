@@ -118,6 +118,8 @@ impl Daemon {
                 tracing::error!("http server failed: {err}");
             }
         });
+        // Agents a previous daemon paused or cut off for its restart learn that it is done.
+        app.agents.resume_after_restart();
         tracing::info!(%local_addr, host = %host_id, "coocoo daemon listening");
 
         Ok(Arc::new(Daemon { local_addr, host_id, token, emitter, app, server: Mutex::new(Some(server)) }))
@@ -134,6 +136,14 @@ impl Daemon {
         let mut config = self.app.config.lock().clone();
         config.peers = peers;
         config
+    }
+
+    /// Before a restart (signal to `coocoo serve`): ask agents in a turn to pause and wait for
+    /// them (bounded by `agents.restartGraceSecs`); they are told on the next start that the
+    /// restart is done. Follow with [`Daemon::shutdown`].
+    pub async fn drain(&self) {
+        tracing::info!("restart: asking running agents to pause");
+        self.app.agents.drain().await;
     }
 
     /// Graceful stop: peers, agents (sessions stay resumable), browsers, server.

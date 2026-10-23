@@ -45,6 +45,14 @@ driven by the official Rust client (vendored in `crates/omp-rpc`):
 - **Lifecycle:** status follows `prompt_result`/`session_settled`, not just `agent_end`. Idle
   agents hibernate (process exits, session kept) and resume with `--resume <sessionFile>` on the
   next prompt. A crashing omp process only marks its own agent as errored.
+- **Restarts:** SIGTERM/Ctrl+C to `coocoo serve` (a redeploy, e.g. from an agent working on
+  Coocoo itself) first drains: agents in a turn are steered to pause and end their turn, new
+  prompts and agents are refused, and the daemon waits until those turns ended (at most
+  `agents.restartGraceSecs`, default 60 s; agents waiting for a user answer are not waited for; a
+  second signal stops at once). Agents that paused or were cut off are marked in `meta.json`, and
+  the next start prompts them that the restart is done so they continue. Under systemd this needs
+  `KillMode=mixed` (the unit Coocoo installs over SSH sets it); with the default, systemd sends
+  SIGTERM to the omp processes too. The desktop app's Quit stops without draining.
 
 ## Resource discipline
 

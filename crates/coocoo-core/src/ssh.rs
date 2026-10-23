@@ -211,6 +211,8 @@ After=network-online.target
 ExecStart=$BIN serve{listen}
 Restart=on-failure
 RestartSec=3
+# SIGTERM to the daemon only: on a restart it lets running agents pause, then stops them itself.
+KillMode=mixed
 
 [Install]
 WantedBy=default.target

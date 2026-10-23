@@ -7,11 +7,14 @@
 //! - Each live process has one dedicated thread that maps its events to timeline items and
 //!   status changes ([`mapper`]); nothing polls while agents are idle.
 //! - State survives daemon restarts: `<data_dir>/agents/<id>/meta.json` + `timeline.jsonl`.
+//!   A restarting daemon lets running agents pause first and tells them when it is back
+//!   ([`restart`]).
 
 mod api;
 mod board;
 mod mapper;
 mod process;
+mod restart;
 mod sandbox;
 mod slash;
 mod state;
@@ -36,7 +39,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::runtime::Handle;
 
-use crate::state::{Agent, Life, Meta, State};
+use crate::state::{Agent, Life, Meta, RestartMark, State};
 
 /// `[agents]` section of `config.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,11 +55,20 @@ pub struct AgentsConfig {
     pub default_thinking: Option<String>,
     /// Extra CLI args appended to every `omp --mode rpc` invocation.
     pub extra_args: Vec<String>,
+    /// On a restart, how long running agents get to pause before their processes are stopped.
+    pub restart_grace_secs: u64,
 }
 
 impl Default for AgentsConfig {
     fn default() -> Self {
-        Self { omp_path: None, hibernate_after_secs: 900, default_model: None, default_thinking: None, extra_args: Vec::new() }
+        Self {
+            omp_path: None,
+            hibernate_after_secs: 900,
+            default_model: None,
+            default_thinking: None,
+            extra_args: Vec::new(),
+            restart_grace_secs: 60,
+        }
     }
 }
 
@@ -80,6 +92,8 @@ pub struct Agents {
     usage: tokio::sync::Mutex<HashMap<String, (Instant, ProviderUsage)>>,
     /// The hibernation sweep task is running.
     hibernator: AtomicBool,
+    /// A restart is draining the agents ([`Agents::drain`]): new prompts and agents are refused.
+    draining: AtomicBool,
     /// `<data_dir>/boards`: one Kanban board per project.
     boards_dir: PathBuf,
     /// Boards loaded so far, by project id.
@@ -111,6 +125,7 @@ impl Agents {
             models: tokio::sync::Mutex::new(None),
             usage: tokio::sync::Mutex::new(HashMap::new()),
             hibernator: AtomicBool::new(false),
+            draining: AtomicBool::new(false),
             boards_dir,
             boards: parking_lot::Mutex::new(HashMap::new()),
         })
@@ -141,8 +156,11 @@ impl Agents {
             .collect()
     }
 
-    /// Persist state and stop every omp process (sessions stay resumable).
+    /// Persist state and stop every omp process (sessions stay resumable). After
+    /// [`Agents::drain`], agents still in a turn or dialog are marked to be told on the next
+    /// start that the restart cut them off.
     pub async fn shutdown(&self) {
+        let draining = self.draining.load(Ordering::Acquire);
         let agents: Vec<Arc<Agent>> = self.agents.read().values().cloned().collect();
         let mut teardown = Vec::new();
         for agent in agents {
@@ -150,6 +168,9 @@ impl Agents {
                 let mut st = agent.state.lock();
                 if !matches!(st.life, Life::Live | Life::Starting) {
                     continue;
+                }
+                if draining && (st.busy() || !st.requests.is_empty()) {
+                    st.restart = Some(RestartMark::Interrupted);
                 }
                 st.take_process(Life::Hibernated)
             };

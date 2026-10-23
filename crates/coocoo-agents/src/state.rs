@@ -44,6 +44,16 @@ pub(crate) struct PendingPrompt {
     pub behavior: StreamingBehavior,
 }
 
+/// Why an agent is told that the daemon is back once it starts again (`meta.json`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum RestartMark {
+    /// Asked to pause before a restart; it ended its turn in time.
+    Paused,
+    /// Its turn (or open dialog) was cut off by the restart.
+    Interrupted,
+}
+
 /// `meta.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -59,6 +69,9 @@ pub(crate) struct Meta {
     /// Last slash-command catalog omp reported (offered while the agent sleeps).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commands: Option<Vec<SlashCommand>>,
+    /// Set by a draining shutdown; consumed by the next start ([`crate::Agents::resume_after_restart`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart: Option<RestartMark>,
 }
 
 pub(crate) struct State {
@@ -82,6 +95,7 @@ pub(crate) struct State {
     pub idle_since: Instant,
     pub pending: Vec<PendingPrompt>,
     pub deleted: bool,
+    pub restart: Option<RestartMark>,
 }
 
 impl State {
@@ -104,6 +118,7 @@ impl State {
             idle_since: Instant::now(),
             pending: Vec::new(),
             deleted: false,
+            restart: None,
         };
         state.sync();
         state
@@ -121,6 +136,7 @@ impl State {
         state.todos = meta.todos;
         state.context_window = meta.context_window;
         state.commands = meta.commands;
+        state.restart = meta.restart;
         state.sync();
         state
     }
@@ -132,6 +148,7 @@ impl State {
             todos: self.todos.clone(),
             context_window: self.context_window,
             commands: self.commands.clone(),
+            restart: self.restart,
         }
     }
 
@@ -442,7 +459,7 @@ mod tests {
         ] {
             let mut s = summary(before);
             s.pending_requests = 2;
-            let st = State::from_meta(Meta { summary: s, last_output: None, todos: Vec::new(), context_window: None, commands: None });
+            let st = State::from_meta(Meta { summary: s, last_output: None, todos: Vec::new(), context_window: None, commands: None, restart: None });
             assert_eq!(st.summary.status, after);
             assert_eq!(st.summary.pending_requests, 0);
         }

@@ -120,6 +120,7 @@ listen = "127.0.0.1:7421"
 
 [agents]
 hibernateAfterSecs = 900      # 0 = never
+restartGraceSecs = 60        # on a restart, how long running agents get to pause
 defaultModel = "anthropic/claude-opus-5-5"
 extraArgs = []
 
