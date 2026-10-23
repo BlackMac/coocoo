@@ -20,6 +20,8 @@
   const target = $derived(g ? pushTarget(g) : undefined);
   /** Other agents in this checkout that may still commit. */
   const others = $derived(g && a ? g.shared.filter((x) => x.id !== a.id && isWorking(x)) : []);
+  /** The agent itself is mid-turn and may still commit: the push waits for its answer. */
+  const answering = $derived(!!a && isWorking(a));
   const busy = $derived(!!g && !!pushing[wtKey(g)]);
 
   let commits = $state<CommitInfo[] | null>(null);
@@ -73,6 +75,12 @@
       </div>
     {/if}
   {/if}
+  {#if answering}
+    <div class="warnbox">
+      <TriangleAlert size={13} />
+      <span><b>{a?.title}</b> is answering right now. Push once it is done.</span>
+    </div>
+  {/if}
   {#if others.length}
     <div class="warnbox">
       <TriangleAlert size={13} />
@@ -85,7 +93,7 @@
   {/if}
   {#snippet footer()}
     <button class="btn" onclick={() => (ui.dialog = null)}>Cancel</button>
-    <button class="btn primary" disabled={!g || !commits || busy || (!commits.length && !!g.wt.upstream)} onclick={confirm}>
+    <button class="btn primary" disabled={!g || !commits || busy || answering || (!commits.length && !!g.wt.upstream)} onclick={confirm}>
       {#if busy}<span class="spinner"></span>{/if}Push{commits?.length ? ` ${plural(commits.length, 'commit')}` : ''}
     </button>
   {/snippet}
