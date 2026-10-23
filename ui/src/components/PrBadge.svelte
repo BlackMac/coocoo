@@ -45,8 +45,8 @@
     color: var(--green);
   }
   [data-sev='pending'] {
-    background: var(--amber-soft);
-    color: var(--amber);
+    background: var(--accent-soft);
+    color: var(--accent-text);
   }
   [data-sev='bad'] {
     background: var(--red-soft);

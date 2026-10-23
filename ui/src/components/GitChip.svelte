@@ -329,14 +329,18 @@
                 <span class="pill">closed</span>
               {:else}
                 {#if pr.draft}<span class="pill">draft</span>{/if}
+                {@const running = !pr.checks.failed && pr.checks.pending > 0}
                 {#if pr.checks.total}
-                  <span class="pill" class:red={pr.checks.failed > 0} class:amber={!pr.checks.failed && pr.checks.pending > 0} class:green={!pr.checks.failed && !pr.checks.pending}>
-                    checks {pr.checks.passed}/{pr.checks.total}
+                  <span class="pill" class:red={pr.checks.failed > 0} class:accent={running} class:green={!pr.checks.failed && !pr.checks.pending}>
+                    {running ? `◷ checks running ${pr.checks.passed}/${pr.checks.total}` : `checks ${pr.checks.passed}/${pr.checks.total}`}
                   </span>
                 {/if}
                 {#if pr.review}<span class="pill {REVIEW[pr.review][1]}">{REVIEW[pr.review][0]}</span>{/if}
-                {@const ms = MERGE_STATE[pr.mergeState] ?? [pr.mergeState.toLowerCase(), '']}
-                <span class="pill {ms[1]}">{ms[0]}</span>
+                <!-- GitHub reports UNSTABLE/BLOCKED while checks run; the checks pill already says so. -->
+                {#if !(running && (pr.mergeState === 'UNSTABLE' || pr.mergeState === 'BLOCKED'))}
+                  {@const ms = MERGE_STATE[pr.mergeState] ?? [pr.mergeState.toLowerCase(), '']}
+                  <span class="pill {ms[1]}">{ms[0]}</span>
+                {/if}
               {/if}
             </dd>
             {#if prOpen && pr.checks.failed}
@@ -345,7 +349,7 @@
                 {#each pr.checks.failing as c (c.name)}
                   <span><span class="bad">✗</span><span class="ellipsis">{c.name}</span>{#if c.url}{@const url = c.url}<button class="link" onclick={() => openExternal(url)}>details ↗</button>{/if}</span>
                 {/each}
-                {#if pr.checks.pending}<span><span class="warn">◷</span><span class="faint">{pr.checks.pending} running</span></span>{/if}
+                {#if pr.checks.pending}<span><span class="running">◷</span><span class="faint">{pr.checks.pending} running</span></span>{/if}
                 {#if pr.checks.passed}<span><span class="ok">✓</span><span class="faint">{pr.checks.passed} {pr.checks.failing.length ? 'more ' : ''}passed</span></span>{/if}
               </dd>
             {/if}
@@ -507,6 +511,9 @@
   }
   .warn {
     color: var(--amber);
+  }
+  .running {
+    color: var(--accent-text);
   }
   .bad {
     color: var(--red);
