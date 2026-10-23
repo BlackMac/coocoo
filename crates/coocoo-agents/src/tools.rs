@@ -286,6 +286,12 @@ impl ToolEnv {
                     if let Some(agent) = c.get("agentId").and_then(Value::as_str) {
                         card["agent"] = if agent == self.agent_id { json!("you") } else { c.get("agentTitle").cloned().unwrap_or(json!(agent)) };
                     }
+                    if c.get("refining") == Some(&Value::Bool(true)) {
+                        card["refining"] = json!(true);
+                    }
+                    if c.get("refinement").is_some_and(|r| !r.is_null()) {
+                        card["refined"] = json!(true);
+                    }
                     card
                 })
                 .collect();
@@ -323,6 +329,20 @@ impl ToolEnv {
         }
         let done = self.call(None, "boards.cardDone", params)?;
         Ok(text(&json!({ "column": "done", "commit": done.get("commit"), "commitSkipped": done.get("commitSkipped") })))
+    }
+
+    fn kanban_refine(&self, args: Map<String, Value>) -> ToolResult {
+        let attachments: Vec<Value> = args.get("attachments").and_then(Value::as_array).cloned().unwrap_or_default();
+        let params = json!({
+            "projectId": self.project_id()?,
+            "cardId": required(&args, "cardId")?,
+            "agentId": self.agent_id,
+            "text": required(&args, "refinement")?,
+            "attachments": attachments,
+        });
+        let card = self.call(None, "boards.refinementSave", params)?;
+        let names: Vec<&Value> = card.pointer("/refinement/attachments").and_then(Value::as_array).into_iter().flatten().map(|a| &a["name"]).collect();
+        Ok(text(&json!({ "cardId": card["id"], "column": card["column"], "attachments": names })))
     }
 
     /// An importer as the agent sees it; `script` only on request (it can be long).
@@ -598,6 +618,22 @@ pub(crate) fn host_tools(agents: &Arc<Agents>, agent_id: &str, orchestrator: Arc
                 "additionalProperties": false
             }),
             |env, args, _| env.kanban_done(args),
+        ),
+        tool(
+            "kanban_refine",
+            "Refine card",
+            "Attach your refinement to a Kanban card you were asked to refine: the plan agreed before the work starts (Markdown: goal, behaviour, approach, open questions and risks), shown in the chat and on the card, and handed to whoever implements it. Optionally attach UI mocks: paths of image (png, jpg, gif, webp, svg) or self-contained HTML files, relative to your working directory or absolute; they are copied. Calling it again replaces the refinement and its attachments.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "cardId": { "type": "string" },
+                    "refinement": { "type": "string", "description": "Markdown." },
+                    "attachments": { "type": "array", "items": { "type": "string" }, "maxItems": 10, "description": "File paths of mocks (images, HTML), at most 5 MiB each." }
+                },
+                "required": ["cardId", "refinement"],
+                "additionalProperties": false
+            }),
+            |env, args, _| env.kanban_refine(args),
         ),
         tool(
             "kanban_importers",

@@ -537,7 +537,7 @@ pub struct Card {
     /// Commit made when the agent finished the card.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit: Option<CommitInfo>,
-    /// Agent the card was handed to (`boards.cardStart`) or that finished it.
+    /// Agent the card was handed to (`boards.cardStart`/`boards.cardRefine`) or that finished it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
     /// That agent's title at the time, for when it has been deleted since.
@@ -552,6 +552,37 @@ pub struct Card {
     /// Why the last webhook call failed; cleared by the next successful one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hook_error: Option<String>,
+    /// Its agent is working out a refinement (`boards.cardRefine`) instead of implementing it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub refining: bool,
+    /// The latest refinement: the plan agreed before the work starts, handed to the agent that
+    /// implements the card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refinement: Option<Refinement>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Refinement {
+    /// Markdown.
+    pub text: String,
+    /// UI mocks and other files (images, HTML); fetch with `boards.attachment`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<Attachment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_title: Option<String>,
+    pub at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Attachment {
+    /// File name, unique within the refinement.
+    pub name: String,
+    pub mime: String,
+    pub size: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

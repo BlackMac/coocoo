@@ -768,6 +768,7 @@ fn request_timeout(method: &str) -> Duration {
         "agents.models",
         "agents.prompt",
         "boards.cardStart",
+        "boards.cardRefine",
         "boards.cardDone",
         "boards.sourceAdd",
         "boards.sourceRefresh",

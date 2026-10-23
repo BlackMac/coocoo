@@ -6,8 +6,9 @@
   import { href } from '../lib/router.svelte';
   import { agentState } from '../lib/status';
   import { IMPORT_INTERVALS, type AgentSummary, type BoardSource, type Card, type CardColumn } from '../lib/protocol';
-  import { ArrowUp, ExternalLink, FileCode, GitCommitHorizontal, Inbox, Plus, RotateCw, Rss, ShieldCheck, ShieldOff, Terminal, Trash2, Webhook, X } from '../lib/icons';
+  import { ArrowUp, ExternalLink, FileCode, NotebookPen, GitCommitHorizontal, Inbox, Plus, RotateCw, Rss, ShieldCheck, ShieldOff, Terminal, Trash2, Webhook, X } from '../lib/icons';
   import StartCard from '../agent/StartCard.svelte';
+  import RefinementView from '../agent/RefinementView.svelte';
   import StatusDot from '../components/StatusDot.svelte';
 
   // A project's Kanban board: inbox (from sources) → todo → doing → done. Cards move by drag and
@@ -219,8 +220,13 @@
                     <StartCard {host} {projectId} {card} {agent} primary />
                   {/if}
                 </div>
-                {#if !open && (card.agentId || card.source || card.commit || card.note || card.startUrl || card.doneUrl)}
+                {#if !open && (card.agentId || card.source || card.commit || card.note || card.startUrl || card.doneUrl || card.refinement || card.refining)}
                   <div class="sub faint">
+                    {#if card.refining || card.refinement}
+                      <span class="refb" class:on={card.refining} title={card.refining ? 'An agent is refining it' : 'Has a refinement; open the card to read it'}>
+                        <NotebookPen size={11} />{card.refining ? 'Refining…' : 'Refined'}
+                      </span>
+                    {/if}
                     {#if card.agentId}{@render agentChip(card)}{/if}
                     {#if card.commit}<span class="mono"><GitCommitHorizontal size={11} />{card.commit.sha.slice(0, 7)}</span>{/if}
                     {#if card.startUrl || card.doneUrl}<span class="hooks" class:err={!!card.hookError} title={card.hookError ?? 'Webhooks on start/done'}><Webhook size={11} /></span>{/if}
@@ -235,14 +241,18 @@
                     <label class="hook"><span class="faint">Webhook on start</span><input class="input mono" bind:value={editStartUrl} placeholder="https://… (POSTed when it moves to Doing)" spellcheck="false" /></label>
                     <label class="hook"><span class="faint">Webhook on done</span><input class="input mono" bind:value={editDoneUrl} placeholder="https://… (POSTed when it moves to Done)" spellcheck="false" /></label>
                     {#if card.hookError}<div class="herr">{card.hookError}</div>{/if}
-                    {#if card.agentId}<div class="faint">{col.id === 'done' ? 'Done by' : 'Agent:'} {@render agentChip(card)}</div>{/if}
+                    {#if card.agentId}<div class="faint">{col.id === 'done' ? 'Done by' : card.refining ? 'Being refined by' : 'Agent:'} {@render agentChip(card)}</div>{/if}
+                    {#if card.refinement}<RefinementView {host} {projectId} {card} clamp />{/if}
                     {#if card.url}<a class="link" href={card.url} target="_blank" rel="noopener noreferrer"><ExternalLink size={11} />{card.url}</a>{/if}
                     {#if card.note}<div class="note"><span class="faint">Note:</span> {card.note}</div>{/if}
                     {#if card.commit}<div class="faint mono">{card.commit.sha.slice(0, 7)} {card.commit.summary}</div>{/if}
                     <div class="faint meta">Added {ago(card.createdAt, now.value)} ago{card.source ? ` from ${sourceName(card.source) ?? 'a removed source'}` : ''}</div>
                     <div class="acts">
                       <button class="btn primary sm" onclick={() => save(card)}>Save</button>
-                      {#if col.id === 'inbox' || col.id === 'todo'}<StartCard {host} {projectId} {card} {agent} />{/if}
+                      {#if col.id === 'inbox' || col.id === 'todo'}
+                        <StartCard {host} {projectId} {card} {agent} />
+                        <StartCard {host} {projectId} {card} {agent} refine />
+                      {/if}
                       {#if i > 0}<button class="btn ghost sm" title="Move to top" onclick={() => move(card, col.id, 0)}><ArrowUp size={12} />Top</button>{/if}
                       <select class="select mini" value="" aria-label="Move to column" onchange={(e) => { const c = e.currentTarget.value as CardColumn; if (c) void move(card, c); e.currentTarget.value = ''; }}>
                         <option value="">Move to…</option>
@@ -492,6 +502,21 @@
     flex-direction: column;
     gap: 3px;
     font-size: var(--fs-xs);
+  }
+  .refb {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    flex: none;
+    color: var(--accent);
+  }
+  .refb.on {
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    50% {
+      opacity: 0.45;
+    }
   }
   .hooks {
     display: inline-flex;

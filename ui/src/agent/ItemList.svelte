@@ -4,10 +4,18 @@
   import AssistantItem from './AssistantItem.svelte';
   import ThinkingItem from './ThinkingItem.svelte';
   import ToolItem from './ToolItem.svelte';
+  import RefinementItem from './RefinementItem.svelte';
 
   // Timeline items as rendered in a transcript (an agent's, or a subagent's). Renders no wrapper
-  // element, so the parent's layout applies to each block.
-  let { items, onsubagent }: { items: TimelineItem[]; onsubagent?: (s: Subagent) => void } = $props();
+  // element, so the parent's layout applies to each block. `host`/`projectId`: the agent's project,
+  // whose board shows card refinements (`kanban_refine`) below the call.
+  let {
+    items,
+    onsubagent,
+    host,
+    projectId,
+  }: { items: TimelineItem[]; onsubagent?: (s: Subagent) => void; host?: string; projectId?: string } = $props();
+  const isRefinement = (it: TimelineItem) => it.tool?.name === 'kanban_refine' && it.tool.status === 'ok';
 
   /** Groups consecutive tool calls so they render as one compact block. */
   type Block = { kind: 'tools'; items: TimelineItem[]; id: string } | { kind: 'item'; item: TimelineItem; id: string };
@@ -29,6 +37,9 @@
     <div class="tools">
       {#each b.items as it (it.id)}<ToolItem item={it} {onsubagent} />{/each}
     </div>
+    {#if host && projectId}
+      {#each b.items.filter(isRefinement) as it (it.id)}<RefinementItem item={it} {host} {projectId} />{/each}
+    {/if}
   {:else if b.item.kind === 'user'}
     <UserItem item={b.item} />
   {:else if b.item.kind === 'assistant'}

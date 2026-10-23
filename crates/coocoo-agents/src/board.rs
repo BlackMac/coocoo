@@ -12,7 +12,10 @@ use std::time::Duration;
 
 use coocoo_proto::error::{ok, params};
 use coocoo_proto::util::{new_id, now_ms, read_json, truncate, write_json_atomic};
-use coocoo_proto::{AgentStatus, ApiError, ApiResult, Board, BoardEvent, BoardSource, Card, CardColumn, CommitInfo, Project, events};
+use base64::Engine as _;
+use coocoo_proto::{
+    AgentStatus, ApiError, ApiResult, Attachment, Board, BoardEvent, BoardSource, Card, CardColumn, CommitInfo, Project, Refinement, events,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -36,6 +39,9 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_FEED_BYTES: &str = "5000000";
 /// Per-agent board of earlier versions, moved into the project board on startup.
 const LEGACY_FILE: &str = "board.json";
+const MAX_REFINEMENT: usize = 32 * 1024;
+const MAX_ATTACHMENTS: usize = 10;
+const MAX_ATTACHMENT_BYTES: usize = 5 << 20;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -82,6 +88,7 @@ struct CardParams {
     card_id: String,
 }
 
+/// `boards.cardStart` and `boards.cardRefine`.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CardStartParams {
@@ -105,6 +112,28 @@ struct CardDoneParams {
     agent_id: Option<String>,
     commit_message: Option<String>,
     note: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RefinementSaveParams {
+    project_id: String,
+    card_id: String,
+    /// The agent that refined it; relative attachment paths resolve in its directory.
+    agent_id: Option<String>,
+    /// Markdown.
+    text: String,
+    /// Image and HTML files to attach (UI mocks).
+    #[serde(default)]
+    attachments: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AttachmentParams {
+    project_id: String,
+    card_id: String,
+    name: String,
 }
 
 #[derive(Deserialize)]
@@ -182,6 +211,45 @@ fn new_card(title: String, body: Option<String>, column: CardColumn) -> Card {
         start_url: None,
         done_url: None,
         hook_error: None,
+        refining: false,
+        refinement: None,
+    }
+}
+
+/// MIME type of an attachable file (images and HTML), by extension.
+fn attachment_mime(path: &Path) -> Option<&'static str> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "html" | "htm" => "text/html",
+        _ => return None,
+    })
+}
+
+/// A safe file name for an attachment, unique among `taken`: the file's name with anything but
+/// letters, digits, `.`, `-` and `_` replaced, prefixed with a counter when it is taken.
+fn attachment_name<'a>(path: &Path, taken: impl Iterator<Item = &'a str> + Clone) -> String {
+    let raw = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let base: String = raw.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '-' }).collect();
+    let base = if base.trim_start_matches('.').is_empty() { "attachment".to_owned() } else { base };
+    let mut name = base.clone();
+    let mut n = 2;
+    while taken.clone().any(|t| t == name) {
+        name = format!("{n}-{base}");
+        n += 1;
+    }
+    name
+}
+
+/// Remove a directory and its contents; gone already is fine.
+async fn remove_dir(dir: &Path) -> std::io::Result<()> {
+    match tokio::fs::remove_dir_all(dir).await {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
     }
 }
 
@@ -273,9 +341,9 @@ fn move_card(board: &mut Board, card_id: &str, column: CardColumn, index: usize)
     Ok(card)
 }
 
-/// Prompt for a started card.
-fn card_prompt(card: &Card) -> String {
-    let mut text = format!("Work on this card from the project's Kanban board (card id `{}`):\n\n**{}**", card.id, card.title);
+/// The card as the agent sees it: title, details, source link.
+fn card_brief(card: &Card) -> String {
+    let mut text = format!("**{}**", card.title);
     if let Some(body) = &card.body {
         text.push_str("\n\n");
         text.push_str(body);
@@ -283,10 +351,56 @@ fn card_prompt(card: &Card) -> String {
     if let Some(url) = &card.url {
         text.push_str(&format!("\n\nSource: {url}"));
     }
+    text
+}
+
+/// The card's refinement for a prompt, with the stored attachments' paths.
+fn refinement_brief(refinement: &Refinement, attachments: &Path) -> String {
+    let mut text = refinement.text.clone();
+    if !refinement.attachments.is_empty() {
+        text.push_str("\n\nAttachments:");
+        for a in &refinement.attachments {
+            text.push_str(&format!("\n- {}", attachments.join(&a.name).display()));
+        }
+    }
+    text
+}
+
+/// Prompt for a started card.
+fn card_prompt(card: &Card, attachments: &Path) -> String {
+    let mut text = format!("Work on this card from the project's Kanban board (card id `{}`):\n\n{}", card.id, card_brief(card));
+    if let Some(refinement) = &card.refinement {
+        text.push_str("\n\n## Refinement (agreed with the user; follow it)\n\n");
+        text.push_str(&refinement_brief(refinement, attachments));
+    }
     text.push_str(
         "\n\nWhen it is finished, call `kanban_done` with this card id and a commit message describing the change \
          (it commits your changes if this is a git repository and moves the card to Done). If you cannot finish it, \
          say why and leave the card in Doing.",
+    );
+    text
+}
+
+/// Prompt for refining a card before anyone implements it.
+fn refine_prompt(card: &Card, attachments: &Path) -> String {
+    let mut text = format!(
+        "Refine this card from the project's Kanban board (card id `{}`) before it is implemented:\n\n{}",
+        card.id,
+        card_brief(card)
+    );
+    if let Some(refinement) = &card.refinement {
+        text.push_str("\n\n## Earlier refinement (revise it)\n\n");
+        text.push_str(&refinement_brief(refinement, attachments));
+    }
+    text.push_str(
+        "\n\nDo not implement it and do not change the project. Work out what exactly should be built: research \
+         everything you can find out yourself (the code, docs, the web, trying things out), and ask the user with \
+         the `ask` tool only what you cannot find out or decide yourself (preferences, trade-offs, scope). Where it \
+         helps, make UI mocks as images or self-contained HTML files outside the project (e.g. in /tmp). Finally \
+         call `kanban_refine` with this card id, the refinement as Markdown (goal, behaviour, approach, open \
+         questions and risks) and the mock files as attachments; it is shown in the chat and on the card, which \
+         then waits in Todo until the user starts it. Keep your closing answer short: the refinement speaks for \
+         itself.",
     );
     text
 }
@@ -400,9 +514,13 @@ impl Agents {
                     }
                     Ok(((), true))
                 })?;
+                remove_dir(&self.attachment_dir(&p.card_id)).await?;
                 Ok(json!({}))
             }
-            "boards.cardStart" => self.card_start(params(p)?).await,
+            "boards.cardStart" => self.card_start(params(p)?, false).await,
+            "boards.cardRefine" => self.card_start(params(p)?, true).await,
+            "boards.refinementSave" => self.refinement_save(params(p)?).await,
+            "boards.attachment" => self.attachment(params(p)?).await,
             "boards.cardDone" => self.card_done(params(p)?).await,
             "boards.sourceAdd" => {
                 let p: SourceAddParams = params(p)?;
@@ -513,6 +631,11 @@ impl Agents {
         self.boards_dir.join(format!("{project_id}.json"))
     }
 
+    /// Where a card's refinement attachments are kept.
+    fn attachment_dir(&self, card_id: &str) -> PathBuf {
+        self.boards_dir.join("attachments").join(card_id)
+    }
+
     /// Working and state directory of a script importer (its files persist between runs).
     fn importer_dir(&self, source_id: &str) -> PathBuf {
         self.boards_dir.join("importers").join(source_id)
@@ -546,13 +669,17 @@ impl Agents {
         Ok(result)
     }
 
-    async fn card_start(self: &Arc<Self>, p: CardStartParams) -> ApiResult<Value> {
+    /// Hand the card to an agent (`agentId`, else a new one): to implement it (`refine` false;
+    /// it moves to doing) or to refine it first (it stays in todo, marked `refining`).
+    async fn card_start(self: &Arc<Self>, p: CardStartParams, refine: bool) -> ApiResult<Value> {
         self.project(&p.project_id).await?;
         let card = self.edit_board(&p.project_id, |b| Ok((card_mut(b, &p.card_id)?.clone(), false)))?;
         if card.column == CardColumn::Doing || card.column == CardColumn::Done {
             let column = if card.column == CardColumn::Doing { "Doing" } else { "Done" };
             return Err(ApiError::conflict(format!("card “{}” is already in {column}", card.title)));
         }
+        let attachments = self.attachment_dir(&card.id);
+        let prompt = if refine { refine_prompt(&card, &attachments) } else { card_prompt(&card, &attachments) };
         let summary = match p.agent_id.filter(|a| !a.is_empty()) {
             Some(agent_id) => {
                 let agent = self.get(&agent_id)?;
@@ -567,19 +694,104 @@ impl Agents {
                 if matches!(summary.status, AgentStatus::Starting | AgentStatus::Running | AgentStatus::Waiting) {
                     return Err(ApiError::conflict(format!("agent “{}” is still busy; wait until its answer is finished", summary.title)));
                 }
-                self.prompt_text(&agent_id, card_prompt(&card)).await?;
+                self.prompt_text(&agent_id, prompt).await?;
                 summary
             }
-            None => self.create_for_card(&p.project_id, &card.title, card_prompt(&card), p.worktree, p.model).await?,
+            None => self.create_for_card(&p.project_id, &card.title, prompt, p.worktree, p.model).await?,
         };
-        let card = self.edit_board(&p.project_id, |b| {
+        let (card, hook) = self.edit_board(&p.project_id, |b| {
             let c = card_mut(b, &p.card_id)?;
             c.agent_id = Some(summary.id.clone());
             c.agent_title = Some(summary.title.clone());
-            Ok((move_card(b, &p.card_id, CardColumn::Doing, 0)?, true))
+            c.refining = refine;
+            let from = c.column;
+            let card = match refine {
+                false => move_card(b, &p.card_id, CardColumn::Doing, 0)?,
+                // Refining accepts a card from the inbox: it is a task now.
+                true if from == CardColumn::Inbox => move_card(b, &p.card_id, CardColumn::Todo, usize::MAX)?,
+                true => c.clone(),
+            };
+            Ok(((card, (!refine).then_some(Hook::Start)), true))
         })?;
-        self.fire_hook(&p.project_id, &card, Hook::Start);
+        if let Some(hook) = hook {
+            self.fire_hook(&p.project_id, &card, hook);
+        }
         ok(card)
+    }
+
+    /// Store an agent's refinement of a card (`kanban_refine`), replacing an earlier one and its
+    /// attachments. The files are copied, so the agent may delete or change its own afterwards.
+    async fn refinement_save(self: &Arc<Self>, p: RefinementSaveParams) -> ApiResult<Value> {
+        self.project(&p.project_id).await?;
+        let text = p.text.trim();
+        if text.is_empty() {
+            return Err(ApiError::invalid("the refinement must not be empty"));
+        }
+        if text.len() > MAX_REFINEMENT {
+            return Err(ApiError::invalid(format!("the refinement is longer than {} KiB", MAX_REFINEMENT / 1024)));
+        }
+        if p.attachments.len() > MAX_ATTACHMENTS {
+            return Err(ApiError::invalid(format!("at most {MAX_ATTACHMENTS} attachments")));
+        }
+        let agent = p.agent_id.as_deref().filter(|a| !a.is_empty()).map(|id| self.get(id)).transpose()?;
+        let summary = agent.map(|a| a.summary());
+        self.edit_board(&p.project_id, |b| card_mut(b, &p.card_id).map(|_| ((), false)))?;
+
+        // Read and check every file before the stored ones are replaced.
+        let mut files: Vec<(Attachment, Vec<u8>)> = Vec::with_capacity(p.attachments.len());
+        for path in &p.attachments {
+            let path = Path::new(path.trim());
+            let path = match (&summary, path.is_absolute()) {
+                (_, true) => path.to_path_buf(),
+                (Some(s), false) => Path::new(&s.cwd).join(path),
+                (None, false) => return Err(ApiError::invalid(format!("`{}`: give an absolute path", path.display()))),
+            };
+            let mime = attachment_mime(&path).ok_or_else(|| {
+                ApiError::invalid(format!("`{}`: only images (png, jpg, gif, webp, svg) and HTML files can be attached", path.display()))
+            })?;
+            let bytes = tokio::fs::read(&path).await.map_err(|e| ApiError::invalid(format!("cannot read `{}`: {e}", path.display())))?;
+            if bytes.len() > MAX_ATTACHMENT_BYTES {
+                return Err(ApiError::invalid(format!("`{}` is larger than {} MiB", path.display(), MAX_ATTACHMENT_BYTES >> 20)));
+            }
+            let name = attachment_name(&path, files.iter().map(|(a, _)| a.name.as_str()));
+            files.push((Attachment { name, mime: mime.to_owned(), size: bytes.len() as u64 }, bytes));
+        }
+        let dir = self.attachment_dir(&p.card_id);
+        remove_dir(&dir).await?;
+        if !files.is_empty() {
+            tokio::fs::create_dir_all(&dir).await?;
+            for (attachment, bytes) in &files {
+                tokio::fs::write(dir.join(&attachment.name), bytes).await?;
+            }
+        }
+
+        let refinement = Refinement {
+            text: text.to_owned(),
+            attachments: files.into_iter().map(|(a, _)| a).collect(),
+            agent_id: summary.as_ref().map(|s| s.id.clone()),
+            agent_title: summary.map(|s| s.title),
+            at: now_ms(),
+        };
+        ok(self.edit_board(&p.project_id, |b| {
+            let c = card_mut(b, &p.card_id)?;
+            c.refining = false;
+            c.refinement = Some(refinement);
+            c.updated_at = now_ms();
+            Ok((c.clone(), true))
+        })?)
+    }
+
+    /// `boards.attachment`: one file of a card's refinement as `{ mime, data }` (base64).
+    async fn attachment(&self, p: AttachmentParams) -> ApiResult<Value> {
+        self.project(&p.project_id).await?;
+        let found = self.edit_board(&p.project_id, |b| {
+            let card = card_mut(b, &p.card_id)?;
+            Ok((card.refinement.as_ref().and_then(|r| r.attachments.iter().find(|a| a.name == p.name).cloned()), false))
+        })?;
+        // Only names on the card are read, so a name cannot point outside the directory.
+        let attachment = found.ok_or_else(|| ApiError::not_found(format_args!("attachment {}", p.name)))?;
+        let bytes = tokio::fs::read(self.attachment_dir(&p.card_id).join(&attachment.name)).await?;
+        Ok(json!({ "mime": attachment.mime, "data": base64::engine::general_purpose::STANDARD.encode(bytes) }))
     }
 
     async fn card_done(self: &Arc<Self>, p: CardDoneParams) -> ApiResult<Value> {
@@ -1012,6 +1224,17 @@ mod tests {
 
     fn columns(board: &Board, column: CardColumn) -> Vec<&str> {
         board.cards.iter().filter(|c| c.column == column).map(|c| c.id.as_str()).collect()
+    }
+
+    #[test]
+    fn attachment_names_are_safe_and_unique() {
+        let taken = ["mock.png", "2-mock.png"];
+        assert_eq!(attachment_name(Path::new("/tmp/a/mock.png"), taken.iter().copied()), "3-mock.png");
+        assert_eq!(attachment_name(Path::new("Main screen (dark).html"), [].iter().copied()), "Main-screen--dark-.html");
+        assert_eq!(attachment_name(Path::new("/tmp/.."), [].iter().copied()), "attachment");
+        assert_eq!(attachment_mime(Path::new("x.JPEG")), Some("image/jpeg"));
+        assert_eq!(attachment_mime(Path::new("x.pdf")), None);
+        assert_eq!(attachment_mime(Path::new("Makefile")), None);
     }
 
     #[test]

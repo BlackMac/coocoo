@@ -85,6 +85,8 @@
       {/if}
       <ItemList
         items={timeline.items}
+        host={agent.hostId}
+        projectId={agent.projectId}
         onsubagent={(s) => s.sessionFile && (ui.dialog = { kind: 'subagent', hostId: agent.hostId, agentId: agent.id, subagentId: s.id, sessionFile: s.sessionFile })}
       />
       {#if working}

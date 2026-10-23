@@ -66,3 +66,4 @@ export { default as Webhook } from '@lucide/svelte/icons/webhook';
 export { default as FileCode } from '@lucide/svelte/icons/file-code';
 export { default as ShieldCheck } from '@lucide/svelte/icons/shield-check';
 export { default as ShieldOff } from '@lucide/svelte/icons/shield-off';
+export { default as NotebookPen } from '@lucide/svelte/icons/notebook-pen';

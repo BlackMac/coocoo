@@ -328,6 +328,26 @@ export interface Card {
   doneUrl?: string;
   /** Why the last webhook call failed. */
   hookError?: string;
+  /** Its agent is working out a refinement (`boards.cardRefine`). */
+  refining?: boolean;
+  /** The latest refinement, handed to the agent that implements the card. */
+  refinement?: Refinement;
+}
+
+export interface Refinement {
+  /** Markdown. */
+  text: string;
+  /** UI mocks (images, HTML); fetch with `boards.attachment`. */
+  attachments?: Attachment[];
+  agentId?: string;
+  agentTitle?: string;
+  at: number;
+}
+
+export interface Attachment {
+  name: string;
+  mime: string;
+  size: number;
 }
 
 export type SourceKind = 'feed' | 'command' | 'script';
@@ -648,6 +668,8 @@ export interface Methods {
   'boards.cardDelete': [{ projectId: string; cardId: string }, Ok];
   /** Without `agentId` a new agent is created for the card (optionally in a worktree). */
   'boards.cardStart': [{ projectId: string; cardId: string; agentId?: string; worktree?: boolean; model?: string }, Card];
+  'boards.cardRefine': [{ projectId: string; cardId: string; agentId?: string; worktree?: boolean; model?: string }, Card];
+  'boards.attachment': [{ projectId: string; cardId: string; name: string }, { mime: string; data: string }];
   'boards.cardDone': [{ projectId: string; cardId: string; agentId?: string; commitMessage?: string; note?: string }, { card: Card; commit?: CommitInfo; commitSkipped?: string }];
   'boards.sourceAdd': [
     { projectId: string; kind: SourceKind; target?: string; name?: string; script?: string; intervalMins?: number; agentId?: string },

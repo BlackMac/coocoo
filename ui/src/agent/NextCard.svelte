@@ -10,7 +10,10 @@
   let { agent: a }: { agent: AgentSummary } = $props();
 
   const board = $derived(a.projectId ? fleet.boards[key(a.hostId, a.projectId)] : undefined);
-  const doing = $derived(board?.cards.find((c) => c.column === 'doing' && c.agentId === a.id));
+  // The card it is refining counts as its current card too, so Start does not offer another one.
+  const doing = $derived(
+    board?.cards.find((c) => c.column === 'doing' && c.agentId === a.id) ?? board?.cards.find((c) => c.refining && c.agentId === a.id),
+  );
   const next = $derived(board?.cards.find((c) => c.column === 'todo'));
   const todoCount = $derived(board?.cards.filter((c) => c.column === 'todo').length ?? 0);
 
@@ -23,7 +26,7 @@
   <div class="next" class:doing={!!doing}>
     <button class="open" onclick={() => ui.showPanel('board')} title="Open the project board">
       <SquareKanban size={13} />
-      <span class="lbl">{doing ? 'Doing' : 'Next'}</span>
+      <span class="lbl">{doing ? (doing.column === 'doing' ? 'Doing' : 'Refining') : 'Next'}</span>
       <span class="ttl ellipsis">{(doing ?? next)!.title}</span>
       {#if !doing && todoCount > 1}<span class="more faint num">+{todoCount - 1}</span>{/if}
     </button>
