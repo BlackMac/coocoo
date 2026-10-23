@@ -7,7 +7,7 @@
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
-use coocoo_proto::{ApiError, Emitter, Orchestrator, events};
+use coocoo_proto::{ApiError, DoneAction, Emitter, Orchestrator, events};
 use omp_rpc::{HostTool, HostToolContext, HostToolError, HostToolOutput, ToolLoadMode};
 use serde_json::{Map, Value, json};
 use tokio::runtime::Handle;
@@ -340,13 +340,19 @@ impl ToolEnv {
 
     fn kanban_done(&self, args: Map<String, Value>) -> ToolResult {
         let mut params = json!({ "projectId": self.project_id()?, "cardId": required(&args, "cardId")?, "agentId": self.agent_id });
-        for key in ["commitMessage", "note"] {
+        for key in ["commitMessage", "note", "prTitle", "prBody"] {
             if let Some(value) = str_arg(&args, key) {
                 params[key] = Value::String(value);
             }
         }
         let done = self.call(None, "boards.cardDone", params)?;
-        Ok(text(&json!({ "column": "done", "commit": done.get("commit"), "commitSkipped": done.get("commitSkipped") })))
+        let mut report = json!({ "column": "done", "commit": done.get("commit"), "commitSkipped": done.get("commitSkipped") });
+        for key in ["pushed", "pullRequest", "gitError"] {
+            if let Some(value) = done.get(key).filter(|v| !v.is_null()) {
+                report[key] = value.clone();
+            }
+        }
+        Ok(text(&report))
     }
 
     fn kanban_refine(&self, args: Map<String, Value>) -> ToolResult {
@@ -505,8 +511,8 @@ const COLUMNS: &[&str] = &["inbox", "todo", "doing", "done"];
 
 const HOST_PROP: &str = "Host id from coocoo_hosts; omit for this machine.";
 
-/// The orchestration tools for agent `agent_id`.
-pub(crate) fn host_tools(agents: &Arc<Agents>, agent_id: &str, orchestrator: Arc<dyn Orchestrator>) -> Vec<HostTool> {
+/// The orchestration tools for agent `agent_id`; `done_action` is its board's current setting.
+pub(crate) fn host_tools(agents: &Arc<Agents>, agent_id: &str, orchestrator: Arc<dyn Orchestrator>, done_action: DoneAction) -> Vec<HostTool> {
     let env = Arc::new(ToolEnv {
         agents: Arc::downgrade(agents),
         orchestrator,
@@ -662,13 +668,15 @@ pub(crate) fn host_tools(agents: &Arc<Agents>, agent_id: &str, orchestrator: Arc
         tool(
             "kanban_done",
             "Finish card",
-            "Finish a Kanban card once its work is complete: commits all changes in your working directory with the commit message when it is a git repository (skipped when there is nothing to commit), then moves the card to done. Fails without moving the card if the commit fails.",
+            &kanban_done_doc(done_action),
             json!({
                 "type": "object",
                 "properties": {
                     "cardId": { "type": "string" },
                     "commitMessage": { "type": "string", "description": "Describes the change; defaults to the card title." },
-                    "note": { "type": "string", "description": "Short summary of what was done, shown on the card." }
+                    "note": { "type": "string", "description": "Short summary of what was done, shown on the card." },
+                    "prTitle": { "type": "string", "description": "Pull request title, when the board opens pull requests; defaults to the card title." },
+                    "prBody": { "type": "string", "description": "Pull request description (Markdown: what changed and why), when the board opens pull requests; defaults to the card, its goal and the commits." }
                 },
                 "required": ["cardId"],
                 "additionalProperties": false
@@ -746,6 +754,17 @@ pub(crate) fn host_tools(agents: &Arc<Agents>, agent_id: &str, orchestrator: Arc
             |env, args, _| env.actions(args),
         ),
     ]
+}
+
+/// `kanban_done` description, naming what the board does after the commit.
+fn kanban_done_doc(done_action: DoneAction) -> String {
+    let mut doc = "Finish a Kanban card once its work is complete: commits all changes in your working directory with the commit message when it is a git repository (skipped when there is nothing to commit), then moves the card to done. Fails without moving the card if the commit fails.".to_owned();
+    if let Some(hint) = crate::board::done_hint(done_action) {
+        doc.push(' ');
+        doc.push_str(hint);
+        doc.push_str(" If the push or pull request fails, the card is done anyway and the result reports `gitError`.");
+    }
+    doc
 }
 
 const IMPORTER_SAVE_DOC: &str = "Create or change an importer that fills your project's Kanban inbox on a schedule, e.g. \"take every new entry of X's changelog\". \

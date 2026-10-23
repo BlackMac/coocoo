@@ -12,6 +12,16 @@
       <div class="txt">
         <strong>{t.title}</strong>
         {#if t.detail}<span>{t.detail}</span>{/if}
+        {#if t.action}
+          {@const action = t.action}
+          <button
+            class="btn sm act"
+            onclick={() => {
+              ui.dismiss(t.id);
+              void action.run();
+            }}>{action.label}</button
+          >
+        {/if}
       </div>
       <button class="btn ghost icon sm" aria-label="Dismiss" onclick={() => ui.dismiss(t.id)}><X size={13} /></button>
     </div>
@@ -71,5 +81,9 @@
       opacity: 0;
       transform: translateY(6px);
     }
+  }
+  .act {
+    align-self: flex-start;
+    margin-top: 4px;
   }
 </style>

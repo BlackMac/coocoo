@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
-use std::time::Duration;
 
 use coocoo_proto::error::{ok, params};
 use coocoo_proto::util::{new_id, now_ms, read_json, write_json_atomic};
@@ -51,6 +50,7 @@ pub(crate) fn create(emitter: Emitter, paths: &Paths) -> Arc<Workspace> {
         state: Mutex::new(State { projects, ..State::default() }),
         watches: Watches::new(),
         refresh_locks: Mutex::new(HashMap::new()),
+        github: Arc::default(),
         started: AtomicBool::new(false),
     });
     if tokio::runtime::Handle::try_current().is_ok() {
@@ -118,6 +118,29 @@ struct FastForwardParams {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct PrCreateParams {
+    project_id: String,
+    path: String,
+    title: String,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    draft: bool,
+    base: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PrMergeParams {
+    project_id: String,
+    path: String,
+    method: coocoo_proto::MergeMethod,
+    #[serde(default)]
+    delete_branch: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct WorktreeCreateParams {
     project_id: String,
     branch: Option<String>,
@@ -140,7 +163,7 @@ struct FsListParams {
 
 /// Emit `project.updated` only when something visible changed, or always.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Emit {
+pub(crate) enum Emit {
     IfChanged,
     Always,
 }
@@ -196,6 +219,28 @@ impl Workspace {
             "git.fastForward" => {
                 let p: FastForwardParams = params(p)?;
                 let (ok_, output) = self.fast_forward(&p.project_id, &p.path).await?;
+                ok(json!({ "ok": ok_, "output": output }))
+            }
+            "git.push" => {
+                let p: FastForwardParams = params(p)?;
+                let pushed = self.push(&p.project_id, &p.path).await?;
+                ok(json!({ "ok": pushed.ok, "output": pushed.output, "rejected": pushed.rejected }))
+            }
+            "git.outgoing" => {
+                let p: FastForwardParams = params(p)?;
+                ok(self.outgoing(&p.project_id, &p.path).await?)
+            }
+            "git.prStatus" => {
+                let p: FastForwardParams = params(p)?;
+                ok(self.pr_status(&p.project_id, &p.path).await?)
+            }
+            "git.prCreate" => {
+                let p: PrCreateParams = params(p)?;
+                ok(self.pr_create(&p.project_id, &p.path, &p.title, &p.body, p.draft, p.base).await?)
+            }
+            "git.prMerge" => {
+                let p: PrMergeParams = params(p)?;
+                let (ok_, output) = self.pr_merge(&p.project_id, &p.path, p.method, p.delete_branch).await?;
                 ok(json!({ "ok": ok_, "output": output }))
             }
             "git.worktreeCreate" => {
@@ -334,11 +379,14 @@ impl Workspace {
 
     /// Recompute a project's git info, icon and actions, re-sync its watches and emit when it
     /// changed.
-    async fn refresh(&self, id: &str, emit: Emit) -> ApiResult<Project> {
+    pub(crate) async fn refresh(&self, id: &str, emit: Emit) -> ApiResult<Project> {
         let lock = self.refresh_lock(id);
         let _guard = lock.lock().await;
         let path = PathBuf::from(self.get(id)?.path);
-        let (info, found_icon, loaded) = tokio::join!(git::info(&path), icon::find(&path), actions::load(&path));
+        let (mut info, found_icon, loaded) = tokio::join!(git::info(&path), icon::find(&path), actions::load(&path));
+        if let Some(info) = &mut info {
+            self.github.decorate(info);
+        }
         let targets = match &info {
             Some(_) => match git::git_dirs(&path).await {
                 Some((git_dir, common)) => watch::targets(&git_dir, &common),
@@ -429,7 +477,7 @@ impl Workspace {
         }
     }
 
-    fn git_project(&self, id: &str) -> ApiResult<Project> {
+    pub(crate) fn git_project(&self, id: &str) -> ApiResult<Project> {
         let project = self.get(id)?;
         if project.git.is_none() && !Path::new(&project.path).join(".git").exists() {
             return Err(ApiError::invalid(format!("project {} ({}) is not a git repository", project.name, project.path)));
@@ -492,31 +540,18 @@ impl Workspace {
         Ok(result)
     }
 
-    /// `git fetch --all` in the project's checkout. Never prompts: credentials come from the
-    /// configured helpers/keys or the fetch fails with git's message.
-    async fn fetch(&self, project_id: &str) -> ApiResult<(bool, String)> {
-        const TIMEOUT: Duration = Duration::from_secs(60);
+    /// `git fetch --all` in the project's checkout, then the pull request status of every linked
+    /// worktree with an upstream. Never prompts: credentials come from the configured
+    /// helpers/keys or the fetch fails with git's message.
+    pub(crate) async fn fetch(&self, project_id: &str) -> ApiResult<(bool, String)> {
         let project = self.git_project(project_id)?;
         let path = PathBuf::from(&project.path);
-        let mut cmd = git::command(&path);
-        cmd.args(["fetch", "--all", "--no-auto-gc", "--quiet"]);
-        // Without a terminal ssh would wait forever for a passphrase or host-key answer.
-        let custom_ssh = std::env::var_os("GIT_SSH_COMMAND").is_some()
-            || std::env::var_os("GIT_SSH").is_some()
-            || git::run(&path, &["config", "core.sshCommand"]).await?.ok;
-        if !custom_ssh {
-            cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+        let out = git::run_network(&path, &["fetch", "--all", "--no-auto-gc", "--quiet"]).await?;
+        if out.ok {
+            self.refresh_prs_after_fetch(&path).await;
         }
-        let result = match tokio::time::timeout(TIMEOUT, cmd.output()).await {
-            Ok(out) => {
-                let out = out.map_err(git::spawn_error)?;
-                let out = git::GitOutput { ok: out.status.success(), stdout: out.stdout, stderr: out.stderr };
-                (out.ok, out.combined())
-            }
-            Err(_) => (false, format!("git fetch timed out after {} s", TIMEOUT.as_secs())),
-        };
         self.refresh(project_id, Emit::IfChanged).await?;
-        Ok(result)
+        Ok((out.ok, out.combined()))
     }
 
     /// Fast-forward the worktree at `wt_path` to its upstream (as of the last fetch). Refused

@@ -10,6 +10,13 @@ export interface Toast {
   kind: 'error' | 'info' | 'success';
   title: string;
   detail?: string;
+  /** A button in the toast; clicking it runs `run` and dismisses the toast. */
+  action?: ToastAction;
+}
+
+export interface ToastAction {
+  label: string;
+  run: () => unknown;
 }
 
 /** Element captured in browser design mode, attached to the next prompt. */
@@ -36,7 +43,9 @@ export type Dialog =
   | { kind: 'addHost' }
   | { kind: 'addProject'; hostId?: string }
   | { kind: 'subagent'; hostId: string; agentId: string; subagentId: string; sessionFile: string }
-  | { kind: 'confirm'; title: string; message: string; action: string; danger?: boolean; run: () => void | Promise<void> };
+  | { kind: 'confirm'; title: string; message: string; action: string; danger?: boolean; run: () => void | Promise<void> }
+  /** Push the project checkout an agent works in, after listing the outgoing commits. */
+  | { kind: 'push'; hostId: string; agentId: string };
 
 const THEME_KEY = 'coocoo.theme';
 const PANEL_KEY = 'coocoo.panel';
@@ -102,11 +111,12 @@ class Ui {
     this.setTheme(this.theme === 'dark' ? 'light' : 'dark');
   }
 
-  toast(kind: Toast['kind'], title: string, detail?: string) {
+  toast(kind: Toast['kind'], title: string, detail?: string, action?: ToastAction) {
     const id = seq++;
-    this.toasts.push({ id, kind, title, detail });
+    this.toasts.push({ id, kind, title, detail, action });
     if (this.toasts.length > 4) this.toasts.shift();
-    setTimeout(() => this.dismiss(id), kind === 'error' ? 7000 : 3500);
+    // With a button there is something to do: leave time to do it.
+    setTimeout(() => this.dismiss(id), action ? 12000 : kind === 'error' ? 7000 : 3500);
   }
 
   /** Reports a failed action; `err` is usually an `RpcError`. */

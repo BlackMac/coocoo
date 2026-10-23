@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use coocoo_proto::{ApiError, ApiResult, CommitInfo, GitInfo, GitOperation, Worktree};
+use coocoo_proto::{ApiError, ApiResult, CommitInfo, GitInfo, GitOperation, GithubInfo, Worktree};
 use tokio::process::Command;
 use tokio::task::JoinSet;
 
@@ -86,6 +86,34 @@ pub(crate) async fn run_ok(cwd: &Path, args: &[&str]) -> ApiResult<GitOutput> {
         Ok(out)
     } else {
         Err(ApiError::conflict(format!("git {} failed: {}", args.first().copied().unwrap_or(""), out.error_text())))
+    }
+}
+
+/// Network operations (fetch, push) give up after this.
+const NETWORK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Run a git command that talks to remotes. Never prompts: credentials come from the configured
+/// helpers/keys or the command fails with git's message; a timeout becomes a failed output.
+pub(crate) async fn run_network(cwd: &Path, args: &[&str]) -> ApiResult<GitOutput> {
+    let mut cmd = command(cwd);
+    cmd.args(args);
+    // Without a terminal ssh would wait forever for a passphrase or host-key answer.
+    let custom_ssh = std::env::var_os("GIT_SSH_COMMAND").is_some()
+        || std::env::var_os("GIT_SSH").is_some()
+        || run(cwd, &["config", "core.sshCommand"]).await?.ok;
+    if !custom_ssh {
+        cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+    }
+    match tokio::time::timeout(NETWORK_TIMEOUT, cmd.output()).await {
+        Ok(out) => {
+            let out = out.map_err(spawn_error)?;
+            Ok(GitOutput { ok: out.status.success(), stdout: out.stdout, stderr: out.stderr })
+        }
+        Err(_) => Ok(GitOutput {
+            ok: false,
+            stdout: Vec::new(),
+            stderr: format!("git {} timed out after {} s", args.first().copied().unwrap_or(""), NETWORK_TIMEOUT.as_secs()).into_bytes(),
+        }),
     }
 }
 
@@ -198,6 +226,16 @@ pub(crate) async fn log(cwd: &Path, limit: u32) -> ApiResult<Vec<LogEntry>> {
     Ok(parse_log(&out.stdout))
 }
 
+/// `git log` of the revisions `revs` (e.g. `["@{upstream}..HEAD"]`), newest first.
+pub(crate) async fn log_revs(cwd: &Path, revs: &[&str], limit: u32) -> ApiResult<Vec<CommitInfo>> {
+    let limit = format!("-n{limit}");
+    let mut args = vec!["log", &limit, "-z", LOG_FORMAT];
+    args.extend_from_slice(revs);
+    args.push("--");
+    let out = run_ok(cwd, &args).await?;
+    Ok(parse_log(&out.stdout).into_iter().map(|e| e.commit).collect())
+}
+
 // ─── worktrees ───────────────────────────────────────────────────────────────────────────────
 
 /// Parse `git worktree list --porcelain` (newline format, compatible with old git).
@@ -302,14 +340,48 @@ fn fetched_at(git_dir: &Path) -> Option<i64> {
     i64::try_from(modified.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis()).ok()
 }
 
+// ─── remotes ─────────────────────────────────────────────────────────────────────────────────
+
+/// The repository's default remote and, when it is on github.com, its `owner/name`.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct Remotes {
+    /// `origin`, else the only remote.
+    pub default: Option<String>,
+    pub github: Option<String>,
+}
+
+/// Parse `git config --get-regexp ^remote\..*\.url$` (`remote.<name>.url <url>` lines).
+pub(crate) fn parse_remotes(raw: &str) -> Remotes {
+    let urls: Vec<(&str, &str)> = raw
+        .lines()
+        .filter_map(|line| {
+            let (key, url) = line.split_once(' ')?;
+            Some((key.strip_prefix("remote.")?.strip_suffix(".url")?, url.trim()))
+        })
+        .collect();
+    let chosen = urls.iter().find(|(name, _)| *name == "origin").or(if urls.len() == 1 { urls.first() } else { None });
+    match chosen {
+        Some((name, url)) => Remotes { default: Some((*name).to_owned()), github: crate::github::github_repo(url) },
+        None => Remotes::default(),
+    }
+}
+
+pub(crate) async fn remotes(path: &Path) -> Remotes {
+    match run(path, &["config", "--get-regexp", r"^remote\..*\.url$"]).await {
+        Ok(out) if out.ok => parse_remotes(&String::from_utf8_lossy(&out.stdout)),
+        _ => Remotes::default(),
+    }
+}
+
 // ─── project summary ─────────────────────────────────────────────────────────────────────────
 
 /// Compute the project's git summary; `None` when `path` is not inside a git working tree.
 pub(crate) async fn info(path: &Path) -> Option<GitInfo> {
-    let (status, last, list) = tokio::join!(
+    let (status, last, list, remotes) = tokio::join!(
         run(path, &["status", "--porcelain=v2", "--branch", "-z"]),
         run(path, &["log", "-1", "-z", LOG_FORMAT, "HEAD", "--"]),
         run(path, &["worktree", "list", "--porcelain"]),
+        remotes(path),
     );
     let status = status.ok().filter(|o| o.ok)?;
     let status = parse_status(&status.stdout);
@@ -358,6 +430,10 @@ pub(crate) async fn info(path: &Path) -> Option<GitInfo> {
         fetched = fetched.max(d.fetched_at);
     }
 
+    let github = match (&remotes.default, remotes.github) {
+        (Some(remote), Some(repo)) => Some(GithubInfo { repo, remote: remote.clone(), ..GithubInfo::default() }),
+        _ => None,
+    };
     Some(GitInfo {
         branch: status.branch,
         head: last.as_ref().map(|l| l.short.clone()),
@@ -368,6 +444,8 @@ pub(crate) async fn info(path: &Path) -> Option<GitInfo> {
         last_commit: last.map(|l| l.commit),
         worktrees,
         fetched_at: fetched,
+        remote: remotes.default,
+        github,
     })
 }
 
@@ -432,5 +510,18 @@ u UU N... 100644 100644 100644 100644 a b c both\0\
         assert_eq!(log[0].commit.ts, 10_000);
         assert_eq!(log[1].short, "bb");
         assert_eq!(log[1].commit.author, "Bob");
+    }
+
+    #[test]
+    fn remotes_pick_origin_or_the_only_one() {
+        let both = "remote.upstream.url https://gitlab.com/x/y.git\nremote.origin.url git@github.com:BlackMac/coocoo.git\n";
+        assert_eq!(parse_remotes(both), Remotes { default: Some("origin".into()), github: Some("BlackMac/coocoo".into()) });
+        let single = "remote.my.fork.url https://github.com/me/repo\n";
+        assert_eq!(parse_remotes(single), Remotes { default: Some("my.fork".into()), github: Some("me/repo".into()) });
+        let other = "remote.origin.url /srv/git/repo.git\n";
+        assert_eq!(parse_remotes(other), Remotes { default: Some("origin".into()), github: None });
+        let ambiguous = "remote.a.url https://github.com/o/a\nremote.b.url https://github.com/o/b\n";
+        assert_eq!(parse_remotes(ambiguous), Remotes::default());
+        assert_eq!(parse_remotes(""), Remotes::default());
     }
 }

@@ -10,6 +10,7 @@
   import StatusDot from './StatusDot.svelte';
   import DiffCount from './DiffCount.svelte';
   import HostDot from './HostDot.svelte';
+  import PrBadge from './PrBadge.svelte';
 
   let { agent: a, showProject = true }: { agent: AgentSummary; showProject?: boolean } = $props();
 
@@ -24,6 +25,7 @@
     if (git.against) parts.push(`${git.ahead} ahead, ${git.behind} behind ${git.against}`);
     if (git.merged) parts.push('fully merged');
     if (git.operation) parts.push(`${OPERATION_LABEL[git.operation]} in progress`);
+    if (git.pr) parts.push(`PR #${git.pr.number} ${git.pr.state}`);
     if (git.conflicts) parts.push(`${git.conflicts} conflicted`);
     if (git.dirty) parts.push(`${git.dirty} uncommitted`);
     return parts.join(' · ');
@@ -50,9 +52,10 @@
       <span class="chip mono" class:faint-chip={git.kind === 'checkout'} title={gitTitle}>
         <GitBranch size={11} /><span class="ellipsis" class:detached={git.detached}>{git.label}</span>
         {#if git.operation || git.conflicts}<span class="g-bad">⚠</span>{/if}
-        {#if git.merged}<span class="g-ok">✓</span>{/if}
-        {#if git.ahead && !git.merged}<span>↑{git.ahead}</span>{/if}
+        {#if git.merged && git.pr?.state !== 'merged'}<span class="g-ok">✓</span>{/if}
+        {#if (git.unpushed ?? git.ahead) && !git.merged}<span>↑{git.unpushed ?? git.ahead}</span>{/if}
         {#if git.behind && !git.merged}<span class="g-warn">↓{git.behind}</span>{/if}
+        {#if git.pr}<PrBadge pr={git.pr} />{/if}
       </span>
     {:else if a.worktree}
       <span class="chip mono" title="Worktree {a.worktree.path} (from {a.worktree.base})"><GitBranch size={11} /><span class="ellipsis">{a.worktree.branch}</span></span>

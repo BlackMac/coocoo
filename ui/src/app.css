@@ -54,6 +54,7 @@
   --red-soft: rgba(240, 82, 82, 0.12);
   --green-soft: rgba(54, 196, 126, 0.12);
   --blue-soft: rgba(76, 141, 255, 0.13);
+  --violet-soft: rgba(155, 123, 255, 0.14);
 }
 
 [data-theme='light'] {
@@ -89,6 +90,7 @@
   --red-soft: rgba(220, 60, 60, 0.09);
   --green-soft: rgba(30, 160, 98, 0.1);
   --blue-soft: rgba(47, 116, 240, 0.09);
+  --violet-soft: rgba(130, 87, 230, 0.1);
 }
 
 *,

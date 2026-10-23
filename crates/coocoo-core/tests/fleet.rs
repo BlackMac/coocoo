@@ -185,6 +185,78 @@ async fn http_surface() {
     daemon.shutdown().await;
 }
 
+fn git(dir: &std::path::Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+}
+
+/// `doneAction: push`: `boards.cardDone` commits and pushes; a failed push leaves the card done
+/// with `gitError`, and `boards.cardPublish` retries it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn board_done_pushes() {
+    let home = TempHome::new("push");
+    let daemon = start(&home, "127.0.0.1:0").await;
+    let mut client = Client::connect(&daemon).await;
+
+    let bare = home.0.join("up.git");
+    let repo = home.0.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    for (k, v) in [("user.name", "Test"), ("user.email", "t@example.com"), ("commit.gpgsign", "false"), ("core.hooksPath", "/dev/null")] {
+        git(&repo, &["config", k, v]);
+    }
+    std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-q", "-m", "initial"]);
+    git(&home.0, &["clone", "-q", "--bare", repo.to_str().unwrap(), bare.to_str().unwrap()]);
+    git(&repo, &["remote", "add", "origin", bare.to_str().unwrap()]);
+    git(&repo, &["fetch", "-q", "origin"]);
+    git(&repo, &["branch", "-q", "--set-upstream-to", "origin/main"]);
+
+    let project = client.call(None, "projects.add", json!({ "path": repo })).await.unwrap();
+    let pid = project["id"].as_str().unwrap().to_owned();
+    let board = client.call(None, "boards.update", json!({ "projectId": pid, "doneAction": "push" })).await.unwrap();
+    assert_eq!(board["doneAction"], json!("push"));
+    let err = client.call(None, "boards.update", json!({ "projectId": pid, "doneAction": "force" })).await.unwrap_err();
+    assert_eq!(err["code"], json!("invalid_params"));
+
+    let card = client.call(None, "boards.cardAdd", json!({ "projectId": pid, "title": "Add b" })).await.unwrap();
+    std::fs::write(repo.join("b.txt"), "b\n").unwrap();
+    let done = client.call(None, "boards.cardDone", json!({ "projectId": pid, "cardId": card["id"] })).await.unwrap();
+    assert_eq!(done["card"]["column"], json!("done"), "{done}");
+    assert_eq!(done["pushed"], json!(true), "{done}");
+    assert!(done["card"].get("gitError").is_none(), "{done}");
+    assert_eq!(git(&bare, &["log", "-1", "--format=%s", "main"]), "Add b");
+
+    // The remote is gone: the commit is made and the card is done, the push error is noted.
+    let moved = home.0.join("moved.git");
+    std::fs::rename(&bare, &moved).unwrap();
+    let card = client.call(None, "boards.cardAdd", json!({ "projectId": pid, "title": "Add c" })).await.unwrap();
+    std::fs::write(repo.join("c.txt"), "c\n").unwrap();
+    let done = client.call(None, "boards.cardDone", json!({ "projectId": pid, "cardId": card["id"] })).await.unwrap();
+    assert_eq!(done["card"]["column"], json!("done"), "{done}");
+    assert_eq!(done["pushed"], json!(false), "{done}");
+    assert!(done["card"]["gitError"].as_str().unwrap().starts_with("push failed"), "{done}");
+    assert_eq!(git(&repo, &["log", "-1", "--format=%s"]), "Add c");
+
+    // Retry once the remote is back.
+    std::fs::rename(&moved, &bare).unwrap();
+    let retried = client.call(None, "boards.cardPublish", json!({ "projectId": pid, "cardId": card["id"] })).await.unwrap();
+    assert_eq!(retried["pushed"], json!(true), "{retried}");
+    assert!(retried["card"].get("gitError").is_none(), "{retried}");
+    assert_eq!(git(&bare, &["log", "-1", "--format=%s", "main"]), "Add c");
+
+    daemon.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_daemon_fleet() {
     let home_a = TempHome::new("a");

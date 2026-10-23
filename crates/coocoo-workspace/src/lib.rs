@@ -1,6 +1,6 @@
-//! Projects registry, git (status, diff, worktrees, commit, merge), filesystem browsing, host
-//! resource stats, terminals and project actions. Handles the `projects.*`, `git.*`, `fs.*`,
-//! `stats.*`, `terminal.*` and `actions.*` methods.
+//! Projects registry, git (status, diff, worktrees, commit, merge, push), GitHub pull requests
+//! via `gh`, filesystem browsing, host resource stats, terminals and project actions. Handles the
+//! `projects.*`, `git.*`, `fs.*`, `stats.*`, `terminal.*` and `actions.*` methods.
 //!
 //! git is driven through the `git` CLI (no libgit2): smaller binary, exact user semantics.
 
@@ -8,8 +8,10 @@ mod actions;
 mod diff;
 mod fs;
 mod git;
+mod github;
 mod icon;
 mod projects;
+mod publish;
 mod stats;
 mod terminal;
 mod watch;
@@ -41,6 +43,8 @@ pub struct Workspace {
     watches: watch::Watches,
     /// Serializes git refreshes per project so an older result never overwrites a newer one.
     refresh_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// `gh` state, repository settings and pull requests; merged into every git refresh.
+    github: Arc<github::Cache>,
     started: AtomicBool,
 }
 

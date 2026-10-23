@@ -72,6 +72,21 @@ for linked worktrees on a branch, `baseAhead`/`baseBehind` against the main work
 target of `git.merge`). It is recomputed when a watched git file changes (HEAD, index, refs,
 `FETCH_HEAD` of every worktree) and after each agent turn; Coocoo itself never fetches.
 
+`GitInfo.remote` is the default remote for pushing a branch without upstream (`origin`, else the
+only remote; absent when there is none or it is ambiguous). When its URL points to github.com,
+`GitInfo.github` is `{ repo: "owner/name", remote, gh: "unknown" \| "ready" \| "missing" \| "loggedOut", mergeMethods: ("squash" \| "merge" \| "rebase")[], deleteBranchOnMerge }`.
+Pull requests go through the `gh` CLI (`GH_PROMPT_DISABLED=1`, always with `--repo`); `gh`'s state
+is checked on the first pull request call of the daemon and again after a failed `gh` call, the
+repository settings (`gh repo view`) once per repository. A linked worktree's branch carries its
+pull request as `Worktree.pullRequest` (`PullRequestInfo`: `number`, `url`, `title`, `state`
+open/closed/merged — an open one before older ones, PRs from forks ignored —, `draft`, `base`,
+`checks: { total, passed, failed, pending, failing: [{ name, url? }] }`, `review?` approved /
+changesRequested / reviewRequired, `mergeState` = GitHub's `mergeStateStatus`, `fetchedAt`) and
+`Worktree.prCheckedAt` (last lookup, also when there is none). The daemon caches it and looks it up
+only after `git.push`, `git.prCreate`, `git.prMerge`, `git.fetch` (all linked worktrees with an
+upstream, ≤ 8 in parallel) and `git.prStatus` — never on watcher or turn refreshes. The UI calls
+`git.prStatus` when the git popover opens and the status is older than 60 s.
+
 | Method | Params | Result |
 |---|---|---|
 | `git.diff` | `{ cwd, base? }` | `DiffResult` — working tree (incl. untracked) vs `HEAD`, or vs `merge-base(base, HEAD)` when `base` is given |
@@ -81,6 +96,11 @@ target of `git.merge`). It is recomputed when a watched git file changes (HEAD, 
 | `git.merge` | `{ projectId, branch }` | `{ ok: bool, output: String }` — merges `branch` into the project's checked-out branch (no fast-forward commit message prompt; aborts and reports on conflict) |
 | `git.fetch` | `{ projectId }` | `{ ok: bool, output: String }` — `git fetch --all --no-auto-gc` in the project's checkout, at most 60 s; never prompts (ssh runs with `BatchMode=yes` unless `GIT_SSH`/`GIT_SSH_COMMAND`/`core.sshCommand` is set), so missing credentials fail with git's message |
 | `git.fastForward` | `{ projectId, path }` | `{ ok: bool, output: String }` — `git merge --ff-only @{upstream}` in the project's worktree at `path`, using the last fetch; `conflict` when the branch has no upstream, has commits of its own, or the tree has uncommitted files |
+| `git.push` | `{ projectId, path }` | `{ ok: bool, output: String, rejected: bool }` — pushes the branch checked out in the worktree containing `path`: to its upstream, or without one with `-u` to `<remote>/<branch>` (`GitInfo.remote`). Never forces; `rejected` = refused as non-fast-forward. Same environment and 60 s limit as `git.fetch`. `conflict` on a detached HEAD or without a remote |
+| `git.outgoing` | `{ projectId, path }` | `CommitInfo[]` (newest first, ≤ 200) — what `git.push` would send: `@{upstream}..HEAD`, else the commits no branch of the remote has |
+| `git.prCreate` | `{ projectId, path, title, body?, draft?: bool, base? }` | `PullRequestInfo` — pushes first when the branch has no upstream or unpushed commits, then `gh pr create --base <base> --head <branch>` (body via stdin); `base` defaults to the main worktree's branch. `unavailable` without a usable `gh`, `conflict` when the remote is not on GitHub, the push fails or `gh` refuses (e.g. a PR exists already) |
+| `git.prStatus` | `{ projectId, path }` | `PullRequestInfo \| null` — looks the branch's pull request up now (`gh pr list --head <branch> --state all`) and emits `project.updated` with it |
+| `git.prMerge` | `{ projectId, path, method: "squash" \| "merge" \| "rebase", deleteBranch?: bool }` | `{ ok: bool, output: String }` — `gh pr merge <n> --<method>` for the branch's open pull request (never `--admin`, `--auto` or `-d`, which would switch branches in the worktree); then optionally `git push <remote> --delete <branch>`, then `git.fetch`. A merged PR makes the worktree removable in the UI even when a squash merge left it "ahead" |
 | `git.worktreeCreate` | `{ projectId, branch?, base? }` | `WorktreeRef` — new branch (default `coocoo/<id>`) from `base` (default current branch) under `<data_dir>/worktrees/<project-name>-<project-id>/<branch-slug>` |
 | `git.worktreeRemove` | `{ projectId, path, deleteBranch?: bool }` | `{}` |
 | `fs.list` | `{ path? }` (default home) | `{ path, parent?, entries: FsEntry[] }` — directories first, hidden entries omitted |
@@ -151,7 +171,8 @@ the agent's project on startup (cards in doing/done keep that agent). Every meth
 
 | Method | Params | Result |
 |---|---|---|
-| `boards.get` | `{ projectId }` | `Board` — `cards` (`column` inbox/todo/doing/done; a column's order is the order of its cards, first = top; `agentId`/`agentTitle` = the agent it was handed to or that finished it; `refining` while its agent works out a refinement; `refinement`: `{ text (Markdown), attachments?: [{ name, mime, size }], agentId?, agentTitle?, at }`) and `sources` |
+| `boards.get` | `{ projectId }` | `Board` — `cards` (`column` inbox/todo/doing/done; a column's order is the order of its cards, first = top; `agentId`/`agentTitle` = the agent it was handed to or that finished it; `refining` while its agent works out a refinement; `refinement`: `{ text (Markdown), attachments?: [{ name, mime, size }], agentId?, agentTitle?, at }`; `pullRequest?: { number, url }` and `gitError?` from finishing it), `sources` and `doneAction` (`commit` \| `push` \| `pullRequest`, default `commit`: what `boards.cardDone` does after the commit) |
+| `boards.update` | `{ projectId, doneAction? }` | `Board` |
 | `boards.cardAdd` | `{ projectId, title, body?, column? (todo), top?: bool, startUrl?, doneUrl?, images?: [{ name?, mimeType, data (base64) }], agentId? }` | `Card` — `agentId`: the agent adding it, recorded as `addedBy: { id, title }` (`kanban_add`; its inbox suggestions go to the top); `startUrl`/`doneUrl`: http(s) webhooks, see below. `images`: context images (PNG, JPEG, GIF or WebP, ≤ 5 MiB each, ≤ 10 per card), stored in `<data_dir>/boards/cards/<card id>/` under safe, unique names (`Card.images`: `[{ name, mime, size }]`); the agent that starts or refines the card gets their paths in its prompt, `kanban_list` shows them |
 | `boards.cardUpdate` | `{ projectId, cardId, title?, body?, startUrl?, doneUrl? ("" clears each), column?, index?, addImages?: [{ name?, mimeType, data }], removeImages?: [name] }` | `Card` — images as for `cardAdd` (the UI uploads one per call to stay below the socket's message limit); `index` = position in the (target) column, 0 = top, past the end = bottom |
 | `boards.cardDelete` | `{ projectId, cardId }` | `{}` (its images and refinement attachments are deleted) |
@@ -160,7 +181,8 @@ the agent's project on startup (cards in doing/done keep that agent). Every meth
 | `boards.refinementSave` | `{ projectId, cardId, agentId?, text (Markdown, ≤ 32 KiB), attachments?: [path] }` | `Card` — what `kanban_refine` calls: replaces the card's refinement and clears `refining`. Attachments (≤ 10, ≤ 5 MiB each; png, jpg, gif, webp, svg, html) are copied to `<data_dir>/boards/attachments/<card id>/`; relative paths resolve in the agent's directory |
 | `boards.attachment` | `{ projectId, cardId, name }` | `{ mime, data }` (base64) — a file of the card's refinement. The UI shows HTML mocks only in `sandbox="allow-scripts"` frames (no app origin) |
 | `boards.cardImage` | `{ projectId, cardId, name }` | `{ mime, data }` (base64) — one of the card's images |
-| `boards.cardDone` | `{ projectId, cardId, agentId? (the card's agent), commitMessage? (card title), note? }` | `{ card, commit?: CommitInfo, commitSkipped?: "not a git repository" \| "nothing to commit" }` — `git.commit` in that agent's directory (the project's without one), records the agent, then moves the card to the top of `done`; a failing commit leaves the card in place and returns the error |
+| `boards.cardDone` | `{ projectId, cardId, agentId? (the card's agent), commitMessage? (card title), note?, prTitle?, prBody? }` | `{ card, commit?: CommitInfo, commitSkipped?: "not a git repository" \| "nothing to commit", pushed?, pullRequest?: { number, url }, gitError? }` — `git.commit` in that agent's directory (the project's without one), records the agent, then moves the card to the top of `done`; a failing commit leaves the card in place and returns the error. With `doneAction` `push` it then runs `git.push` there; with `pullRequest` also `git.prCreate` for agents in their own worktree when the branch has no open pull request (title `prTitle`, else the card title; body `prBody`, else the card reference, the refinement's Goal/Ziel section or the card text, and the pushed commits), agents in the project checkout only push. A failing push or PR leaves the card done with `card.gitError`; on success `card.pullRequest` is set. An agent in the project checkout that pushed more than one commit gets "Pushed N commits." added to the note |
+| `boards.cardPublish` | `{ projectId, cardId }` | `{ card, pushed, pullRequest?, error? }` — repeats the push (and pull request, per `doneAction`) for a done card, e.g. after `gitError`; also pushes when the board is set to `commit` |
 | `boards.sourceAdd` | `{ projectId, kind: "feed" \| "command" \| "script", target? (feed URL / command), script? , name? (required for scripts), intervalMins? (15 \| 60 \| 360 \| 1440, default 60), agentId? }` | `{ source: BoardSource, imported }` — an importer for the inbox, run now and then on its schedule while the daemon runs (see below); `source.error` says why a run failed |
 | `boards.sourceUpdate` | `{ projectId, sourceId, name? ("" clears, not for scripts), target? (feed/command), script? (scripts), intervalMins?, agentId? }` | `{ source, imported }` — a given `target`/`script` runs right away; `agentId` records who changed it |
 | `boards.sourceRemove` | `{ projectId, sourceId }` | `Board` (its cards stay; a script's directory is deleted) |

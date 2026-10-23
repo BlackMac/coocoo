@@ -14,7 +14,8 @@ use coocoo_proto::error::{ok, params};
 use coocoo_proto::util::{new_id, now_ms, read_json, truncate, write_json_atomic};
 use base64::Engine as _;
 use coocoo_proto::{
-    AgentRef, AgentStatus, ApiError, ApiResult, Attachment, Board, BoardEvent, BoardSource, Card, CardColumn, CommitInfo, Project, Refinement, events,
+    AgentRef, AgentStatus, AgentSummary, ApiError, ApiResult, Attachment, Board, BoardEvent, BoardSource, Card, CardColumn, CommitInfo, DoneAction,
+    PrState, Project, PullRequestInfo, PullRequestRef, Refinement, events,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -47,6 +48,13 @@ const MAX_ATTACHMENT_BYTES: usize = 5 << 20;
 #[serde(rename_all = "camelCase")]
 struct ProjectParams {
     project_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BoardUpdateParams {
+    project_id: String,
+    done_action: Option<DoneAction>,
 }
 
 #[derive(Deserialize)]
@@ -133,6 +141,25 @@ struct CardDoneParams {
     agent_id: Option<String>,
     commit_message: Option<String>,
     note: Option<String>,
+    /// Pull request title and description when the board opens one (`DoneAction::PullRequest`).
+    pr_title: Option<String>,
+    pr_body: Option<String>,
+}
+
+/// Pull request title and description from the agent (`kanban_done`); Coocoo fills in what is
+/// missing.
+#[derive(Default)]
+struct PrText {
+    title: Option<String>,
+    body: Option<String>,
+}
+
+/// What publishing a finished card did.
+#[derive(Default)]
+struct Published {
+    pushed: bool,
+    pull_request: Option<PullRequestRef>,
+    error: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -236,6 +263,8 @@ fn new_card(title: String, body: Option<String>, column: CardColumn) -> Card {
         images: Vec::new(),
         refining: false,
         refinement: None,
+        pull_request: None,
+        git_error: None,
     }
 }
 
@@ -469,7 +498,7 @@ fn refinement_brief(refinement: &Refinement, attachments: &Path) -> String {
 }
 
 /// Prompt for a started card.
-fn card_prompt(card: &Card, boards_dir: &Path) -> String {
+fn card_prompt(card: &Card, boards_dir: &Path, done_action: DoneAction) -> String {
     let attachments = &attachment_dir(boards_dir, &card.id);
     let mut text = format!("Work on this card from the project's Kanban board (card id `{}`):\n\n{}", card.id, card_brief(card, boards_dir));
     if let Some(refinement) = &card.refinement {
@@ -481,7 +510,56 @@ fn card_prompt(card: &Card, boards_dir: &Path) -> String {
          (it commits your changes if this is a git repository and moves the card to Done). If you cannot finish it, \
          say why and leave the card in Doing.",
     );
+    if let Some(hint) = done_hint(done_action) {
+        text.push(' ');
+        text.push_str(hint);
+    }
     text
+}
+
+/// What `kanban_done` does on this board beyond committing, for the agent; `None` for commit only.
+pub(crate) fn done_hint(action: DoneAction) -> Option<&'static str> {
+    match action {
+        DoneAction::Commit => None,
+        DoneAction::Push => Some("On this board `kanban_done` also pushes the branch after the commit."),
+        DoneAction::PullRequest => Some(
+            "On this board `kanban_done` also pushes the branch and, for an agent in its own worktree, opens a pull \
+             request: pass `prTitle` and `prBody` (what changed and why) with it.",
+        ),
+    }
+}
+
+/// The card's goal for a pull request description: the "Goal"/"Ziel" section of its refinement,
+/// else its text, shortened.
+fn card_goal(card: &Card) -> Option<String> {
+    const MAX: usize = 600;
+    let heading = |line: &str| line.trim_start().starts_with('#');
+    let goal = card.refinement.as_ref().and_then(|r| {
+        let mut lines = r.text.lines().skip_while(|l| {
+            let name = l.trim_start().trim_start_matches('#').trim().trim_end_matches(':');
+            !(heading(l) && (name.eq_ignore_ascii_case("goal") || name.eq_ignore_ascii_case("ziel")))
+        });
+        lines.next()?;
+        let section: Vec<&str> = lines.take_while(|l| !heading(l)).collect();
+        Some(section.join("\n").trim().to_owned()).filter(|s| !s.is_empty())
+    });
+    goal.or_else(|| card.body.clone()).map(|text| truncate(text.trim(), MAX)).filter(|t| !t.is_empty())
+}
+
+/// Pull request description from the card and the commits that go out with it.
+fn default_pr_body(card: &Card, commits: &[CommitInfo]) -> String {
+    let mut body = format!("Kanban: {} ({})", card.title, card.id);
+    if let Some(goal) = card_goal(card) {
+        body.push_str("\n\n");
+        body.push_str(&goal);
+    }
+    if !commits.is_empty() {
+        body.push_str("\n\nCommits:\n");
+        for c in commits.iter().rev() {
+            body.push_str(&format!("- {} {}\n", &c.sha[..c.sha.len().min(7)], c.summary));
+        }
+    }
+    body.trim_end().to_owned()
 }
 
 /// Prompt for refining a card before anyone implements it.
@@ -553,6 +631,17 @@ pub(crate) fn migrate_agent_boards(agents_root: &Path, boards_dir: &Path, projec
 impl Agents {
     pub(crate) async fn board_method(self: &Arc<Self>, method: &str, p: Value) -> ApiResult<Value> {
         match method {
+            "boards.update" => {
+                let p: BoardUpdateParams = params(p)?;
+                self.project(&p.project_id).await?;
+                ok(self.edit_board(&p.project_id, |b| {
+                    let changed = p.done_action.is_some_and(|a| a != b.done_action);
+                    if let Some(action) = p.done_action {
+                        b.done_action = action;
+                    }
+                    Ok((b.clone(), changed))
+                })?)
+            }
             "boards.get" => {
                 let ProjectParams { project_id } = params(p)?;
                 self.project(&project_id).await?;
@@ -661,6 +750,7 @@ impl Agents {
             "boards.attachment" => self.attachment(params(p)?, false).await,
             "boards.cardImage" => self.attachment(params(p)?, true).await,
             "boards.cardDone" => self.card_done(params(p)?).await,
+            "boards.cardPublish" => self.card_publish(params(p)?).await,
             "boards.sourceAdd" => {
                 let p: SourceAddParams = params(p)?;
                 let interval_mins = check_interval(p.interval_mins.unwrap_or(DEFAULT_INTERVAL_MINS))?;
@@ -816,12 +906,12 @@ impl Agents {
     /// it moves to doing) or to refine it first (it stays in todo, marked `refining`).
     async fn card_start(self: &Arc<Self>, p: CardStartParams, refine: bool) -> ApiResult<Value> {
         self.project(&p.project_id).await?;
-        let card = self.edit_board(&p.project_id, |b| Ok((card_mut(b, &p.card_id)?.clone(), false)))?;
+        let (card, done_action) = self.edit_board(&p.project_id, |b| Ok(((card_mut(b, &p.card_id)?.clone(), b.done_action), false)))?;
         if card.column == CardColumn::Doing || card.column == CardColumn::Done {
             let column = if card.column == CardColumn::Doing { "Doing" } else { "Done" };
             return Err(ApiError::conflict(format!("card “{}” is already in {column}", card.title)));
         }
-        let prompt = if refine { refine_prompt(&card, &self.boards_dir) } else { card_prompt(&card, &self.boards_dir) };
+        let prompt = if refine { refine_prompt(&card, &self.boards_dir) } else { card_prompt(&card, &self.boards_dir, done_action) };
         let summary = match p.agent_id.filter(|a| !a.is_empty()) {
             Some(agent_id) => {
                 let agent = self.get(&agent_id)?;
@@ -941,9 +1031,9 @@ impl Agents {
 
     async fn card_done(self: &Arc<Self>, p: CardDoneParams) -> ApiResult<Value> {
         let project = self.project(&p.project_id).await?;
-        let card = self.edit_board(&p.project_id, |b| Ok((card_mut(b, &p.card_id)?.clone(), false)))?;
-        let agent = p.agent_id.or(card.agent_id.clone()).and_then(|id| self.get(&id).ok());
-        let cwd = agent.as_ref().map_or(project.path, |a| a.summary().cwd);
+        let (card, done_action) = self.edit_board(&p.project_id, |b| Ok(((card_mut(b, &p.card_id)?.clone(), b.done_action), false)))?;
+        let agent = p.agent_id.or(card.agent_id.clone()).and_then(|id| self.get(&id).ok()).map(|a| a.summary());
+        let cwd = agent.as_ref().map_or(project.path, |a| a.cwd.clone());
         let message = p.commit_message.map(|m| m.trim().to_owned()).filter(|m| !m.is_empty()).unwrap_or_else(|| card.title.clone());
         let (commit, skipped) = match self.orch()?.call(None, "git.commit".into(), json!({ "cwd": cwd, "message": message })).await {
             Ok(value) => (Some(serde_json::from_value::<CommitInfo>(value)?), None),
@@ -957,15 +1047,115 @@ impl Agents {
             let c = card_mut(b, &p.card_id)?;
             c.note = note;
             c.commit = commit.clone();
+            c.git_error = None;
             if let Some(agent) = &agent {
-                let summary = agent.summary();
-                c.agent_id = Some(summary.id);
-                c.agent_title = Some(summary.title);
+                c.agent_id = Some(agent.id.clone());
+                c.agent_title = Some(agent.title.clone());
             }
             move_card(b, &p.card_id, CardColumn::Done, 0).map(|c| (c, true))
         })?;
         self.fire_hook(&p.project_id, &card, Hook::Done);
-        Ok(json!({ "card": card, "commit": commit, "commitSkipped": skipped }))
+        let mut result = json!({ "card": card, "commit": commit, "commitSkipped": skipped });
+        // The commit is made: whatever happens to the push, the card stays done.
+        if done_action != DoneAction::Commit && skipped != Some("not a git repository") {
+            let pr_text = PrText { title: p.pr_title, body: p.pr_body };
+            let (card, published) = self.publish_card(&p.project_id, &card.id, agent.as_ref(), &cwd, done_action, pr_text).await?;
+            result["card"] = json!(card);
+            result["pushed"] = json!(published.pushed);
+            result["pullRequest"] = json!(published.pull_request);
+            result["gitError"] = json!(published.error);
+        }
+        Ok(result)
+    }
+
+    /// `boards.cardPublish`: push (and open the pull request) for a done card again, e.g. after
+    /// the push in `kanban_done` failed.
+    async fn card_publish(self: &Arc<Self>, p: CardParams) -> ApiResult<Value> {
+        let project = self.project(&p.project_id).await?;
+        let (card, done_action) = self.edit_board(&p.project_id, |b| Ok(((card_mut(b, &p.card_id)?.clone(), b.done_action), false)))?;
+        if card.column != CardColumn::Done {
+            return Err(ApiError::conflict(format!("card “{}” is not done yet", card.title)));
+        }
+        let agent = match &card.agent_id {
+            Some(id) => Some(self.get(id).map_err(|_| ApiError::conflict("the agent that finished the card no longer exists; push from its project instead"))?.summary()),
+            None => None,
+        };
+        let cwd = agent.as_ref().map_or(project.path, |a| a.cwd.clone());
+        // Retrying is an explicit request to push, also when the board only commits by now.
+        let action = if done_action == DoneAction::Commit { DoneAction::Push } else { done_action };
+        let (card, published) = self.publish_card(&p.project_id, &card.id, agent.as_ref(), &cwd, action, PrText::default()).await?;
+        ok(json!({ "card": card, "pushed": published.pushed, "pullRequest": published.pull_request, "error": published.error }))
+    }
+
+    /// Push the agent's branch and, for [`DoneAction::PullRequest`] and worktree agents, open a
+    /// pull request unless one is open already; the outcome is noted on the card (`gitError`,
+    /// `pullRequest`, and the number of pushed commits when an agent in the shared checkout
+    /// pushed more than its own).
+    async fn publish_card(
+        self: &Arc<Self>,
+        project_id: &str,
+        card_id: &str,
+        agent: Option<&AgentSummary>,
+        cwd: &str,
+        action: DoneAction,
+        text: PrText,
+    ) -> ApiResult<(Card, Published)> {
+        let orch = self.orch()?;
+        let at = json!({ "projectId": project_id, "path": cwd });
+        let call = |method: &str| orch.call(None, method.to_owned(), at.clone());
+        let mut published = Published::default();
+        let outgoing: Vec<CommitInfo> = match call("git.outgoing").await {
+            Ok(v) => serde_json::from_value(v).unwrap_or_default(),
+            Err(_) => Vec::new(),
+        };
+        match call("git.push").await {
+            Ok(v) if v["ok"] == true => published.pushed = true,
+            Ok(v) if v["rejected"] == true => {
+                published.error = Some(format!("push rejected (the remote branch has commits this one lacks): {}", v["output"].as_str().unwrap_or("")));
+            }
+            Ok(v) => published.error = Some(format!("push failed: {}", v["output"].as_str().unwrap_or(""))),
+            Err(err) => published.error = Some(format!("push failed: {}", err.message)),
+        }
+        let worktree_agent = agent.is_some_and(|a| a.worktree.is_some());
+        if published.pushed && action == DoneAction::PullRequest && worktree_agent {
+            let card = self.edit_board(project_id, |b| Ok((card_mut(b, card_id)?.clone(), false)))?;
+            let pr = match call("git.prStatus").await {
+                Ok(v) => match serde_json::from_value::<Option<PullRequestInfo>>(v)?.filter(|p| p.state == PrState::Open) {
+                    Some(open) => Ok(open),
+                    None => {
+                        let title = text.title.map(|t| t.trim().to_owned()).filter(|t| !t.is_empty()).unwrap_or_else(|| card.title.clone());
+                        let body = text.body.map(|t| t.trim().to_owned()).filter(|t| !t.is_empty()).unwrap_or_else(|| default_pr_body(&card, &outgoing));
+                        let params = json!({ "projectId": project_id, "path": cwd, "title": title, "body": body });
+                        match orch.call(None, "git.prCreate".into(), params).await {
+                            Ok(v) => Ok(serde_json::from_value::<PullRequestInfo>(v)?),
+                            Err(err) => Err(err),
+                        }
+                    }
+                },
+                Err(err) => Err(err),
+            };
+            match pr {
+                Ok(pr) => published.pull_request = Some(PullRequestRef { number: pr.number, url: pr.url }),
+                Err(err) => published.error = Some(format!("pull request failed: {}", err.message)),
+            }
+        }
+        let shared_extra = (published.pushed && !worktree_agent && outgoing.len() > 1).then_some(outgoing.len());
+        let card = self.edit_board(project_id, |b| {
+            let c = card_mut(b, card_id)?;
+            c.git_error = published.error.clone();
+            if published.pull_request.is_some() {
+                c.pull_request = published.pull_request.clone();
+            }
+            if let Some(n) = shared_extra {
+                let line = format!("Pushed {n} commits.");
+                c.note = Some(match c.note.take() {
+                    Some(note) => format!("{note}\n\n{line}"),
+                    None => line,
+                });
+            }
+            Ok((c.clone(), true))
+        })?;
+        Ok((card, published))
     }
 
     /// POST the card's webhook for `hook`, if it has one, in the background. A failure is noted
@@ -1395,9 +1585,32 @@ mod tests {
     fn prompts_list_card_images() {
         let mut c = card("c1", CardColumn::Todo);
         c.images = vec![Attachment { name: "screen.png".into(), mime: "image/png".into(), size: 1 }];
-        let prompt = card_prompt(&c, Path::new("/data/boards"));
+        let prompt = card_prompt(&c, Path::new("/data/boards"), DoneAction::Commit);
         assert!(prompt.contains("look at them with your read tool):\n- /data/boards/cards/c1/screen.png"), "{prompt}");
         assert!(refine_prompt(&c, Path::new("/data/boards")).contains("/data/boards/cards/c1/screen.png"));
+    }
+
+    #[test]
+    fn pr_body_takes_the_refinement_goal_and_commits_oldest_first() {
+        let mut c = card("c1", CardColumn::Doing);
+        c.title = "Push from the chip".into();
+        c.body = Some("Long card text".into());
+        let commit = |sha: &str, summary: &str| CommitInfo { sha: sha.into(), summary: summary.into(), author: "a".into(), ts: 0 };
+        let commits = [commit("bbbbbbbbbb", "second"), commit("aaaaaaaaaa", "first")];
+        c.refinement = Some(Refinement {
+            text: "# Title\n\n## Ziel\nPush and PRs from the git chip.\n\nSecond line.\n\n## Verhalten\n- more".into(),
+            attachments: vec![],
+            agent_id: None,
+            agent_title: None,
+            at: 0,
+        });
+        assert_eq!(
+            default_pr_body(&c, &commits),
+            "Kanban: Push from the chip (c1)\n\nPush and PRs from the git chip.\n\nSecond line.\n\nCommits:\n- aaaaaaa first\n- bbbbbbb second"
+        );
+        // Without a goal section the card text stands in; without commits there is no list.
+        c.refinement.as_mut().unwrap().text = "## Approach\nx".into();
+        assert_eq!(default_pr_body(&c, &[]), "Kanban: Push from the chip (c1)\n\nLong card text");
     }
 
     #[test]
@@ -1413,7 +1626,7 @@ mod tests {
 
     #[test]
     fn moving_keeps_other_columns_and_respects_index() {
-        let mut b = Board { cards: vec![card("a", CardColumn::Todo), card("x", CardColumn::Done), card("b", CardColumn::Todo), card("c", CardColumn::Todo)], sources: vec![] };
+        let mut b = Board { cards: vec![card("a", CardColumn::Todo), card("x", CardColumn::Done), card("b", CardColumn::Todo), card("c", CardColumn::Todo)], ..Board::default() };
         move_card(&mut b, "c", CardColumn::Todo, 0).unwrap();
         assert_eq!(columns(&b, CardColumn::Todo), ["c", "a", "b"]);
         move_card(&mut b, "a", CardColumn::Doing, 0).unwrap();
@@ -1450,7 +1663,7 @@ mod tests {
         let (agents_dir, boards_dir) = (root.join("agents"), root.join("boards"));
         let legacy = |agent: &str, cards: Vec<Card>| {
             std::fs::create_dir_all(agents_dir.join(agent)).unwrap();
-            write_json_atomic(&agents_dir.join(agent).join(LEGACY_FILE), &Board { cards, sources: vec![] }).unwrap();
+            write_json_atomic(&agents_dir.join(agent).join(LEGACY_FILE), &Board { cards, ..Board::default() }).unwrap();
         };
         legacy("a1", vec![card("t1", CardColumn::Todo), card("d1", CardColumn::Done)]);
         legacy("a2", vec![card("g2", CardColumn::Doing)]);
