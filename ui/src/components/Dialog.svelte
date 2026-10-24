@@ -15,9 +15,24 @@
   $effect(() => {
     const prev = document.activeElement as HTMLElement | null;
     const first = box.querySelector<HTMLElement>('[autofocus], input:not([type=hidden]), textarea, select, button.primary');
-    // Without a field, the dialog itself takes focus so Escape reaches it.
-    (first ?? box).focus();
-    return () => prev?.focus?.();
+    // On touch screens a focused field pops up the keyboard before the form is even seen, so the
+    // dialog itself takes focus there (also taking it from an `autofocus` field). Without a
+    // field, the dialog takes focus so Escape reaches it.
+    const touch = matchMedia('(pointer: coarse)').matches;
+    (touch ? box : (first ?? box)).focus({ preventScroll: true });
+    return () => prev?.focus?.({ preventScroll: true });
+  });
+
+  // The keyboard sliding in shrinks the dialog: keep the field being typed in visible.
+  $effect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const reveal = () => {
+      const el = document.activeElement;
+      if (el instanceof HTMLElement && el !== box && box.contains(el)) el.scrollIntoView({ block: 'nearest' });
+    };
+    vv.addEventListener('resize', reveal);
+    return () => vv.removeEventListener('resize', reveal);
   });
 
   function onkeydown(e: KeyboardEvent) {
@@ -41,9 +56,12 @@
 </div>
 
 <style>
+  /* As tall as the visible viewport (`--app-height`, set in main.ts), not the layout viewport:
+     with the on-screen keyboard up, a dialog must fit above it and scroll inside. */
   .overlay {
     position: fixed;
-    inset: 0;
+    inset: 0 0 auto;
+    height: var(--app-height, 100%);
     z-index: 50;
     display: flex;
     align-items: flex-start;
@@ -55,7 +73,7 @@
   .dialog {
     width: 100%;
     outline: none;
-    max-height: 80vh;
+    max-height: min(80vh, 100%);
     display: flex;
     flex-direction: column;
     border-radius: 10px;
@@ -101,13 +119,18 @@
   }
   @media (max-width: 640px) {
     .overlay {
-      padding: 0;
+      padding: env(safe-area-inset-top) 0 0;
       align-items: flex-end;
     }
     .dialog {
       max-width: none !important;
-      max-height: 92vh;
+      /* Percent of the overlay, which shrinks with the keyboard (vh does not on iOS). */
+      max-height: 92%;
       border-radius: 12px 12px 0 0;
+    }
+    /* Without the keyboard the sheet ends at the screen's bottom edge. */
+    footer {
+      padding-bottom: max(12px, env(safe-area-inset-bottom));
     }
   }
 </style>
