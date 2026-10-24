@@ -229,9 +229,11 @@
 </div>
 
 <style>
+  /* As tall as the visible viewport (see Dialog.svelte): the list shrinks above the keyboard. */
   .overlay {
     position: fixed;
-    inset: 0;
+    inset: 0 0 auto;
+    height: var(--app-height, 100%);
     z-index: 60;
     display: flex;
     justify-content: center;
@@ -241,7 +243,10 @@
     animation: fade var(--t-fast) var(--ease);
   }
   .pal {
+    display: flex;
+    flex-direction: column;
     width: min(620px, 100%);
+    max-height: 100%;
     border-radius: 12px;
     background: var(--bg-1);
     box-shadow: var(--shadow-pop);
@@ -249,6 +254,7 @@
     animation: rise var(--t) var(--ease);
   }
   .q {
+    flex: none;
     display: flex;
     align-items: center;
     gap: 10px;
@@ -274,6 +280,11 @@
     max-height: min(420px, 60vh);
     overflow-y: auto;
     padding: 6px;
+  }
+  @media (max-width: 640px) {
+    .overlay {
+      padding-top: max(16px, env(safe-area-inset-top));
+    }
   }
   .grp {
     padding: 8px 10px 4px;
