@@ -5,6 +5,7 @@
   import { now } from '../lib/clock.svelte';
   import { ago, shortPath } from '../lib/format';
   import { ChevronDown, RotateCw, Square } from '../lib/icons';
+  import { keepInView } from '../lib/popover';
   import type { AgentSummary, Project, ProjectAction, TerminalInfo } from '../lib/protocol';
   import {
     actionDetail,
@@ -93,7 +94,7 @@
       </button>
     </div>
     {#if open}
-      <div class="pop" class:up role="menu">
+      <div class="pop" class:up role="menu" use:keepInView>
         <div class="grp">{agent ? 'Agent' : 'Project'} · <span class="mono">{shortPath(baseDir(ctx), 3)}</span></div>
         {#each list as a (a.id)}
           {@const Icon = actionIcon(a)}
@@ -264,6 +265,10 @@
   .body:disabled {
     opacity: 0.45;
     cursor: default;
+  }
+  /* A long command line must not squeeze the icon. */
+  .body :global(svg) {
+    flex: none;
   }
   .t {
     display: flex;

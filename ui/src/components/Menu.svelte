@@ -10,6 +10,7 @@
 
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import { keepInView } from '../lib/popover';
 
   let { items, label, trigger, align = 'right' }: { items: MenuItem[]; label: string; trigger: Snippet; align?: 'left' | 'right' } = $props();
 
@@ -53,7 +54,7 @@
     {@render trigger()}
   </button>
   {#if open}
-    <div class="pop" class:left={align === 'left'} class:up role="menu">
+    <div class="pop" class:left={align === 'left'} class:up role="menu" use:keepInView>
       {#each items as item (item.label)}
         <button
           role="menuitem"
