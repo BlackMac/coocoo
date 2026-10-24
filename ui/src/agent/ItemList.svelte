@@ -1,16 +1,19 @@
 <script lang="ts">
   import type { Subagent, TimelineItem } from '../lib/protocol';
+  import { mergeErrors, parseError, type ProviderError } from '../lib/providerError';
   import UserItem from './UserItem.svelte';
   import AssistantItem from './AssistantItem.svelte';
   import ThinkingItem from './ThinkingItem.svelte';
   import ToolItem from './ToolItem.svelte';
   import RefinementItem from './RefinementItem.svelte';
+  import ErrorItem from './ErrorItem.svelte';
 
   // Timeline items as rendered in a transcript (an agent's, or a subagent's). Renders no wrapper
   // element, so the parent's layout applies to each block. `host`/`projectId`: the agent's project,
   // whose board shows card refinements (`kanban_refine`) below the call. `host`/`agentId`: the
   // agent whose user message images are shown. `highlight`: an item id whose block is wrapped in a
-  // briefly flashing `.at` element (a moment jumped to via `?at=`).
+  // briefly flashing `.at` element (a moment jumped to via `?at=`). `erroractions`: offered on the
+  // last block when it is a rate limit or quota error (the agent's turn just failed on it).
   let {
     items,
     onsubagent,
@@ -18,11 +21,24 @@
     agentId,
     projectId,
     highlight,
-  }: { items: TimelineItem[]; onsubagent?: (s: Subagent) => void; host?: string; agentId?: string; projectId?: string; highlight?: string } = $props();
+    erroractions,
+  }: {
+    items: TimelineItem[];
+    onsubagent?: (s: Subagent) => void;
+    host?: string;
+    agentId?: string;
+    projectId?: string;
+    highlight?: string;
+    erroractions?: { model: () => void; retry: () => void };
+  } = $props();
   const isRefinement = (it: TimelineItem) => it.tool?.name === 'kanban_refine' && it.tool.status === 'ok';
 
-  /** Groups consecutive tool calls so they render as one compact block. */
-  type Block = { kind: 'tools'; items: TimelineItem[]; id: string } | { kind: 'item'; item: TimelineItem; id: string };
+  /** Groups consecutive tool calls so they render as one compact block, and consecutive errors
+   *  with the same cause (a failed request and its exhausted retries) into one error. */
+  type Block =
+    | { kind: 'tools'; items: TimelineItem[]; id: string }
+    | { kind: 'error'; items: TimelineItem[]; errors: ProviderError[]; id: string }
+    | { kind: 'item'; item: TimelineItem; id: string };
   const blocks = $derived.by<Block[]>(() => {
     const out: Block[] = [];
     for (const it of items) {
@@ -30,10 +46,18 @@
       if (it.kind === 'tool') {
         if (last?.kind === 'tools') last.items.push(it);
         else out.push({ kind: 'tools', items: [it], id: `t:${it.id}` });
+      } else if (it.kind === 'error') {
+        const error = parseError(it.text ?? '', it.ts);
+        if (last?.kind === 'error' && last.errors[0].key === error.key) {
+          last.items.push(it);
+          last.errors.push(error);
+        } else out.push({ kind: 'error', items: [it], errors: [error], id: `e:${it.id}` });
       } else out.push({ kind: 'item', item: it, id: it.id });
     }
     return out;
   });
+  const lastId = $derived(blocks.at(-1)?.id);
+  const inBlock = (b: Block, id: string) => (b.kind === 'item' ? b.item.id === id : b.items.some((it) => it.id === id));
 </script>
 
 {#snippet block(b: Block)}
@@ -44,6 +68,8 @@
     {#if host && projectId}
       {#each b.items.filter(isRefinement) as it (it.id)}<RefinementItem item={it} {host} {projectId} />{/each}
     {/if}
+  {:else if b.kind === 'error'}
+    <ErrorItem error={mergeErrors(b.errors)} actions={b.id === lastId ? erroractions : undefined} />
   {:else if b.item.kind === 'user'}
     <UserItem item={b.item} {host} {agentId} />
   {:else if b.item.kind === 'assistant'}
@@ -52,15 +78,13 @@
     <ThinkingItem item={b.item} />
   {:else if b.item.kind === 'notice'}
     <div class="notice"><span>{b.item.text}</span></div>
-  {:else if b.item.kind === 'command'}
-    <pre class="command mono">{b.item.text}</pre>
   {:else}
-    <div class="error">{b.item.text}</div>
+    <pre class="command mono">{b.item.text}</pre>
   {/if}
 {/snippet}
 
 {#each blocks as b (b.id)}
-  {#if highlight && (b.kind === 'tools' ? b.items.some((it) => it.id === highlight) : b.item.id === highlight)}
+  {#if highlight && inBlock(b, highlight)}
     <div class="at">{@render block(b)}</div>
   {:else}
     {@render block(b)}
@@ -108,15 +132,6 @@
     content: '';
     flex: 1;
     border-top: 1px solid var(--border);
-  }
-  .error {
-    padding: 9px 12px;
-    border: 1px solid color-mix(in srgb, var(--red) 30%, var(--border));
-    border-radius: var(--r-lg);
-    background: var(--red-soft);
-    color: var(--red);
-    font-size: var(--fs-sm);
-    white-space: pre-wrap;
   }
   .command {
     margin: 0;

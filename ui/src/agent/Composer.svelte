@@ -29,6 +29,14 @@
   let models = $state<ModelInfo[]>([]);
   let ta = $state<HTMLTextAreaElement>();
   let fileInput = $state<HTMLInputElement>();
+  let picker = $state<ModelPicker>();
+
+  // An error block asked for another model.
+  $effect(() => {
+    if (ui.modelPicker !== k || !picker) return;
+    ui.modelPicker = null;
+    void picker.show();
+  });
 
   $effect(() => {
     fleet
@@ -281,7 +289,7 @@
     <div class="bar">
       <button class="btn ghost icon sm" title="Attach image" aria-label="Attach image" onclick={() => fileInput?.click()}><Paperclip size={14} /></button>
       <input type="file" accept="image/*" multiple hidden bind:this={fileInput} onchange={(e) => [...(e.currentTarget.files ?? [])].forEach(readFile)} />
-      <ModelPicker {models} value={a.model ?? ''} onselect={setModel} loading={!models.length} />
+      <ModelPicker bind:this={picker} {models} value={a.model ?? ''} onselect={setModel} loading={!models.length} />
       <select class="mini think" value={a.thinking ?? ''} onchange={(e) => setThinking(e.currentTarget.value)} title="Thinking level" aria-label="Thinking level">
         {#if !a.thinking}<option value="">Thinking: default</option>{/if}
         {#each THINKING as t (t)}<option value={t}>Thinking: {t}</option>{/each}

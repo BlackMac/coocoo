@@ -7,6 +7,7 @@
   import { agentState, GROUPS } from '../lib/status';
   import { ui } from '../lib/ui.svelte';
   import { track } from '../lib/track';
+  import { parseError } from '../lib/providerError';
   import { CircleAlert, CircleCheck, Inbox, Plus, FolderGit2, ChevronDown } from '../lib/icons';
   import HostCard from '../components/HostCard.svelte';
   import AgentRow from '../components/AgentRow.svelte';
@@ -131,7 +132,7 @@
                   </button>
                 {/if}
               {:else if item.kind === 'error'}
-                <div class="qbody err">{item.agent.error ?? 'The last turn failed.'}</div>
+                <div class="qbody err">{item.agent.error ? parseError(item.agent.error).title : 'The last turn failed.'}</div>
               {:else if item.agent.preview}
                 <div class="qbody preview">{item.agent.preview}</div>
               {/if}

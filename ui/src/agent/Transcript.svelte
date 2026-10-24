@@ -41,6 +41,16 @@
     ui.restoreDraft(agentKey, e.draft);
   }
 
+  /** The ways out of a failed turn (a rate limit or quota), offered on its error block. */
+  const erroractions = $derived(
+    agent.status === 'error'
+      ? {
+          model: () => (ui.modelPicker = agentKey),
+          retry: () => fleet.sendPrompt(agent.hostId, agent.id, { message: '/retry', images: [], draft: { text: '/retry', images: [], elements: [] } }, 'auto'),
+        }
+      : undefined,
+  );
+
   // Sending jumps to the tail, even when scrolled up.
   let outboxSize = 0;
   $effect(() => {
@@ -161,6 +171,7 @@
         agentId={agent.id}
         projectId={agent.projectId}
         {highlight}
+        {erroractions}
         onsubagent={(s) => s.sessionFile && (ui.dialog = { kind: 'subagent', hostId: agent.hostId, agentId: agent.id, subagentId: s.id, sessionFile: s.sessionFile })}
       />
       {#each pending as e (e.id)}
