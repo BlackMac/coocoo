@@ -51,7 +51,10 @@ fn main() {
                 .build(),
         )
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_opener::init())
+        // Without the plugin's injected click handler: it would turn target=_blank clicks into
+        // `plugin:opener|open_url` IPC calls, which the webview's capability does not grant, so
+        // links did nothing. They reach `on_new_window` below instead.
+        .plugin(tauri_plugin_opener::Builder::new().open_js_links_on_click(false).build())
         .setup(setup)
         .on_window_event(on_window_event)
         .build(tauri::generate_context!())
