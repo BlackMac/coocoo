@@ -492,6 +492,17 @@ pub struct TodoSummary {
     pub current: Option<String>,
 }
 
+/// The agent's own short summary of the task it works on (host tool `coocoo_task_summary`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskSummary {
+    /// One or two sentences, single line.
+    pub text: String,
+    /// When the user message it belongs to was sent (Unix ms): the newest one at the time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<i64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSummary {
@@ -531,6 +542,8 @@ pub struct AgentSummary {
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub todos: Option<TodoSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<TaskSummary>,
     /// omp session file; used to resume after hibernation or daemon restart.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_file: Option<String>,

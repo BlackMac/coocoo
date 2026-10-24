@@ -8,6 +8,7 @@
   import { ArrowDown } from '../lib/icons';
   import ItemList from './ItemList.svelte';
   import UserItem from './UserItem.svelte';
+  import TaskBar from './TaskBar.svelte';
 
   /** `at`: a moment (Unix ms) to scroll to and highlight once the timeline is loaded. */
   let { timeline, agent, at }: { timeline: Timeline; agent: AgentSummary; at?: number } = $props();
@@ -138,6 +139,7 @@
 </script>
 
 <div class="wrap">
+  {#if agent.task}<TaskBar {agent} task={agent.task} onjump={jumpTo} />{/if}
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
   <div class="scroller" bind:this={scroller} {onscroll} {onclick}>
     <div class="content" bind:this={content}>
@@ -188,9 +190,11 @@
     flex: 1;
     min-height: 0;
     display: flex;
+    flex-direction: column;
   }
   .scroller {
     flex: 1;
+    min-height: 0;
     overflow-y: auto;
     overflow-anchor: none;
   }

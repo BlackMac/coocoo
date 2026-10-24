@@ -409,6 +409,7 @@ mod tests {
             parent_id: None,
             error: None,
             todos: None,
+            task: None,
             session_file: None,
             diff: None,
             subagents: 0,

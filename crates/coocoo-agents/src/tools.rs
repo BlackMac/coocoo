@@ -8,8 +8,8 @@ use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use coocoo_proto::insights::TOOL_AGENT;
-use coocoo_proto::util::now_ms;
-use coocoo_proto::{ApiError, DoneAction, Emitter, Orchestrator, events};
+use coocoo_proto::util::{now_ms, preview};
+use coocoo_proto::{ApiError, DoneAction, Emitter, ItemKind, Orchestrator, TaskSummary, events};
 use omp_rpc::{HostTool, HostToolContext, HostToolError, HostToolOutput, ToolLoadMode};
 use serde_json::{Map, Value, json};
 use tokio::runtime::Handle;
@@ -30,6 +30,8 @@ const TOP_AGENTS: usize = 20;
 const FRUSTRATION_EXAMPLES: usize = 10;
 const DEFAULT_EVENTS: u64 = 200;
 const MAX_EVENTS: u64 = 2000;
+/// Longest task summary kept, in bytes (≈ two sentences).
+const TASK_BYTES: usize = 400;
 
 struct ToolEnv {
     agents: Weak<Agents>,
@@ -143,6 +145,7 @@ impl ToolEnv {
                     "branch": a.pointer("/worktree/branch"),
                     "parentId": a.get("parentId"),
                     "preview": a.get("preview"),
+                    "task": a.pointer("/task/text"),
                     "self": a["id"].as_str() == Some(self.agent_id.as_str()),
                 })
             })
@@ -268,6 +271,18 @@ impl ToolEnv {
             ));
         }
         Ok(text(&report))
+    }
+
+    /// `coocoo_task_summary`: pin the agent's summary of its current task above its chat, tied to
+    /// the user message it belongs to (the newest one).
+    fn task_summary(&self, args: Map<String, Value>) -> ToolResult {
+        let text = preview(&required(&args, "summary")?, TASK_BYTES);
+        let agents = self.agents.upgrade().ok_or_else(|| err("daemon is shutting down"))?;
+        let agent = agents.get(&self.agent_id).map_err(|e| Box::new(e) as HostToolError)?;
+        let since = agent.timeline.lock().last_ts(ItemKind::User);
+        agent.state.lock().summary.task = Some(TaskSummary { text, since });
+        agents.changed(&agent);
+        Ok(HostToolOutput::Text("Shown at the top of the chat.".to_owned()))
     }
 
     // ─── Kanban board (this agent's project) ──────────────────────────────────────────────
@@ -726,7 +741,7 @@ pub(crate) fn host_tools(agents: &Arc<Agents>, agent_id: &str, orchestrator: Arc
         tool(
             "coocoo_agents",
             "Coocoo agents",
-            "List the coding agents on a host with their status (starting, running, idle, waiting = blocked on the user, error, hibernated, stopped), title, working directory and a preview of their last answer. Your own entry has self=true.",
+            "List the coding agents on a host with their status (starting, running, idle, waiting = blocked on the user, error, hibernated, stopped), title, working directory, the summary of their current task and a preview of their last answer. Your own entry has self=true.",
             json!({
                 "type": "object",
                 "properties": {
@@ -803,6 +818,18 @@ pub(crate) fn host_tools(agents: &Arc<Agents>, agent_id: &str, orchestrator: Arc
                 "additionalProperties": false
             }),
             |env, args, _| env.output(args),
+        ),
+        tool(
+            "coocoo_task_summary",
+            "Task summary",
+            TASK_SUMMARY_DOC,
+            json!({
+                "type": "object",
+                "properties": { "summary": { "type": "string", "description": "One or two sentences, at most about 250 characters." } },
+                "required": ["summary"],
+                "additionalProperties": false
+            }),
+            |env, args, _| env.task_summary(args),
         ),
         tool(
             "kanban_list",
@@ -953,6 +980,15 @@ pub(crate) fn host_tools(agents: &Arc<Agents>, agent_id: &str, orchestrator: Arc
         ),
     ]
 }
+
+/// Appended to every agent's system prompt: the tool description alone does not get the summary
+/// written before the work starts.
+pub(crate) const SYSTEM_APPENDIX: &str = "You run inside Coocoo, which shows this session to the user as a chat. \
+Whenever you start on a new task (a new request from the user or a Kanban card), call `coocoo_task_summary` first with one or two sentences describing it; Coocoo pins them at the top of the chat.";
+
+const TASK_SUMMARY_DOC: &str = "Set the short summary of your current task that Coocoo pins at the top of your chat, so the user sees at a glance what you are working on, even far down a long transcript. \
+Call it whenever you start on a new task (a new request from the user or a Kanban card), before the actual work, and again only when the task itself changes substantially; not for progress, the plan shows that. \
+Write one or two sentences in the user's language: the goal and its scope, not your next step.";
 
 const INSIGHTS_DOC: &str = "Usage statistics of the Coocoo agents on all hosts: the same numbers as the Stats and Workflows tabs of the Coocoo UI. Sections: \
 `usage`: cost (API equivalent), tokens, requests, prompts, commits and finished cards, per model, project, agent (top 20 by cost) and tool, plus frustration signals with a few flagged prompts; \

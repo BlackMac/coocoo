@@ -169,6 +169,8 @@ fn spawn_omp(spec: SpawnSpec) -> Result<Spawned, String> {
         .arg(&spec.cwd)
         .arg("--config")
         .arg(&overlay)
+        .arg("--append-system-prompt")
+        .arg(crate::tools::SYSTEM_APPENDIX)
         .current_dir(&spec.cwd)
         .env("COOCOO_AGENT_ID", &spec.agent_id)
         .env("COOCOO_HOST_ID", &spec.host_id)

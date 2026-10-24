@@ -10,7 +10,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
-use coocoo_proto::{TimelineItem, TimelinePage, ToolStatus};
+use coocoo_proto::{ItemKind, TimelineItem, TimelinePage, ToolStatus};
 
 /// Items kept in memory per agent.
 const TAIL_LEN: usize = 64;
@@ -82,6 +82,12 @@ impl Timeline {
 
     pub fn tail(&self) -> Vec<TimelineItem> {
         self.tail.iter().cloned().collect()
+    }
+
+    /// Time of the newest item of `kind` still in the in-memory tail.
+    pub fn last_ts(&mut self, kind: ItemKind) -> Option<i64> {
+        self.ensure_loaded();
+        self.tail.iter().rev().find(|i| i.kind == kind).map(|i| i.ts)
     }
 
     /// Release the file handle (agent went offline).

@@ -381,6 +381,7 @@ impl Agents {
             parent_id: p.parent_id.filter(|s| !s.is_empty()),
             error: None,
             todos: None,
+            task: None,
             session_file: None,
             diff: None,
             subagents: 0,

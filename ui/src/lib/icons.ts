@@ -22,6 +22,7 @@ export { default as ClipboardPaste } from '@lucide/svelte/icons/clipboard-paste'
 export { default as Cloud } from '@lucide/svelte/icons/cloud';
 export { default as Copy } from '@lucide/svelte/icons/copy';
 export { default as CornerDownLeft } from '@lucide/svelte/icons/corner-down-left';
+export { default as CornerLeftUp } from '@lucide/svelte/icons/corner-left-up';
 export { default as Download } from '@lucide/svelte/icons/download';
 export { default as Ellipsis } from '@lucide/svelte/icons/ellipsis';
 export { default as ExternalLink } from '@lucide/svelte/icons/external-link';
@@ -63,6 +64,7 @@ export { default as Square } from '@lucide/svelte/icons/square';
 export { default as Sun } from '@lucide/svelte/icons/sun';
 export { default as Terminal } from '@lucide/svelte/icons/terminal';
 export { default as Trash2 } from '@lucide/svelte/icons/trash-2';
+export { default as Target } from '@lucide/svelte/icons/target';
 export { default as TriangleAlert } from '@lucide/svelte/icons/triangle-alert';
 export { default as Users } from '@lucide/svelte/icons/users';
 export { default as Wrench } from '@lucide/svelte/icons/wrench';

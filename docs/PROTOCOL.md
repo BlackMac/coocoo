@@ -325,7 +325,9 @@ such as `ask`; via the vendored official Rust client `crates/omp-rpc`). The daem
   `coocoo_send`, `coocoo_wait`) so agents orchestrate other agents on any host of the fleet,
   `coocoo_insights` (read-only: the Stats/Workflows numbers by section — usage, workflows,
   friction, features, sequences, events — for a period, project and host),
-  `coocoo_actions` (read-only: the project's parsed `.coocoo/actions.toml` and its problems; the tool description carries the file format), and
+  `coocoo_actions` (read-only: the project's parsed `.coocoo/actions.toml` and its problems; the tool description carries the file format),
+  `coocoo_task_summary` (sets `AgentSummary.task` = `{ text, since? }`: one or two sentences on the agent's current task, single line, ≤ 400 bytes, and the time of the newest user message, so the UI pins it above the transcript and jumps to that message), and
   `kanban_list`, `kanban_add` (suggestions go to the inbox, work the user asked for to todo), `kanban_move`, `kanban_done`, `kanban_refine` (attach a refinement with mocks, see `boards.refinementSave`) for the board of the agent's project, and `kanban_importers`, `kanban_importer_save` (create/change a script or feed importer; runs it once and reports the result), `kanban_importer_delete` for its inbox importers (agents cannot create or change `command` importers);
+- passes `--append-system-prompt` telling the agent it runs in Coocoo and to call `coocoo_task_summary` first whenever it starts a new task;
 - enables `set_ask_dialog` and surfaces omp `extension_ui_request`s as `UiRequest`s;
 - hibernates idle agents (process exit, session kept) and resumes them with `--resume <sessionFile>`.

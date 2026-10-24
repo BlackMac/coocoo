@@ -275,6 +275,13 @@ export interface TodoSummary {
   current?: string;
 }
 
+export interface TaskSummary {
+  /** One or two sentences, single line. */
+  text: string;
+  /** When the user message it belongs to was sent (Unix ms). */
+  since?: number;
+}
+
 export interface AgentSummary {
   id: string;
   hostId: string;
@@ -296,6 +303,8 @@ export interface AgentSummary {
   parentId?: string;
   error?: string;
   todos?: TodoSummary;
+  /** The agent's own summary of its current task (host tool `coocoo_task_summary`). */
+  task?: TaskSummary;
   sessionFile?: string;
   diff?: DiffStat;
   subagents: number;
