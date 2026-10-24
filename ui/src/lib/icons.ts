@@ -56,6 +56,7 @@ export { default as Paperclip } from '@lucide/svelte/icons/paperclip';
 export { default as Pencil } from '@lucide/svelte/icons/pencil';
 export { default as Plus } from '@lucide/svelte/icons/plus';
 export { default as RefreshCw } from '@lucide/svelte/icons/refresh-cw';
+export { default as RotateCcw } from '@lucide/svelte/icons/rotate-ccw';
 export { default as RotateCw } from '@lucide/svelte/icons/rotate-cw';
 export { default as Search } from '@lucide/svelte/icons/search';
 export { default as Server } from '@lucide/svelte/icons/server';

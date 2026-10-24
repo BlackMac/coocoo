@@ -37,13 +37,14 @@
     isWorking,
     refreshPr,
     rememberMergeMethod,
+    resetToBase,
     showPush,
     wantsPrStatus,
     writePrPrompt,
     wtKey,
     type AgentGit,
   } from '../lib/git.svelte';
-  import { ArrowDownToLine, ArrowUpFromLine, Bot, Check, ChevronDown, GitBranch, GitMerge, GitPullRequest, RefreshCw, Trash2 } from '../lib/icons';
+  import { ArrowDownToLine, ArrowUpFromLine, Bot, Check, ChevronDown, GitBranch, GitMerge, GitPullRequest, RefreshCw, RotateCcw, Trash2 } from '../lib/icons';
   import StatusDot from './StatusDot.svelte';
   import PrBadge from './PrBadge.svelte';
 
@@ -65,17 +66,20 @@
   /** Mid-turn the agent may still commit, push or rewrite the branch: actions wait for the answer. */
   const answering = $derived(isWorking(a));
   const askLabel = $derived(g.severity === 'bad' ? 'Ask agent to resolve' : 'Ask agent to update');
-  const showAsk = $derived(live && (g.severity === 'bad' || g.behind > 0));
+  const showAsk = $derived(live && (g.severity === 'bad' || (g.behind > 0 && !g.merged)));
+  /** Nothing left on the branch but it still differs from the base: move it onto the base. */
+  const showReset = $derived(g.merged && g.inBase && !!g.base && (g.ahead > 0 || g.behind > 0));
   /** The base the worktree was created from, when the project has moved to another branch. */
   const createdFrom = $derived(g.kind === 'worktree' && a.worktree && g.against && a.worktree.base !== g.against ? a.worktree.base : undefined);
   /** The one signal kept when the header is narrow. */
-  const primary = $derived(g.operation || g.conflicts ? 'bad' : g.behind ? 'behind' : g.merged ? 'merged' : '');
+  const primary = $derived(g.operation || g.conflicts ? 'bad' : g.merged ? 'merged' : g.behind ? 'behind' : '');
   /** ↑ in the chip: unpushed commits when there is an upstream, else ahead of the base. */
   const chipAhead = $derived(g.unpushed ?? g.ahead);
   const title = $derived(
     [
       `${g.kind === 'checkout' ? 'Project checkout' : 'Worktree'} on ${g.detached ? `detached HEAD ${g.label}` : g.label}`,
-      g.against ? `${g.ahead} ahead, ${g.behind} behind ${g.against}` : '',
+      g.merged ? `merged into ${g.base ?? 'the base'}` : g.against ? `${g.ahead} ahead, ${g.behind} behind ${g.against}` : '',
+      g.upstreamGone ? `remote branch ${g.wt.upstream} deleted` : '',
       g.unpushed && g.kind === 'worktree' ? `${plural(g.unpushed, 'unpushed commit')}` : '',
       g.dirty ? `${g.dirty} uncommitted` : '',
       g.shared.length > 1 ? `shared by ${g.shared.length} agents` : '',
@@ -97,7 +101,7 @@
   const busyPr = $derived(prBusy[wk]);
   const loadingPr = $derived(!!prLoading[wk]);
   const prError = $derived(prErrors[wk]);
-  const canCreatePr = $derived(g.kind === 'worktree' && !prBlk && !prOpen);
+  const canCreatePr = $derived(g.kind === 'worktree' && !prBlk && !prOpen && !g.merged);
   const methods = $derived(mergeMethods(g.github));
   const mergeBlk = $derived(pr && prOpen ? mergeBlocker(pr) : undefined);
   let method = $state<MergeMethod>('squash');
@@ -286,7 +290,11 @@
           <dd>
             {#if g.against}
               <span class="pill">↑ {g.ahead}</span><span class="pill" class:amber={g.behind > 0}>↓ {g.behind}</span>
-              {#if g.merged}<span class="pill green">✓ fully merged</span>{/if}
+              {#if g.merged && g.inBase}
+                <span class="pill green">✓ {g.ahead ? `changes are in ${g.against}` : 'fully merged'}</span>
+              {:else if g.merged}
+                <span class="pill green">✓ merged as #{pr?.number}</span>
+              {/if}
             {:else}
               <span class="faint">no base branch</span>
             {/if}
@@ -298,7 +306,10 @@
         {/if}
         <dt>Upstream</dt>
         <dd>
-          {#if g.wt.upstream}
+          {#if g.upstreamGone}
+            <span class="mono">{g.wt.upstream}</span>
+            <span class="pill" class:amber={!g.merged} title="Deleted on the remote; the last fetch pruned it">remote branch deleted</span>
+          {:else if g.wt.upstream}
             <span class="mono">{g.wt.upstream}</span>
             <span class="pill">↑ {g.wt.ahead}</span><span class="pill" class:amber={g.wt.behind > 0}>↓ {g.wt.behind}{g.wt.behind ? ' behind' : ''}</span>
           {:else if g.remote}
@@ -448,6 +459,9 @@
         {#if showAsk}
           <button class="btn sm primary" disabled={answering} onclick={() => run(() => askToUpdate(a, g, now.value))}><Bot size={13} />{askLabel}</button>
         {/if}
+        {#if showReset}
+          <button class="btn sm" disabled={answering} onclick={() => run(() => resetToBase(g))}><RotateCcw size={13} />Reset to {g.base}</button>
+        {/if}
         {#if g.cleanable && a.worktree && oncleanup}
           <button class="btn sm danger" disabled={answering} onclick={() => run(oncleanup)}><Trash2 size={13} />Clean up worktree…</button>
         {/if}
@@ -470,6 +484,7 @@
           {/if}
         {/if}
         {#if showFastForward && ffBlocker}<span class="why">Fast-forward unavailable: {ffBlocker}.</span>{/if}
+        {#if showReset}<span class="why">Reset moves {g.label} onto {g.base}{g.upstreamGone ? ' and forgets the deleted remote branch' : ''}; its changes are there already.</span>{/if}
         {#if g.cleanable && a.worktree && oncleanup}<span class="why">Deletes this agent, its worktree and the merged branch.</span>{/if}
       </div>
     {/if}

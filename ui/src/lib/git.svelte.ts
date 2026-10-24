@@ -25,10 +25,14 @@ export interface AgentGit {
   dirty: number;
   conflicts: number;
   operation?: GitOperation;
-  /** Linked worktree with nothing beyond its base and a clean tree. */
+  /** Linked worktree whose changes are all in the base: no commits ahead, or the same changes (squash/rebase merged). */
+  inBase: boolean;
+  /** Clean linked worktree with nothing to merge: `inBase`, or its pull request was merged at the current HEAD. */
   merged: boolean;
   /** The worktree can be cleaned up: fully merged, or its pull request was merged (e.g. squashed). */
   cleanable: boolean;
+  /** The upstream's remote branch was deleted (pruned by a fetch). */
+  upstreamGone: boolean;
   /** Live agents working in the same worktree, this one included. */
   shared: AgentSummary[];
   fetchedAt?: number;
@@ -83,7 +87,10 @@ export function agentGit(a: AgentSummary, project: Project | undefined, agents: 
   );
   if (!shared.some((x) => x.id === a.id)) shared.unshift(a);
   const pr = kind === 'worktree' ? wt.pullRequest : undefined;
-  const merged = counted && ahead === 0 && dirty === 0 && !wt.operation;
+  const inBase = counted && (ahead === 0 || !!wt.changesInBase);
+  const prMerged = pr?.state === 'merged' && !!pr.headSha && !!wt.head && pr.headSha.startsWith(wt.head);
+  const merged = kind === 'worktree' && (inBase || prMerged) && dirty === 0 && !wt.operation;
+  const upstreamGone = !!wt.upstream && !!wt.upstreamGone;
   return {
     project,
     wt,
@@ -96,13 +103,15 @@ export function agentGit(a: AgentSummary, project: Project | undefined, agents: 
     dirty,
     conflicts,
     operation: wt.operation,
+    inBase,
     merged,
     cleanable: merged || (pr?.state === 'merged' && dirty === 0 && !wt.operation),
+    upstreamGone,
     shared,
     fetchedAt: git.fetchedAt,
-    severity: conflicts > 0 || wt.operation || detached ? 'bad' : behind > 0 ? 'warn' : 'ok',
+    severity: conflicts > 0 || wt.operation || detached ? 'bad' : behind > 0 && !merged ? 'warn' : 'ok',
     base: base ?? undefined,
-    unpushed: wt.upstream ? wt.ahead : undefined,
+    unpushed: wt.upstream && !upstreamGone ? wt.ahead : undefined,
     remote: git.remote,
     github: git.github,
     pr,
@@ -191,9 +200,10 @@ export function pushTarget(g: AgentGit): string | undefined {
   return g.remote && g.wt.branch ? `${g.remote}/${g.wt.branch}` : undefined;
 }
 
-/** Push is offered when there is a remote and something to send, or the branch was never pushed. */
+/** Push is offered when there is a remote and something to send, or the branch was never pushed (or its remote branch was deleted and it has unmerged work). */
 export function showPush(g: AgentGit): boolean {
   if (!g.wt.upstream && !g.remote) return false;
+  if (g.upstreamGone) return !g.merged;
   return !g.wt.upstream || g.wt.ahead > 0;
 }
 
@@ -209,6 +219,7 @@ export function pushBlocker(g: AgentGit): string | undefined {
 export function pushHint(g: AgentGit): string | undefined {
   const target = pushTarget(g);
   if (!target) return undefined;
+  if (g.upstreamGone) return `Push recreates ${target}, which was deleted on the remote.`;
   if (g.wt.upstream) return `Push sends ${plural(g.wt.ahead, 'commit')} to ${target}.`;
   if (g.kind === 'worktree' && g.ahead > 0) return `Push sends ${plural(g.ahead, 'commit')} to ${target} (new branch).`;
   return `Push creates ${target} (new branch).`;
@@ -378,6 +389,17 @@ export async function fastForward(g: AgentGit): Promise<void> {
     else ui.toast('error', 'Fast-forward failed', r.output);
   } catch (err) {
     ui.error('Fast-forward failed', err);
+  }
+}
+
+/** Moves a linked worktree whose changes are all in the base onto the base (`git.resetToBase`). */
+export async function resetToBase(g: AgentGit): Promise<void> {
+  try {
+    const r = await fleet.call('git.resetToBase', { projectId: g.project.id, path: g.wt.path }, g.project.hostId, 60_000);
+    if (r.ok) ui.toast('success', `Reset ${g.label} to ${g.base ?? 'the base'}`);
+    else ui.toast('error', 'Reset failed', r.output);
+  } catch (err) {
+    ui.error('Reset failed', err);
   }
 }
 

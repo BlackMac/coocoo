@@ -790,6 +790,7 @@ fn request_timeout(method: &str) -> Duration {
         "git.merge",
         "git.fetch",
         "git.fastForward",
+        "git.resetToBase",
         "git.push",
         "git.outgoing",
         "git.prCreate",

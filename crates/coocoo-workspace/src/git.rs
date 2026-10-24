@@ -144,6 +144,9 @@ pub(crate) async fn has_head(cwd: &Path) -> ApiResult<bool> {
 pub(crate) struct Status {
     pub branch: Option<String>,
     pub upstream: Option<String>,
+    /// The upstream is configured but its remote-tracking branch is gone (deleted on the remote
+    /// and pruned by a fetch): `ahead`/`behind` are 0 then and mean nothing.
+    pub upstream_gone: bool,
     pub ahead: u32,
     pub behind: u32,
     pub changed: u32,
@@ -153,6 +156,7 @@ pub(crate) struct Status {
 /// Parse `git status --porcelain=v2 [--branch] -z`.
 pub(crate) fn parse_status(raw: &[u8]) -> Status {
     let mut status = Status::default();
+    let mut counted = false;
     let mut records = raw.split(|b| *b == 0);
     while let Some(rec) = records.next() {
         match rec.first() {
@@ -164,6 +168,7 @@ pub(crate) fn parse_status(raw: &[u8]) -> Status {
                     "branch.head" if value != "(detached)" => status.branch = Some(value.to_owned()),
                     "branch.upstream" => status.upstream = Some(value.to_owned()),
                     "branch.ab" => {
+                        counted = true;
                         for part in value.split(' ') {
                             if let Some(n) = part.strip_prefix('+') {
                                 status.ahead = n.parse().unwrap_or(0);
@@ -188,6 +193,8 @@ pub(crate) fn parse_status(raw: &[u8]) -> Status {
             _ => {}
         }
     }
+    // git prints `branch.ab` only when the upstream's commit exists.
+    status.upstream_gone = status.upstream.is_some() && !counted;
     status
 }
 
@@ -266,6 +273,8 @@ struct Details {
     status: Option<Status>,
     /// `(ahead, behind)` against the base branch.
     base: Option<(u32, u32)>,
+    /// Commits ahead of the base, but all their changes are in it already.
+    changes_in_base: bool,
     operation: Option<GitOperation>,
     fetched_at: Option<i64>,
 }
@@ -284,18 +293,44 @@ async fn worktree_details(path: PathBuf, known: Option<Status>, base: Option<Str
         }
     };
     let counts = async {
-        let range = format!("refs/heads/{}...HEAD", base?);
+        let base = base?;
+        let range = format!("refs/heads/{base}...HEAD");
         let out = run(&path, &["rev-list", "--left-right", "--count", &range, "--"]).await.ok().filter(|o| o.ok)?;
-        parse_left_right(&out.stdout_line())
+        let counts = parse_left_right(&out.stdout_line())?;
+        let in_base = counts.0 > 0 && changes_in(&path, &base).await;
+        Some((counts, in_base))
     };
     let (status, base) = tokio::join!(status, counts);
     let git_dir = worktree_git_dir(&path).await;
     Details {
         status,
-        base,
+        base: base.map(|(counts, _)| counts),
+        changes_in_base: base.is_some_and(|(_, in_base)| in_base),
         operation: git_dir.as_deref().and_then(operation),
         fetched_at: git_dir.as_deref().and_then(fetched_at),
     }
+}
+
+/// Whether everything HEAD changed is in branch `base` already, e.g. after a squash or rebase
+/// merge: HEAD has the same tree, or merging HEAD into `base` would leave its tree unchanged.
+/// `false` when unknown (git < 2.38 has no `merge-tree --write-tree`, conflicts).
+async fn changes_in(path: &Path, base: &str) -> bool {
+    let base_tree = format!("refs/heads/{base}^{{tree}}");
+    let Some(trees) = run(path, &["rev-parse", "HEAD^{tree}", &base_tree]).await.ok().filter(|o| o.ok) else {
+        return false;
+    };
+    let trees = String::from_utf8_lossy(&trees.stdout).into_owned();
+    let mut trees = trees.lines();
+    let (Some(head), Some(base_tree)) = (trees.next(), trees.next()) else { return false };
+    if head == base_tree {
+        return true;
+    }
+    let base_ref = format!("refs/heads/{base}");
+    run(path, &["merge-tree", "--write-tree", "--no-messages", &base_ref, "HEAD"])
+        .await
+        .ok()
+        .filter(|o| o.ok)
+        .is_some_and(|o| o.stdout_line() == base_tree)
 }
 
 /// Parse `rev-list --left-right --count base...HEAD` (`<behind>\t<ahead>`) into `(ahead, behind)`.
@@ -418,6 +453,7 @@ pub(crate) async fn info(path: &Path) -> Option<GitInfo> {
         if let Some(s) = d.status {
             wt.changed = Some(s.changed);
             wt.upstream = s.upstream;
+            wt.upstream_gone = s.upstream_gone;
             wt.ahead = s.ahead;
             wt.behind = s.behind;
             wt.conflicts = s.conflicts;
@@ -425,6 +461,7 @@ pub(crate) async fn info(path: &Path) -> Option<GitInfo> {
         if let Some((ahead, behind)) = d.base {
             wt.base_ahead = Some(ahead);
             wt.base_behind = Some(behind);
+            wt.changes_in_base = d.changes_in_base;
         }
         wt.operation = d.operation;
         fetched = fetched.max(d.fetched_at);
@@ -478,6 +515,7 @@ u UU N... 100644 100644 100644 100644 a b c both\0\
             Status {
                 branch: Some("main".into()),
                 upstream: Some("origin/main".into()),
+                upstream_gone: false,
                 ahead: 2,
                 behind: 3,
                 changed: 4,
@@ -487,6 +525,9 @@ u UU N... 100644 100644 100644 100644 a b c both\0\
         let detached = parse_status(b"# branch.oid (initial)\0# branch.head (detached)\0");
         assert_eq!(detached.branch, None);
         assert_eq!(detached.changed, 0);
+        let gone = parse_status(b"# branch.oid abc\0# branch.head x\0# branch.upstream origin/x\0");
+        assert_eq!((gone.upstream.as_deref(), gone.upstream_gone, gone.ahead), (Some("origin/x"), true, 0));
+        assert!(!parse_status(b"# branch.head x\0").upstream_gone, "no upstream is not a gone one");
     }
 
     #[test]

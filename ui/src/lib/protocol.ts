@@ -179,6 +179,8 @@ export interface PullRequestInfo {
   review?: 'approved' | 'changesRequested' | 'reviewRequired';
   /** GitHub mergeStateStatus verbatim: CLEAN, HAS_HOOKS, UNSTABLE, BLOCKED, BEHIND, DIRTY, DRAFT, UNKNOWN. Mergeable only when CLEAN or HAS_HOOKS. */
   mergeState: string;
+  /** The PR's head commit (full sha); absent in older caches. */
+  headSha?: string;
   /** Unix ms. */
   fetchedAt: number;
 }
@@ -211,11 +213,15 @@ export interface Worktree {
   changed?: number;
   /** Upstream of the checked-out branch, with counts against it. */
   upstream?: string;
+  /** The upstream's remote branch was deleted (pruned by a fetch); `ahead`/`behind` are 0 then. */
+  upstreamGone?: boolean;
   ahead: number;
   behind: number;
   /** Linked worktrees on a branch: counts against the main worktree's branch. */
   baseAhead?: number;
   baseBehind?: number;
+  /** Commits ahead of the base whose changes are all in it already (squash/rebase merged). */
+  changesInBase?: boolean;
   /** Unmerged paths. */
   conflicts: number;
   operation?: GitOperation;
@@ -1168,6 +1174,8 @@ export interface Methods {
   'git.merge': [{ projectId: string; branch: string }, { ok: boolean; output: string }];
   'git.fetch': [{ projectId: string }, { ok: boolean; output: string }];
   'git.fastForward': [{ projectId: string; path: string }, { ok: boolean; output: string }];
+  /** Linked worktree whose changes are all in the base: `git reset --keep <base>`, unsets a gone upstream. */
+  'git.resetToBase': [{ projectId: string; path: string }, { ok: boolean; output: string }];
   /** `rejected`: non-fast-forward. Never forces; without upstream pushes with `-u`. */
   'git.push': [{ projectId: string; path: string }, { ok: boolean; output: string; rejected: boolean }];
   /** Commits a `git.push` would send, newest first (≤ 200). */

@@ -211,7 +211,7 @@ impl Workspace {
         self.github.ensure_ready(&wt_path).await?;
 
         let status = git::parse_status(&git::run_ok(&wt_path, &["status", "--porcelain=v2", "--branch", "-z"]).await?.stdout);
-        if status.upstream.is_none() || status.ahead > 0 {
+        if status.upstream.is_none() || status.upstream_gone || status.ahead > 0 {
             let pushed = push_in(&wt_path).await?;
             if !pushed.ok {
                 self.refresh(project_id, Emit::IfChanged).await?;

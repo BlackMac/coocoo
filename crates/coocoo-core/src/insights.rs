@@ -51,6 +51,7 @@ const ACTIONS: &[&str] = &[
     "git.push",
     "git.fetch",
     "git.fastForward",
+    "git.resetToBase",
     "git.prCreate",
     "git.prMerge",
     "git.worktreeCreate",

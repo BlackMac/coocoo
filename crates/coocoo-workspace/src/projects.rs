@@ -221,6 +221,11 @@ impl Workspace {
                 let (ok_, output) = self.fast_forward(&p.project_id, &p.path).await?;
                 ok(json!({ "ok": ok_, "output": output }))
             }
+            "git.resetToBase" => {
+                let p: FastForwardParams = params(p)?;
+                let (ok_, output) = self.reset_to_base(&p.project_id, &p.path).await?;
+                ok(json!({ "ok": ok_, "output": output }))
+            }
             "git.push" => {
                 let p: FastForwardParams = params(p)?;
                 let pushed = self.push(&p.project_id, &p.path).await?;
@@ -540,13 +545,14 @@ impl Workspace {
         Ok(result)
     }
 
-    /// `git fetch --all` in the project's checkout, then the pull request status of every linked
-    /// worktree with an upstream. Never prompts: credentials come from the configured
-    /// helpers/keys or the fetch fails with git's message.
+    /// `git fetch --all --prune` in the project's checkout (upstreams deleted on the remote then
+    /// show as gone), then the pull request status of every linked worktree with an upstream.
+    /// Never prompts: credentials come from the configured helpers/keys or the fetch fails with
+    /// git's message.
     pub(crate) async fn fetch(&self, project_id: &str) -> ApiResult<(bool, String)> {
         let project = self.git_project(project_id)?;
         let path = PathBuf::from(&project.path);
-        let out = git::run_network(&path, &["fetch", "--all", "--no-auto-gc", "--quiet"]).await?;
+        let out = git::run_network(&path, &["fetch", "--all", "--prune", "--no-auto-gc", "--quiet"]).await?;
         if out.ok {
             self.refresh_prs_after_fetch(&path).await;
         }
@@ -571,6 +577,9 @@ impl Workspace {
         let Some(upstream) = status.upstream else {
             return Err(ApiError::conflict("the branch has no upstream"));
         };
+        if status.upstream_gone {
+            return Err(ApiError::conflict(format!("{upstream} was deleted on the remote")));
+        }
         if status.ahead > 0 {
             return Err(ApiError::conflict(format!(
                 "the branch has {} commit(s) not on {upstream}; a fast-forward is not possible",
@@ -586,6 +595,57 @@ impl Workspace {
         let out = git::run(&wt_path, &["merge", "--ff-only", "-q", "@{upstream}"]).await?;
         self.refresh(project_id, Emit::IfChanged).await?;
         Ok((out.ok, out.combined()))
+    }
+
+    /// Reset the linked worktree at `wt_path` to the project checkout's branch (the base) once
+    /// everything on its branch is in there, e.g. after a squash merge; a gone upstream is unset,
+    /// so the next push creates the remote branch again. Refused with `conflict` on a detached
+    /// HEAD, uncommitted files, an operation in progress or changes the base does not have.
+    async fn reset_to_base(&self, project_id: &str, wt_path: &str) -> ApiResult<(bool, String)> {
+        let project = self.git_project(project_id)?;
+        let wanted = expand(wt_path);
+        let wanted = std::fs::canonicalize(&wanted).unwrap_or(wanted);
+        let info = git::info(Path::new(&project.path)).await.ok_or_else(|| ApiError::conflict("not a git repository"))?;
+        let wt = info
+            .worktrees
+            .iter()
+            .find(|w| Path::new(&w.path) == wanted)
+            .ok_or_else(|| ApiError::not_found(format!("worktree {wt_path}")))?;
+        if wt.is_main {
+            return Err(ApiError::invalid("the project checkout has no base to reset to"));
+        }
+        let Some(branch) = &wt.branch else {
+            return Err(ApiError::conflict("the worktree is on a detached HEAD"));
+        };
+        let Some(base) = info.worktrees.iter().find(|w| w.is_main).and_then(|w| w.branch.as_deref()).filter(|b| b != branch)
+        else {
+            return Err(ApiError::conflict("the project checkout is not on another branch"));
+        };
+        if wt.operation.is_some() || wt.conflicts > 0 {
+            return Err(ApiError::conflict("finish or abort the operation in progress first"));
+        }
+        if let Some(changed) = wt.changed.filter(|n| *n > 0) {
+            return Err(ApiError::conflict(format!("{changed} uncommitted file(s); commit or stash them first")));
+        }
+        let ahead = wt.base_ahead.unwrap_or(0);
+        if ahead > 0 && !wt.changes_in_base {
+            return Err(ApiError::conflict(format!("{branch} has {ahead} commit(s) with changes not in {base}")));
+        }
+        let path = PathBuf::from(&wt.path);
+        let target = format!("refs/heads/{base}");
+        let out = git::run(&path, &["reset", "--keep", "-q", &target]).await?;
+        let mut output = out.combined();
+        if out.ok {
+            if wt.upstream_gone {
+                let unset = git::run(&path, &["branch", "--unset-upstream"]).await?;
+                output.push_str(&unset.combined());
+            }
+            if output.trim().is_empty() {
+                output = format!("{branch} is at {base} now");
+            }
+        }
+        self.refresh(project_id, Emit::IfChanged).await?;
+        Ok((out.ok, output))
     }
 
     async fn worktree_create(
