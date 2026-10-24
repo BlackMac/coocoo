@@ -66,11 +66,15 @@ Params marked `?` are optional. Return types refer to `types.rs`.
 against it, `changed`, `lastCommit`) plus `fetchedAt` (newest `FETCH_HEAD` mtime over all
 worktrees, Unix ms; absent when never fetched: the upstream counts are as old as that) and
 `worktrees: Worktree[]`. Each `Worktree` has `path`, `branch` (absent on a detached HEAD), short
-`head`, `isMain`, `changed`, `upstream`/`ahead`/`behind` of its branch, `conflicts` (unmerged
-paths), `operation` (`merge` \| `rebase` \| `cherryPick` \| `revert` \| `bisect` in progress) and,
-for linked worktrees on a branch, `baseAhead`/`baseBehind` against the main worktree's branch (the
-target of `git.merge`). It is recomputed when a watched git file changes (HEAD, index, refs,
-`FETCH_HEAD` of every worktree) and after each agent turn; Coocoo itself never fetches.
+`head`, `isMain`, `changed`, `upstream`/`ahead`/`behind` of its branch, `upstreamGone` (the upstream
+is configured but its remote branch was deleted and pruned by a fetch; `ahead`/`behind` are 0 then),
+`conflicts` (unmerged paths), `operation` (`merge` \| `rebase` \| `cherryPick` \| `revert` \|
+`bisect` in progress) and, for linked worktrees on a branch, `baseAhead`/`baseBehind` against the
+main worktree's branch (the target of `git.merge`) plus `changesInBase`: the branch has commits
+ahead, but all their changes are in the base already (same tree, or `git merge-tree --write-tree`
+of base and HEAD yields the base's tree, git ≥ 2.38), as after a squash or rebase merge. It is
+recomputed when a watched git file changes (HEAD, index, refs, `FETCH_HEAD` of every worktree) and
+after each agent turn; Coocoo itself never fetches.
 
 `GitInfo.remote` is the default remote for pushing a branch without upstream (`origin`, else the
 only remote; absent when there is none or it is ambiguous). When its URL points to github.com,
@@ -79,7 +83,7 @@ Pull requests go through the `gh` CLI (`GH_PROMPT_DISABLED=1`, always with `--re
 is checked on the first pull request call of the daemon and again after a failed `gh` call, the
 repository settings (`gh repo view`) once per repository. A linked worktree's branch carries its
 pull request as `Worktree.pullRequest` (`PullRequestInfo`: `number`, `url`, `title`, `state`
-open/closed/merged — an open one before older ones, PRs from forks ignored —, `draft`, `base`,
+open/closed/merged — an open one before older ones, PRs from forks ignored —, `draft`, `base`, `headSha` (the PR's head commit),
 `checks: { total, passed, failed, pending, failing: [{ name, url? }] }`, `review?` approved /
 changesRequested / reviewRequired, `mergeState` = GitHub's `mergeStateStatus`, `fetchedAt`) and
 `Worktree.prCheckedAt` (last lookup, also when there is none). The daemon caches it and looks it up
@@ -94,11 +98,12 @@ upstream, ≤ 8 in parallel) and `git.prStatus` — never on watcher or turn ref
 | `git.log` | `{ cwd, limit? (20) }` | `CommitInfo[]` |
 | `git.commit` | `{ cwd, message }` | `CommitInfo` — stages everything (`git add -A`) then commits |
 | `git.merge` | `{ projectId, branch }` | `{ ok: bool, output: String }` — merges `branch` into the project's checked-out branch (no fast-forward commit message prompt; aborts and reports on conflict) |
-| `git.fetch` | `{ projectId }` | `{ ok: bool, output: String }` — `git fetch --all --no-auto-gc` in the project's checkout, at most 60 s; never prompts (ssh runs with `BatchMode=yes` unless `GIT_SSH`/`GIT_SSH_COMMAND`/`core.sshCommand` is set), so missing credentials fail with git's message |
-| `git.fastForward` | `{ projectId, path }` | `{ ok: bool, output: String }` — `git merge --ff-only @{upstream}` in the project's worktree at `path`, using the last fetch; `conflict` when the branch has no upstream, has commits of its own, or the tree has uncommitted files |
+| `git.fetch` | `{ projectId }` | `{ ok: bool, output: String }` — `git fetch --all --prune --no-auto-gc` in the project's checkout, at most 60 s; never prompts (ssh runs with `BatchMode=yes` unless `GIT_SSH`/`GIT_SSH_COMMAND`/`core.sshCommand` is set), so missing credentials fail with git's message |
+| `git.fastForward` | `{ projectId, path }` | `{ ok: bool, output: String }` — `git merge --ff-only @{upstream}` in the project's worktree at `path`, using the last fetch; `conflict` when the branch has no upstream (or it is gone), has commits of its own, or the tree has uncommitted files |
+| `git.resetToBase` | `{ projectId, path }` | `{ ok: bool, output: String }` — `git reset --keep <base>` in the linked worktree at `path` (base = the main worktree's branch), then `git branch --unset-upstream` when the upstream is gone. `conflict` on a detached HEAD, with uncommitted files, conflicts or an operation in progress, or when the branch has changes not in the base (`baseAhead` > 0 without `changesInBase`) |
 | `git.push` | `{ projectId, path }` | `{ ok: bool, output: String, rejected: bool }` — pushes the branch checked out in the worktree containing `path`: to its upstream, or without one with `-u` to `<remote>/<branch>` (`GitInfo.remote`). Never forces; `rejected` = refused as non-fast-forward. Same environment and 60 s limit as `git.fetch`. `conflict` on a detached HEAD or without a remote |
 | `git.outgoing` | `{ projectId, path }` | `CommitInfo[]` (newest first, ≤ 200) — what `git.push` would send: `@{upstream}..HEAD`, else the commits no branch of the remote has |
-| `git.prCreate` | `{ projectId, path, title, body?, draft?: bool, base? }` | `PullRequestInfo` — pushes first when the branch has no upstream or unpushed commits, then `gh pr create --base <base> --head <branch>` (body via stdin); `base` defaults to the main worktree's branch. `unavailable` without a usable `gh`, `conflict` when the remote is not on GitHub, the push fails or `gh` refuses (e.g. a PR exists already) |
+| `git.prCreate` | `{ projectId, path, title, body?, draft?: bool, base? }` | `PullRequestInfo` — pushes first when the branch has no upstream (or it is gone) or unpushed commits, then `gh pr create --base <base> --head <branch>` (body via stdin); `base` defaults to the main worktree's branch. `unavailable` without a usable `gh`, `conflict` when the remote is not on GitHub, the push fails or `gh` refuses (e.g. a PR exists already) |
 | `git.prStatus` | `{ projectId, path }` | `PullRequestInfo \| null` — looks the branch's pull request up now (`gh pr list --head <branch> --state all`) and emits `project.updated` with it |
 | `git.prMerge` | `{ projectId, path, method: "squash" \| "merge" \| "rebase", deleteBranch?: bool }` | `{ ok: bool, output: String }` — `gh pr merge <n> --<method>` for the branch's open pull request (never `--admin`, `--auto` or `-d`, which would switch branches in the worktree); then optionally `git push <remote> --delete <branch>`, then `git.fetch`. A merged PR makes the worktree removable in the UI even when a squash merge left it "ahead" |
 | `git.worktreeCreate` | `{ projectId, branch?, base? }` | `WorktreeRef` — new branch (default `coocoo/<id>`) from `base` (default current branch) under `<data_dir>/worktrees/<project-name>-<project-id>/<branch-slug>` |
@@ -300,7 +305,7 @@ It never holds prompt texts, arguments, file contents or paths; `meta` holds ids
 (prompt length, image count, a slash command's name, a panel or dialog name, a model). Recorded are:
 - **Actions** with user intent, by the host that executes them, once (nested calls are not
   recorded again): `agents.create/prompt/abort/respond/setModel/setThinking/markRead/rename/hibernate/archive/delete`,
-  `boards.card*`, `boards.update`, `boards.source*`, `git.commit/merge/push/fetch/fastForward/prCreate/prMerge/worktreeCreate/worktreeRemove`,
+  `boards.card*`, `boards.update`, `boards.source*`, `git.commit/merge/push/fetch/fastForward/resetToBase/prCreate/prMerge/worktreeCreate/worktreeRemove`,
   `browser.start/open/navigate/watch/input` (input at most every 10 min per client and profile),
   `terminal.open`, `actions.run`, `projects.add/remove`, `hosts.add/remove`, `insights.analyze`.
   `actor` is `user` for a client's request (with `device`, `clientId` from `system.hello`), `agent`

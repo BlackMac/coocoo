@@ -18,6 +18,8 @@
   const g = $derived(a ? agentGit(a, fleet.project(a.hostId, a.projectId), Object.values(fleet.agents)) : undefined);
   const board = $derived(a?.projectId ? fleet.boards[key(a.hostId, a.projectId)] : undefined);
   const target = $derived(g ? pushTarget(g) : undefined);
+  /** The upstream exists on the remote; otherwise the push creates (or recreates) it. */
+  const tracked = $derived(!!g?.wt.upstream && !g.upstreamGone);
   /** Other agents in this checkout that may still commit. */
   const others = $derived(g && a ? g.shared.filter((x) => x.id !== a.id && isWorking(x)) : []);
   /** The agent itself is mid-turn and may still commit: the push waits for its answer. */
@@ -54,11 +56,11 @@
   {:else}
     <p class="msg">
       {#if commits.length}
-        {plural(commits.length, 'commit')} will be pushed{g.wt.upstream ? '' : ` (creates ${target})`}:
-      {:else if g.wt.upstream}
+        {plural(commits.length, 'commit')} will be pushed{tracked ? '' : ` (${g.upstreamGone ? 'recreates' : 'creates'} ${target})`}:
+      {:else if tracked}
         Nothing to push: {target} has every commit.
       {:else}
-        No new commits; the push creates {target}.
+        No new commits; the push {g.upstreamGone ? 'recreates' : 'creates'} {target}.
       {/if}
     </p>
     {#if commits.length}
@@ -93,7 +95,7 @@
   {/if}
   {#snippet footer()}
     <button class="btn" onclick={() => (ui.dialog = null)}>Cancel</button>
-    <button class="btn primary" disabled={!g || !commits || busy || answering || (!commits.length && !!g.wt.upstream)} onclick={confirm}>
+    <button class="btn primary" disabled={!g || !commits || busy || answering || (!commits.length && tracked)} onclick={confirm}>
       {#if busy}<span class="spinner"></span>{/if}Push{commits?.length ? ` ${plural(commits.length, 'commit')}` : ''}
     </button>
   {/snippet}

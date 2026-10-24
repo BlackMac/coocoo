@@ -348,6 +348,80 @@ async fn upstream_base_fetch_and_fast_forward() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn squash_merged_branch_with_deleted_upstream() {
+    let e = env();
+    let seed = e.root.join("seed");
+    init_repo(&seed, true);
+    let bare = e.root.join("up.git");
+    git(&e.root, &["clone", "-q", "--bare", seed.to_str().unwrap(), bare.to_str().unwrap()]);
+    let repo = e.root.join("repo");
+    git(&e.root, &["clone", "-q", bare.to_str().unwrap(), repo.to_str().unwrap()]);
+    let other = e.root.join("other");
+    git(&e.root, &["clone", "-q", bare.to_str().unwrap(), other.to_str().unwrap()]);
+    for dir in [&repo, &other] {
+        for (k, v) in [("user.name", "Test"), ("user.email", "test@example.com"), ("commit.gpgsign", "false")] {
+            git(dir, &["config", k, v]);
+        }
+    }
+    let project: Project = call(&e.ws, "projects.add", json!({ "path": repo })).await;
+    let wt: WorktreeRef = call(&e.ws, "git.worktreeCreate", json!({ "projectId": project.id })).await;
+    let wt_path = PathBuf::from(&wt.path);
+    let at = json!({ "projectId": project.id, "path": wt.path });
+    let linked = |p: &Project| p.git.as_ref().unwrap().worktrees.iter().find(|w| w.path == wt.path).unwrap().clone();
+    commit_file(&wt_path, "f1.txt", "1\n", "feature one");
+    commit_file(&wt_path, "f2.txt", "2\n", "feature two");
+    let pushed: Value = call(&e.ws, "git.push", at.clone()).await;
+    assert_eq!(pushed["ok"], true, "{pushed}");
+
+    // Unmerged work cannot be reset away.
+    let err = e.ws.dispatch("git.resetToBase", at.clone()).await.unwrap_err();
+    assert_eq!(err.code, "conflict");
+    assert!(err.message.contains("2 commit(s) with changes not in main"), "{}", err.message);
+
+    // GitHub squash-merges the pull request and deletes the branch.
+    git(&other, &["fetch", "-q"]);
+    git(&other, &["merge", "-q", "--squash", &format!("origin/{}", wt.branch)]);
+    git(&other, &["commit", "-q", "-m", "Feature (#7)"]);
+    git(&other, &["push", "-q", "origin", "main", &format!(":{}", wt.branch)]);
+    let fetched: Value = call(&e.ws, "git.fetch", json!({ "projectId": project.id })).await;
+    assert_eq!(fetched["ok"], true, "{fetched}");
+    let ff: Value = call(&e.ws, "git.fastForward", json!({ "projectId": project.id, "path": repo })).await;
+    assert_eq!(ff["ok"], true, "{ff}");
+    let p: Project = call(&e.ws, "projects.get", json!({ "id": project.id })).await;
+    let w = linked(&p);
+    assert_eq!((w.base_ahead, w.base_behind, w.changes_in_base), (Some(2), Some(1), true), "same tree as main");
+    assert_eq!((w.upstream, w.upstream_gone, w.ahead, w.behind), (Some(format!("origin/{}", wt.branch)), true, 0, 0));
+    let err = e.ws.dispatch("git.fastForward", at.clone()).await.unwrap_err();
+    assert!(err.message.contains("deleted on the remote"), "{}", err.message);
+
+    // main moves on: the branch's changes are still all in it.
+    commit_file(&repo, "later.txt", "l\n", "later work");
+    let p: Project = call(&e.ws, "projects.refresh", json!({ "id": project.id })).await;
+    assert_eq!((linked(&p).base_behind, linked(&p).changes_in_base), (Some(2), true), "merge-tree yields main's tree");
+
+    // New work on the branch is not in main.
+    commit_file(&wt_path, "f3.txt", "3\n", "feature three");
+    let p: Project = call(&e.ws, "projects.refresh", json!({ "id": project.id })).await;
+    assert_eq!((linked(&p).base_ahead, linked(&p).changes_in_base), (Some(3), false));
+    git(&wt_path, &["reset", "-q", "--hard", "HEAD~1"]);
+
+    std::fs::write(wt_path.join("loose.txt"), "x\n").unwrap();
+    let err = e.ws.dispatch("git.resetToBase", at.clone()).await.unwrap_err();
+    assert!(err.message.contains("uncommitted"), "{}", err.message);
+    std::fs::remove_file(wt_path.join("loose.txt")).unwrap();
+
+    let reset: Value = call(&e.ws, "git.resetToBase", at.clone()).await;
+    assert_eq!(reset["ok"], true, "{reset}");
+    assert_eq!(git(&wt_path, &["rev-parse", "HEAD"]), git(&repo, &["rev-parse", "HEAD"]));
+    let p: Project = call(&e.ws, "projects.get", json!({ "id": project.id })).await;
+    let w = linked(&p);
+    assert_eq!((w.base_ahead, w.base_behind, w.upstream, w.upstream_gone), (Some(0), Some(0), None, false));
+
+    let err = e.ws.dispatch("git.resetToBase", json!({ "projectId": project.id, "path": repo })).await.unwrap_err();
+    assert_eq!(err.code, "invalid_params");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn push_and_outgoing_against_a_bare_remote() {
     let e = env();
     let seed = e.root.join("seed");

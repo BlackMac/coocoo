@@ -20,7 +20,7 @@ const GH_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// `gh pr list --json` fields parsed by [`parse_pr_list`].
 pub(crate) const PR_FIELDS: &str =
-    "number,url,title,state,isDraft,baseRefName,reviewDecision,mergeStateStatus,statusCheckRollup,isCrossRepository";
+    "number,url,title,state,isDraft,baseRefName,headRefOid,reviewDecision,mergeStateStatus,statusCheckRollup,isCrossRepository";
 
 /// `owner/name` of a github.com remote URL (`https://github.com/o/r.git`, `git@github.com:o/r`,
 /// `ssh://git@github.com/o/r`); `None` for other hosts.
@@ -230,6 +230,8 @@ struct RawPr {
     #[serde(default)]
     merge_state_status: Option<String>,
     #[serde(default)]
+    head_ref_oid: Option<String>,
+    #[serde(default)]
     status_check_rollup: Option<Vec<RawCheck>>,
     #[serde(default)]
     is_cross_repository: bool,
@@ -337,6 +339,7 @@ pub(crate) fn parse_pr_list(raw: &[u8], now: i64) -> Result<Option<PullRequestIn
         checks: checks(pr.status_check_rollup.as_deref().unwrap_or_default()),
         review,
         merge_state: pr.merge_state_status.unwrap_or_else(|| "UNKNOWN".to_owned()),
+        head_sha: pr.head_ref_oid.filter(|s| !s.is_empty()),
         fetched_at: now,
     }))
 }
@@ -373,7 +376,7 @@ mod tests {
 
     #[test]
     fn pr_list_mixed_checks() {
-        let raw = br#"[{"number":42,"url":"https://github.com/o/r/pull/42","title":"Live CDP","state":"OPEN","isDraft":false,
+        let raw = br#"[{"number":42,"url":"https://github.com/o/r/pull/42","title":"Live CDP","state":"OPEN","isDraft":false,"headRefOid":"abc123",
             "baseRefName":"master","reviewDecision":"REVIEW_REQUIRED","mergeStateStatus":"BLOCKED","isCrossRepository":false,
             "statusCheckRollup":[
               {"__typename":"CheckRun","name":"test (ubuntu-latest)","status":"COMPLETED","conclusion":"FAILURE","detailsUrl":"https://ci/1"},
@@ -388,6 +391,7 @@ mod tests {
         assert_eq!((pr.number, pr.state, pr.draft, pr.base.as_str()), (42, PrState::Open, false, "master"));
         assert_eq!(pr.review, Some(PrReview::ReviewRequired));
         assert_eq!(pr.merge_state, "BLOCKED");
+        assert_eq!(pr.head_sha.as_deref(), Some("abc123"));
         assert_eq!((pr.checks.total, pr.checks.passed, pr.checks.failed, pr.checks.pending), (7, 3, 2, 2));
         assert_eq!(
             pr.checks.failing,

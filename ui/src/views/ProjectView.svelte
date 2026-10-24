@@ -245,12 +245,13 @@
                   {#if w.isMain}<span class="chip">main</span>{/if}
                   {#if w.changed}<span class="accent num">{w.changed} changed</span>{/if}
                   {#if w.operation || w.conflicts}<span class="warn-red">⚠ {w.operation ? OPERATION_LABEL[w.operation] : `${w.conflicts} conflicts`}</span>{/if}
-                  {#if w.baseAhead === 0 && !w.changed && !w.operation}
-                    <span class="merged" title="Everything on this branch is in {p.git.branch}">✓ merged</span>
+                  {#if (w.baseAhead === 0 || w.changesInBase) && !w.changed && !w.operation}
+                    <span class="merged" title={w.baseAhead ? `All changes of this branch are in ${p.git.branch}` : `Everything on this branch is in ${p.git.branch}`}>✓ merged</span>
                   {:else if w.baseAhead != null}
                     <span class="num faint" title="Against {p.git.branch}">↑{w.baseAhead}</span>
                     <span class="num" class:warn={!!w.baseBehind} class:faint={!w.baseBehind} title="Against {p.git.branch}">↓{w.baseBehind}</span>
                   {/if}
+                  {#if w.upstreamGone}<span class="faint" title="{w.upstream} was deleted on the remote">remote deleted</span>{/if}
                   <span class="grow"></span>
                   {#if user}<a class="agent-link ellipsis" href={href({ name: 'agent', host, id: user.id })}>{user.title}</a>{/if}
                   {#if !w.isMain}

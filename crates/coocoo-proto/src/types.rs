@@ -302,6 +302,9 @@ pub struct PullRequestInfo {
     /// GitHub's `mergeStateStatus` verbatim (`CLEAN`, `HAS_HOOKS`, `UNSTABLE`, `BLOCKED`,
     /// `BEHIND`, `DIRTY`, `DRAFT`, `UNKNOWN`); mergeable when `CLEAN` or `HAS_HOOKS`.
     pub merge_state: String,
+    /// Commit the pull request's head branch points to (full sha); absent in older caches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_sha: Option<String>,
     /// Unix ms.
     pub fetched_at: i64,
 }
@@ -373,6 +376,10 @@ pub struct Worktree {
     /// Upstream of the checked-out branch, with the ahead/behind counts against it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream: Option<String>,
+    /// The upstream's remote branch is gone (deleted on the remote, pruned by a fetch);
+    /// `ahead`/`behind` are 0 then.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub upstream_gone: bool,
     #[serde(default)]
     pub ahead: u32,
     #[serde(default)]
@@ -383,6 +390,10 @@ pub struct Worktree {
     pub base_ahead: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_behind: Option<u32>,
+    /// Commits ahead of the base (`base_ahead` > 0) whose changes are all in it already, e.g.
+    /// after a squash or rebase merge: merging the branch would not change the base.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub changes_in_base: bool,
     /// Unmerged (conflicted) paths.
     #[serde(default)]
     pub conflicts: u32,
