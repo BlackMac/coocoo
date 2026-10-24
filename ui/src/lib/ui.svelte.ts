@@ -50,6 +50,7 @@ export type Dialog =
 
 const THEME_KEY = 'coocoo.theme';
 const PANEL_KEY = 'coocoo.panel';
+const TERM_FONT_KEY = 'coocoo.termFontSize';
 
 function load<T>(key: string, fallback: T): T {
   try {
@@ -91,6 +92,8 @@ class Ui {
   terminalFocus = $state<{ host: string; id: string } | null>(null);
   /** A browser tab the BrowserPanel should select (set when a URL action opened it). */
   browserFocus = $state<{ host: string; profile: string; targetId: string } | null>(null);
+  /** Terminal font size in px (pinch on a touch screen changes it). */
+  termFontSize = $state(load(TERM_FONT_KEY, 12.5));
 
   constructor() {
     matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
@@ -102,6 +105,7 @@ class Ui {
         document.querySelector('meta[name="theme-color"]')?.setAttribute('content', this.theme === 'dark' ? '#0b0c0e' : '#ffffff');
       });
       $effect(() => save(PANEL_KEY, $state.snapshot(this.panel)));
+      $effect(() => save(TERM_FONT_KEY, this.termFontSize));
     });
   }
 

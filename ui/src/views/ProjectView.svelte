@@ -4,6 +4,7 @@
 
 <script lang="ts">
   import { fleet, key } from '../lib/fleet.svelte';
+  import { copyText } from '../lib/clipboard';
   import { ago, shortPath } from '../lib/format';
   import { now } from '../lib/clock.svelte';
   import { href, router } from '../lib/router.svelte';
@@ -122,7 +123,7 @@
   }
 
   function copy(text: string) {
-    void navigator.clipboard.writeText(text).then(() => ui.toast('success', 'Copied'));
+    copyText(text).then(() => ui.toast('success', 'Copied'), (err) => ui.error('Copy failed', err));
   }
 </script>
 

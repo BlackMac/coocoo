@@ -63,6 +63,15 @@ export function actionRun(ctx: ActionContext, a: ProjectAction): TerminalInfo | 
 
 const LOOPBACK = /^(localhost|127(?:\.\d+){3}|\[::1\]|.+\.localhost)$/i;
 
+/** Whether the URL points at the machine it is opened on (for us: the host the code runs on). */
+export function isLoopbackUrl(url: string): boolean {
+  try {
+    return LOOPBACK.test(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Loopback URLs point at the host where the code runs, so in an agent's view they open in the
  * project's browser (reachable from any client); everything else opens outside.
@@ -70,11 +79,14 @@ const LOOPBACK = /^(localhost|127(?:\.\d+){3}|\[::1\]|.+\.localhost)$/i;
 export function urlTarget(a: Extract<ProjectAction, { kind: 'url' }>, ctx: ActionContext): 'browser' | 'external' {
   if (!ctx.agent) return 'external';
   if (a.target) return a.target;
-  try {
-    return LOOPBACK.test(new URL(a.url).hostname) ? 'browser' : 'external';
-  } catch {
-    return 'external';
-  }
+  return isLoopbackUrl(a.url) ? 'browser' : 'external';
+}
+
+/** Opens a page in a browser profile on `host` and shows it in the agent's browser panel. */
+export async function openInBrowserPanel(host: string, profile: string, url: string): Promise<void> {
+  const tab = await fleet.call('browser.open', { profile, url }, host, 45_000);
+  ui.browserFocus = { host, profile, targetId: tab.targetId };
+  ui.showPanel('browser');
 }
 
 /** One line under the action's name in the menu. */
@@ -180,10 +192,7 @@ async function launch(a: ProjectAction, ctx: ActionContext): Promise<void> {
           openExternal(a.url);
           return;
         }
-        const profile = ctx.project.id;
-        const tab = await fleet.call('browser.open', { profile, url: a.url }, host, 45_000);
-        ui.browserFocus = { host, profile, targetId: tab.targetId };
-        ui.showPanel('browser');
+        await openInBrowserPanel(host, ctx.project.id, a.url);
         return;
       }
     }

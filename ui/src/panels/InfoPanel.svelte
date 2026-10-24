@@ -1,5 +1,6 @@
 <script lang="ts">
   import { fleet } from '../lib/fleet.svelte';
+  import { copyText } from '../lib/clipboard';
   import { compact, cost, dateTime } from '../lib/format';
   import { href } from '../lib/router.svelte';
   import { agentState } from '../lib/status';
@@ -15,7 +16,7 @@
   const host = $derived(fleet.host(a.hostId));
 
   function copy(t: string) {
-    void navigator.clipboard.writeText(t).then(() => ui.toast('success', 'Copied'));
+    copyText(t).then(() => ui.toast('success', 'Copied'), (err) => ui.error('Copy failed', err));
   }
 </script>
 

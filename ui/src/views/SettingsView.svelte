@@ -1,5 +1,6 @@
 <script lang="ts">
   import { fleet } from '../lib/fleet.svelte';
+  import { copyText } from '../lib/clipboard';
   import { bytes } from '../lib/format';
   import { notificationsEnabled, notificationsSupported, setNotifications } from '../lib/notify';
   import { ui, type ThemePref } from '../lib/ui.svelte';
@@ -44,7 +45,7 @@
   }
 
   function copy(t: string, what: string) {
-    void navigator.clipboard.writeText(t).then(() => ui.toast('success', `${what} copied`));
+    copyText(t).then(() => ui.toast('success', `${what} copied`), (err) => ui.error('Copy failed', err));
   }
 
   async function toggleNotify(on: boolean) {

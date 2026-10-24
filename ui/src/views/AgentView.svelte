@@ -189,7 +189,7 @@
           {:else if ui.panel.tab === 'browser'}
             {#await loadBrowser() then m}<m.default agent={a} {project} />{/await}
           {:else if ui.panel.tab === 'terminal'}
-            {#await loadTerminal() then m}<m.default {host} cwd={a.cwd} />{/await}
+            {#await loadTerminal() then m}<m.default {host} cwd={a.cwd} browserProfile={a.projectId ?? 'default'} />{/await}
           {:else if ui.panel.tab === 'board' && a.projectId}
             <BoardPanel {host} projectId={a.projectId} agent={a} />
           {:else if ui.panel.tab === 'plan'}

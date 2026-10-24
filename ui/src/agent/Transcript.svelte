@@ -3,6 +3,7 @@
   import { fleet, key, type Outgoing, type Timeline } from '../lib/fleet.svelte';
   import type { AgentSummary, TimelineItem } from '../lib/protocol';
   import { base64Bytes } from '../lib/images';
+  import { copyText } from '../lib/clipboard';
   import { ui } from '../lib/ui.svelte';
   import { ArrowDown } from '../lib/icons';
   import ItemList from './ItemList.svelte';
@@ -121,10 +122,13 @@
     const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-copy]');
     if (!btn) return;
     const code = btn.closest('.md-code')?.querySelector('code')?.textContent ?? '';
-    void navigator.clipboard.writeText(code).then(() => {
-      btn.textContent = 'Copied';
-      setTimeout(() => (btn.textContent = 'Copy'), 1200);
-    });
+    copyText(code).then(
+      () => {
+        btn.textContent = 'Copied';
+        setTimeout(() => (btn.textContent = 'Copy'), 1200);
+      },
+      (err) => ui.error('Copy failed', err),
+    );
   }
 
   function toBottom() {

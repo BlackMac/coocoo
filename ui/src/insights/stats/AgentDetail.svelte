@@ -2,6 +2,7 @@
   // Expanded agent row: where its cost came from (main session, subagents, advisor; token kinds),
   // its omp session files, the commits attributed to it and its cost per day.
   import type { InsightAgentRow, InsightDay } from '../../lib/protocol';
+  import { copyText } from '../../lib/clipboard';
   import { shortPath } from '../../lib/format';
   import { href } from '../../lib/router.svelte';
   import { track } from '../../lib/track';
@@ -19,7 +20,7 @@
   const reqs = (k: string) => `${count(a.requestsBy[k] ?? 0)} requests`;
 
   function copy(text: string) {
-    void navigator.clipboard.writeText(text).then(() => ui.toast('success', 'Copied'));
+    copyText(text).then(() => ui.toast('success', 'Copied'), (err) => ui.error('Copy failed', err));
   }
 </script>
 
