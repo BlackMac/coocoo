@@ -83,3 +83,5 @@ export { default as Rocket } from '@lucide/svelte/icons/rocket';
 export { default as Bug } from '@lucide/svelte/icons/bug';
 export { default as Package } from '@lucide/svelte/icons/package';
 export { default as Database } from '@lucide/svelte/icons/database';
+export { default as Clock } from '@lucide/svelte/icons/clock';
+export { default as CalendarClock } from '@lucide/svelte/icons/calendar-clock';

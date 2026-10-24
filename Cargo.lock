@@ -672,6 +672,7 @@ version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "coocoo-proto",
+ "jiff",
  "libc",
  "omp-rpc",
  "parking_lot",

@@ -13,11 +13,13 @@
 
 mod api;
 mod board;
+mod cron;
 mod image;
 mod mapper;
 mod process;
 mod restart;
 mod sandbox;
+mod schedule;
 mod slash;
 mod state;
 mod timeline;
@@ -103,6 +105,11 @@ pub struct Agents {
     boards_dir: PathBuf,
     /// Boards loaded so far, by project id.
     boards: parking_lot::Mutex<HashMap<String, coocoo_proto::Board>>,
+    /// Every project's scheduled runs (`schedules.*`), persisted in `schedules_file`.
+    schedules: parking_lot::Mutex<Vec<coocoo_proto::Schedule>>,
+    schedules_file: PathBuf,
+    /// Wakes the scheduler when the schedules change.
+    schedule_wake: Arc<tokio::sync::Notify>,
 }
 
 impl Agents {
@@ -113,6 +120,8 @@ impl Agents {
         let root = paths.data_dir.join("agents");
         let agents = load_agents(&root);
         let boards_dir = paths.data_dir.join("boards");
+        let schedules_file = paths.data_dir.join("schedules.json");
+        let schedules = schedule::load(&schedules_file);
         board::migrate_agent_boards(&root, &boards_dir, |id| {
             let summary = agents.get(id)?.summary();
             Some((summary.project_id?, summary.title))
@@ -134,16 +143,20 @@ impl Agents {
             draining: AtomicBool::new(false),
             boards_dir,
             boards: parking_lot::Mutex::new(HashMap::new()),
+            schedules: parking_lot::Mutex::new(schedules),
+            schedules_file,
+            schedule_wake: Arc::new(tokio::sync::Notify::new()),
         })
     }
 
     /// Must be called once before the first `dispatch`, inside the runtime. Also starts the
-    /// board source poller.
+    /// board source poller and the scheduler.
     pub fn set_orchestrator(self: &Arc<Self>, orchestrator: Arc<dyn Orchestrator>) {
         let _ = self.orchestrator.set(orchestrator);
         if let Ok(handle) = Handle::try_current() {
             let _ = self.runtime.set(handle);
             self.start_board_poller();
+            self.start_scheduler();
         }
     }
 
@@ -167,7 +180,7 @@ impl Agents {
         self.agents.read().get(id).map(|agent| agent.summary())
     }
 
-    /// `agents.*` and `boards.*`.
+    /// `agents.*`, `boards.*` and `schedules.*`.
     pub async fn dispatch(self: &Arc<Self>, method: &str, params: Value) -> ApiResult<Value> {
         self.runtime.get_or_init(Handle::current);
         self.handle_method(method, params).await

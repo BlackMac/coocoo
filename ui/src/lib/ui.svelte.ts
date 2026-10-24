@@ -46,7 +46,9 @@ export type Dialog =
   | { kind: 'subagent'; hostId: string; agentId: string; subagentId: string; sessionFile: string }
   | { kind: 'confirm'; title: string; message: string; action: string; danger?: boolean; run: () => void | Promise<void> }
   /** Push the project checkout an agent works in, after listing the outgoing commits. */
-  | { kind: 'push'; hostId: string; agentId: string };
+  | { kind: 'push'; hostId: string; agentId: string }
+  /** Create (without `scheduleId`) or edit a project's scheduled run. */
+  | { kind: 'schedule'; hostId: string; projectId: string; scheduleId?: string };
 
 const THEME_KEY = 'coocoo.theme';
 const PANEL_KEY = 'coocoo.panel';

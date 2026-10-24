@@ -916,7 +916,7 @@ impl Agents {
     }
 
     /// The project (on this host); `not_found` when unknown, so no board file is made for it.
-    async fn project(&self, project_id: &str) -> ApiResult<Project> {
+    pub(crate) async fn project(&self, project_id: &str) -> ApiResult<Project> {
         let value = self.orch()?.call(None, "projects.get".into(), json!({ "id": project_id })).await?;
         Ok(serde_json::from_value(value)?)
     }
@@ -1001,7 +1001,7 @@ impl Agents {
                 self.prompt_text(&agent_id, prompt).await?;
                 summary
             }
-            None => self.create_for_card(&p.project_id, &card.title, prompt, p.worktree, p.model).await?,
+            None => self.create_started(&p.project_id, &card.title, prompt, p.worktree, p.model, "card", None).await?,
         };
         // The agent may have finished already (an API error ends a run within moments); its
         // run end then found no refining card, so the card is settled here.

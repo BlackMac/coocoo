@@ -784,6 +784,8 @@ fn request_timeout(method: &str) -> Duration {
         "boards.sourceAdd",
         "boards.sourceRefresh",
         "boards.sourceUpdate",
+        // A run may create an agent in a new worktree.
+        "schedules.run",
         "git.commit",
         "git.merge",
         "git.fetch",

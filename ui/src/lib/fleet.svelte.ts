@@ -17,6 +17,7 @@ import type {
   Project,
   ProviderUsage,
   ResultOf,
+  Schedule,
   SlashCommand,
   TerminalInfo,
   TimelineItem,
@@ -185,6 +186,8 @@ export class Fleet {
   models = $state<Record<string, ModelInfo[]>>({});
   /** Kanban boards per `host:projectId`, loaded on demand and kept current by `project.board`. */
   boards = $state<Record<string, Board>>({});
+  /** Scheduled runs per `host:projectId`, loaded on demand and kept current by `project.schedules`. */
+  schedules = $state<Record<string, Schedule[]>>({});
   /** Slash-command catalogs per `host:agentId`, loaded on demand and kept current by `agent.commands`. */
   commands = $state<Record<string, SlashCommand[]>>({});
   /** `agents.usage` per `host:provider`. */
@@ -481,6 +484,22 @@ export class Fleet {
     return board;
   }
 
+  /** Load a project's schedules; later changes arrive as `project.schedules` events. */
+  async loadSchedules(host: string, projectId: string): Promise<Schedule[]> {
+    const list = await this.call('schedules.list', { projectId }, host);
+    this.schedules[key(host, projectId)] = list;
+    return list;
+  }
+
+  /** Puts a schedule a call returned into its project's list (the `project.schedules` event follows). */
+  putSchedule(host: string, s: Schedule) {
+    const list = this.schedules[key(host, s.projectId)];
+    if (!list) return;
+    const i = list.findIndex((x) => x.id === s.id);
+    if (i >= 0) list[i] = s;
+    else list.push(s);
+  }
+
   async loadModels(host: string): Promise<ModelInfo[]> {
     const cached = this.models[host];
     if (cached) return cached;
@@ -714,6 +733,9 @@ export class Fleet {
     });
     c.on('project.board', ({ projectId, board }, host) => {
       this.boards[key(host, projectId)] = board;
+    });
+    c.on('project.schedules', ({ projectId, schedules }, host) => {
+      this.schedules[key(host, projectId)] = schedules;
     });
     c.on('agent.commands', ({ agentId, commands }, host) => {
       this.commands[key(host, agentId)] = commands;
