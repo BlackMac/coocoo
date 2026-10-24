@@ -12,6 +12,7 @@
   import { agentState, STATE_LABEL } from '../lib/status';
   import { ui, type PanelTab } from '../lib/ui.svelte';
   import { track } from '../lib/track';
+  import { errorInTimeline, parseError } from '../lib/providerError';
   import { Archive, Ellipsis, FileDiff, Globe, Info, ListChecks, Moon, PanelRight, SquareKanban, Terminal, Trash2, MessageSquareText } from '../lib/icons';
   import StatusDot from '../components/StatusDot.svelte';
   import InlineEdit from '../components/InlineEdit.svelte';
@@ -155,8 +156,8 @@
           <button class:on={ui.mobilePane === t.id} onclick={() => ui.showPanel(t.id, by)}><t.icon size={14} />{t.label}</button>
         {/each}
       </nav>
-      {#if a.error && st === 'error'}
-        <div class="errbar">{a.error}</div>
+      {#if a.error && st === 'error' && !errorInTimeline(a.error, timeline.items)}
+        <div class="errbar" title={a.error}>{parseError(a.error).title}</div>
       {/if}
       <Transcript {timeline} agent={a} at={router.route.name === 'agent' ? router.route.at : undefined} />
       <div class="bottom">

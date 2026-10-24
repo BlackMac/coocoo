@@ -25,6 +25,7 @@ import type {
 } from './protocol';
 import { href } from './router.svelte';
 import { agentState } from './status';
+import { parseError } from './providerError';
 import { clientId, device } from './track';
 import type { Draft } from './ui.svelte';
 
@@ -462,7 +463,7 @@ export class Fleet {
     for (const e of this.outbox[k] ?? []) {
       if (e.state === 'failed') continue;
       e.state = 'failed';
-      e.error = `Agent failed${error ? `: ${error}` : ''}`;
+      e.error = `Agent failed${error ? `: ${parseError(error).title}` : ''}`;
     }
   }
 

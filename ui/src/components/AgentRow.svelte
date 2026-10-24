@@ -11,13 +11,14 @@
   import DiffCount from './DiffCount.svelte';
   import HostDot from './HostDot.svelte';
   import PrBadge from './PrBadge.svelte';
+  import { parseError } from '../lib/providerError';
 
   let { agent: a, showProject = true }: { agent: AgentSummary; showProject?: boolean } = $props();
 
   const st = $derived(agentState(a));
   const project = $derived(fleet.project(a.hostId, a.projectId));
   const host = $derived(fleet.host(a.hostId));
-  const line2 = $derived(st === 'error' && a.error ? a.error : (a.preview ?? ''));
+  const line2 = $derived(st === 'error' && a.error ? parseError(a.error).title : (a.preview ?? ''));
   const git = $derived(agentGit(a, project, []));
   const gitTitle = $derived.by(() => {
     if (!git) return '';

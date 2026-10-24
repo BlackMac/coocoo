@@ -94,6 +94,8 @@ class Ui {
   terminalFocus = $state<{ host: string; id: string } | null>(null);
   /** A browser tab the BrowserPanel should select (set when a URL action opened it). */
   browserFocus = $state<{ host: string; profile: string; targetId: string } | null>(null);
+  /** An agent (key) whose composer should open its model picker (an error block asked for another model). */
+  modelPicker = $state<string | null>(null);
   /** Terminal font size in px (pinch on a touch screen changes it). */
   termFontSize = $state(load(TERM_FONT_KEY, 12.5));
 

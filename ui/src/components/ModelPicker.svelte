@@ -95,7 +95,8 @@
   });
   const flat = $derived(groups.flatMap((g) => g.rows));
 
-  async function show() {
+  /** Opens the list (also called by the owner, e.g. when an error suggests another model). */
+  export async function show() {
     query = '';
     open = true;
     track('model.open');
