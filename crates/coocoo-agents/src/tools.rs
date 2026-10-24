@@ -287,14 +287,14 @@ impl ToolEnv {
 
     // ─── Kanban board (this agent's project) ──────────────────────────────────────────────
 
-    /// The project whose board these tools work on.
+    /// The project whose board and schedules these tools work on.
     fn project_id(&self) -> Result<String, HostToolError> {
         let agent = self.call(None, "agents.get", json!({ "id": self.agent_id }))?;
         agent
             .pointer("/summary/projectId")
             .and_then(Value::as_str)
             .map(str::to_owned)
-            .ok_or_else(|| err("you are not working in a Coocoo project, so there is no Kanban board"))
+            .ok_or_else(|| err("you are not working in a Coocoo project, so there is no Kanban board or schedule"))
     }
 
     fn kanban_list(&self) -> ToolResult {
@@ -490,6 +490,98 @@ impl ToolEnv {
             return Err(err(format!("no importer `{id}`")));
         }
         self.call(None, "boards.sourceRemove", json!({ "projectId": project_id, "sourceId": id }))?;
+        Ok(text(&json!({ "deleted": id })))
+    }
+
+    // ─── Scheduled runs (this agent's project) ────────────────────────────────────────────
+
+    /// A schedule as the agent sees it: times as wall-clock times in the schedule's zone.
+    fn schedule_view(&self, s: &Value) -> Value {
+        let zone = s["timezone"].as_str().and_then(|z| crate::cron::zone(z).ok());
+        let time = |ms: &Value| ms.as_i64().map(|ms| zone.as_ref().map_or_else(|| ms.to_string(), |z| crate::cron::format_time(ms, z)));
+        let who = |id: Option<&str>, title: &Value| match id {
+            Some(id) if id == self.agent_id => json!("you"),
+            Some(id) => title.as_str().map_or_else(|| json!(id), |t| json!(t)),
+            None => Value::Null,
+        };
+        let target = match s["agentId"].as_str() {
+            Some(id) => json!({ "agentId": id, "agent": who(Some(id), &s["agentTitle"]) }),
+            None => json!({ "newAgent": true, "worktree": s["worktree"].as_bool().unwrap_or(false), "model": s.get("model") }),
+        };
+        let last = s.get("lastRun").filter(|r| r.is_object()).map(|r| {
+            json!({ "at": time(&r["at"]), "outcome": r["outcome"], "agent": who(r["agentId"].as_str(), &r["agentTitle"]), "message": r.get("message") })
+        });
+        json!({
+            "id": s["id"],
+            "name": s["name"],
+            "prompt": s["prompt"],
+            "cron": s.get("cron"),
+            "at": time(&s["at"]),
+            "timezone": s["timezone"],
+            "target": target,
+            "enabled": s["enabled"],
+            "nextRun": time(&s["nextRunAt"]),
+            "lastRun": last,
+            "by": who(s.pointer("/addedBy/id").and_then(Value::as_str), s.pointer("/addedBy/title").unwrap_or(&Value::Null)),
+        })
+    }
+
+    fn schedules(&self) -> ToolResult {
+        let list = self.call(None, "schedules.list", json!({ "projectId": self.project_id()? }))?;
+        Ok(text(&Value::Array(list.as_array().into_iter().flatten().map(|s| self.schedule_view(s)).collect())))
+    }
+
+    fn schedule_save(&self, args: Map<String, Value>) -> ToolResult {
+        let project_id = self.project_id()?;
+        let id = str_arg(&args, "id");
+        let existing = match &id {
+            Some(id) => {
+                let list = self.call(None, "schedules.list", json!({ "projectId": project_id }))?;
+                let found = list.as_array().into_iter().flatten().find(|s| s["id"] == id.as_str()).cloned();
+                Some(found.ok_or_else(|| err(format!("no schedule `{id}`")))?)
+            }
+            None => None,
+        };
+        let zone_name = str_arg(&args, "timezone")
+            .or_else(|| existing.as_ref().and_then(|s| s["timezone"].as_str().map(str::to_owned)))
+            .unwrap_or_else(crate::cron::host_zone);
+        let mut params = json!({ "projectId": project_id });
+        if let Some(at) = str_arg(&args, "at") {
+            let zone = crate::cron::zone(&zone_name).map_err(err)?;
+            params["at"] = json!(crate::cron::parse_time(&at, &zone).map_err(err)?);
+        }
+        if let Some(target) = args.get("agentId").and_then(Value::as_str) {
+            params["agentId"] = json!(if target.trim() == "self" { self.agent_id.as_str() } else { target.trim() });
+        }
+        for key in ["name", "prompt", "cron", "timezone", "model"] {
+            if let Some(value) = args.get(key).and_then(Value::as_str) {
+                params[key] = json!(value);
+            }
+        }
+        for key in ["worktree", "enabled"] {
+            if let Some(value) = args.get(key).and_then(Value::as_bool) {
+                params[key] = json!(value);
+            }
+        }
+        let schedule = match id {
+            Some(id) => {
+                params["scheduleId"] = json!(id);
+                self.call(None, "schedules.update", params)?
+            }
+            None => {
+                if str_arg(&args, "name").is_none() || str_arg(&args, "prompt").is_none() {
+                    return Err(err("a new schedule needs `name` and `prompt`"));
+                }
+                params["byAgentId"] = json!(self.agent_id);
+                self.call(None, "schedules.add", params)?
+            }
+        };
+        Ok(text(&self.schedule_view(&schedule)))
+    }
+
+    fn schedule_delete(&self, args: Map<String, Value>) -> ToolResult {
+        let id = required(&args, "id")?;
+        self.call(None, "schedules.remove", json!({ "projectId": self.project_id()?, "scheduleId": id }))?;
         Ok(text(&json!({ "deleted": id })))
     }
 
@@ -945,6 +1037,47 @@ pub(crate) fn host_tools(agents: &Arc<Agents>, agent_id: &str, orchestrator: Arc
             |env, args, _| env.importer_delete(args),
         ),
         tool(
+            "coocoo_schedules",
+            "Scheduled runs",
+            "List your project's scheduled agent runs: name, prompt, timing (cron or one-off `at`, times shown in the schedule's zone), target (a new agent per run, or an existing agent: \"you\" for yourself), enabled, next run and the outcome of the last run.",
+            json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+            |env, _, _| env.schedules(),
+        ),
+        tool(
+            "coocoo_schedule_save",
+            "Save schedule",
+            SCHEDULE_SAVE_DOC,
+            json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Schedule to change; omit to create one." },
+                    "name": { "type": "string", "description": "Short label, also the title of the agents it starts (required for a new schedule)." },
+                    "prompt": { "type": "string", "description": "What the agent gets on every run (required for a new schedule); self-contained: a new agent does not see this conversation." },
+                    "cron": { "type": "string", "description": "Recurring: `minute hour day-of-month month day-of-week` (e.g. \"0 8 * * 1-5\" = weekdays at 08:00) or @hourly/@daily/@weekly/@monthly, read in `timezone`." },
+                    "at": { "type": "string", "description": "One run: ISO 8601 date-time, e.g. \"2026-11-01T09:00\" (read in `timezone`) or with an offset." },
+                    "timezone": { "type": "string", "description": "IANA zone like \"Europe/Berlin\"; default: this host's zone (or the schedule's own when changing it)." },
+                    "agentId": { "type": "string", "description": "Send the prompt to this agent of your project instead of starting a new one per run; \"self\" for yourself, \"\" to switch back to a new agent." },
+                    "worktree": { "type": "boolean", "description": "New agents get their own git worktree (own branch and directory)." },
+                    "model": { "type": "string", "description": "provider/modelId for new agents; default: the host's default model." },
+                    "enabled": { "type": "boolean", "description": "Pause (false) or resume (true)." }
+                },
+                "additionalProperties": false
+            }),
+            |env, args, _| env.schedule_save(args),
+        ),
+        tool(
+            "coocoo_schedule_delete",
+            "Delete schedule",
+            "Delete a scheduled run of your project (agents it started stay).",
+            json!({
+                "type": "object",
+                "properties": { "id": { "type": "string" } },
+                "required": ["id"],
+                "additionalProperties": false
+            }),
+            |env, args, _| env.schedule_delete(args),
+        ),
+        tool(
             "coocoo_actions",
             "Project actions",
             ACTIONS_DOC,
@@ -1014,6 +1147,12 @@ plain text (the card title) or a JSON object {\"title\", \"body\"?, \"url\"?, \"
 It runs with a 60 s timeout in its own state directory (cwd, $HOME and $COOCOO_STATE_DIR; files there persist between runs), may read the project ($COOCOO_PROJECT_DIR) and use the network, but does not inherit your environment; \
 on Linux it is sandboxed: it can read the system (/usr, /etc, …) but not the rest of the home directory, and can write only its state directory, so use system interpreters and tools (python3, curl, …). \
 Saving runs it once right away and reports how many cards it imported or its error (stderr tail), so fix and save again until it works. With `id` and nothing else it just runs again.";
+
+const SCHEDULE_SAVE_DOC: &str = "Create or change a scheduled agent run in your project: at the given times Coocoo starts a new agent with `prompt`, or sends it to an existing agent of the project (`agentId`, \"self\" for yourself). \
+Examples: \"every weekday at 08:00 review yesterday's commits\" (cron \"0 8 * * 1-5\"), \"tomorrow at 09:00 continue this task\" (`at`, `agentId: \"self\"`). \
+Give `cron` for recurring runs (at least 5 minutes apart) or `at` for a single run. A new agent does not see this conversation, so the prompt must say everything it needs. \
+Runs happen only while Coocoo runs on this host; a run missed while it was down happens once when it is back. An existing agent that is busy at run time is skipped, not queued. \
+With `id`, only the given fields change. Ask the user before scheduling recurring runs they did not ask for.";
 
 const ACTIONS_DOC: &str = "Show the project's UI actions: the buttons Coocoo offers under ▶ Run in the project and agent views and in ⌘K, read from `.coocoo/actions.toml` in the project's main checkout. \
 Returns the file path, the parsed actions and the problems found in the file (with line). It runs nothing; to add or change actions, edit that file, then call this again to check that it parsed. \

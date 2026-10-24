@@ -64,9 +64,12 @@ struct CreateParams {
     model: Option<String>,
     thinking: Option<String>,
     parent_id: Option<String>,
-    /// Created to work on a Kanban card (usage log only; not a request parameter).
+    /// Why the daemon created it (`card`, `schedule`; usage log only, not a request parameter).
     #[serde(skip)]
-    from_card: bool,
+    source: Option<&'static str>,
+    /// Notice shown at the top of its chat (not a request parameter).
+    #[serde(skip)]
+    notice: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -257,6 +260,7 @@ impl Agents {
             }
             "agents.delete" => self.delete(params(p)?).await,
             m if m.starts_with("boards.") => self.board_method(m, p).await,
+            m if m.starts_with("schedules.") => self.schedule_method(m, p).await,
             _ => Err(ApiError::unknown_method(method)),
         }
     }
@@ -273,14 +277,18 @@ impl Agents {
         ok(list)
     }
 
-    /// A new agent in `project_id` that starts on `prompt` right away (a board card).
-    pub(crate) async fn create_for_card(
+    /// A new agent in `project_id` that starts on `prompt` right away, created by the daemon for
+    /// `source` (`card`, `schedule`); `notice` opens its chat.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn create_started(
         self: &Arc<Self>,
         project_id: &str,
         title: &str,
         prompt: String,
         worktree: bool,
         model: Option<String>,
+        source: &'static str,
+        notice: Option<String>,
     ) -> ApiResult<AgentSummary> {
         self.create(CreateParams {
             project_id: Some(project_id.to_owned()),
@@ -291,7 +299,8 @@ impl Agents {
             model,
             thinking: None,
             parent_id: None,
-            from_card: true,
+            source: Some(source),
+            notice,
         })
         .await
     }
@@ -398,10 +407,10 @@ impl Agents {
         let summary = agent.summary();
         self.emitter.emit(events::AGENT_UPDATED, &summary);
         self.record_ledger(&summary, None);
-        let source = match (&summary.parent_id, p.from_card) {
+        let source = match (&summary.parent_id, p.source) {
             (Some(_), _) => "agent",
-            (None, true) => "card",
-            (None, false) => "user",
+            (None, Some(source)) => source,
+            (None, None) => "user",
         };
         self.record_agent(&agent, "agent.created", |event| {
             let event = event.meta("source", source).meta("worktree", summary.worktree.is_some());
@@ -411,6 +420,10 @@ impl Agents {
             }
         });
 
+        if let Some(notice) = p.notice {
+            // Before the process starts, so it precedes the prompt in the chat.
+            self.push_item(&agent, ItemKind::Notice, notice).await;
+        }
         let me = self.clone();
         tokio::spawn(async move {
             // Failures are recorded on the agent (status error + timeline item).
@@ -467,7 +480,7 @@ impl Agents {
     }
 
     /// During a restart's drain no new turn may start ([`Agents::drain`]).
-    fn refuse_while_draining(&self) -> ApiResult<()> {
+    pub(crate) fn refuse_while_draining(&self) -> ApiResult<()> {
         if self.draining.load(Ordering::Acquire) {
             return Err(ApiError::unavailable("Coocoo is restarting; send this again once it is back"));
         }

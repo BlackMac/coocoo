@@ -15,6 +15,7 @@
   import { OPERATION_LABEL, fetchProject, fetchedLabel, fetching, isStale } from '../lib/git.svelte';
   import AgentRow from '../components/AgentRow.svelte';
   import BoardPanel from '../panels/BoardPanel.svelte';
+  import SchedulesPanel from '../panels/SchedulesPanel.svelte';
   import HostDot from '../components/HostDot.svelte';
   import Menu from '../components/Menu.svelte';
   import InlineEdit from '../components/InlineEdit.svelte';
@@ -28,6 +29,7 @@
   const active = $derived(agents.filter((a) => a.status !== 'stopped'));
   const busyFetch = $derived(!!fetching[`${host}:${id}`]);
   const archived = $derived(agents.filter((a) => a.status === 'stopped'));
+  const schedules = $derived(fleet.schedules[key(host, id)]);
 
   let commits = $state<CommitInfo[]>([]);
   let refreshing = $state(false);
@@ -213,6 +215,16 @@
             <div class="card list">{#each archived as a (a.id)}<AgentRow agent={a} showProject={false} />{/each}</div>
           {/if}
         {/if}
+      </section>
+
+      <section>
+        <h2 class="section-title">
+          Schedules {#if schedules}<span class="count">{schedules.length}</span>{/if}
+          {#if schedules?.length}
+            <button class="btn ghost sm add" onclick={() => (ui.dialog = { kind: 'schedule', hostId: host, projectId: id })}><Plus size={13} /> New schedule</button>
+          {/if}
+        </h2>
+        <div class="card"><SchedulesPanel {host} projectId={id} /></div>
       </section>
 
       <section class="board-sec">
@@ -428,6 +440,10 @@
   }
   .board-card {
     padding: 0;
+  }
+  .add {
+    margin-left: auto;
+    font-weight: 500;
   }
   .list {
     padding: 4px;
