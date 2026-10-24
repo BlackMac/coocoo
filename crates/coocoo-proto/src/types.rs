@@ -960,6 +960,87 @@ pub struct BoardEvent {
     pub board: Board,
 }
 
+/// A recurring or one-off agent run of a project (`schedules.*`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Schedule {
+    pub id: String,
+    pub project_id: String,
+    /// Label, also the title of the agents it creates.
+    pub name: String,
+    /// The message the agent gets on every run.
+    pub prompt: String,
+    /// Recurring: a 5-field cron expression (or `@daily` etc.) read in `timezone`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cron: Option<String>,
+    /// One-off run time (Unix ms).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<i64>,
+    /// IANA time zone the cron expression is read in.
+    pub timezone: String,
+    /// Existing agent of the project prompted on every run; `None`: a new agent per run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    /// That agent's title when the schedule was saved, for when it has been deleted since.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_title: Option<String>,
+    /// New agents get their own git worktree.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub worktree: bool,
+    /// Model (`provider/id`) of new agents; `None`: the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    pub enabled: bool,
+    /// When it runs next; `None` while disabled or once a one-off run is over.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_run_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_run: Option<ScheduleRun>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    /// The agent that created it (`coocoo_schedule_save`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_by: Option<AgentRef>,
+}
+
+/// What the latest run of a [`Schedule`] did.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduleRun {
+    pub at: i64,
+    pub outcome: RunOutcome,
+    /// The agent that got (or would have got) the prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_title: Option<String>,
+    /// Why it was skipped or failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// Started with `schedules.run` instead of by the clock.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub manual: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RunOutcome {
+    /// The agent got the prompt.
+    Started,
+    /// The target agent was busy; nothing was sent.
+    Skipped,
+    /// Creating or prompting the agent failed.
+    Failed,
+}
+
+/// Payload of `project.schedules`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SchedulesEvent {
+    pub project_id: String,
+    pub schedules: Vec<Schedule>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelInfo {

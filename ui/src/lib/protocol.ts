@@ -522,6 +522,57 @@ export interface SourceRun {
   imported: number;
 }
 
+/** Outcome of one run of a `Schedule`. */
+export interface ScheduleRun {
+  /** When it ran (Unix ms). */
+  at: number;
+  /** started: the agent got the prompt; skipped: the target agent was busy (or archived);
+   *  failed: creating/prompting failed (`message` says why). */
+  outcome: 'started' | 'skipped' | 'failed';
+  /** The agent that got (or would have got) the prompt. */
+  agentId?: string;
+  agentTitle?: string;
+  /** Skip reason or error. */
+  message?: string;
+  /** Started with `schedules.run` ("Run now") instead of by the clock. */
+  manual?: boolean;
+}
+
+/** A scheduled agent run: on a cron schedule or once, a new agent or an existing one gets `prompt`. */
+export interface Schedule {
+  id: string;
+  projectId: string;
+  /** Label, also the title of the agents it creates. */
+  name: string;
+  /** The message the agent gets on every run (Markdown/plain text). */
+  prompt: string;
+  /** Recurring: 5-field cron `minute hour day-of-month month day-of-week` (lists `,`, ranges `-`,
+   *  steps `/`, `*`, month names jan–dec, weekday names sun–sat, 0 and 7 = Sunday; day-of-month and
+   *  day-of-week both restricted = either matches, as in Vixie cron) or one of `@hourly`, `@daily`,
+   *  `@weekly`, `@monthly`, `@yearly`. Read in `timezone`. Absent for a one-off run. */
+  cron?: string;
+  /** One-off run time (Unix ms); absent for cron schedules. */
+  at?: number;
+  /** IANA time zone the cron expression is read in, e.g. "Europe/Berlin". */
+  timezone: string;
+  /** Prompt this existing agent of the project on every run; absent = create a new agent per run. */
+  agentId?: string;
+  /** That agent's title when the schedule was saved (for when it is deleted). */
+  agentTitle?: string;
+  /** New agents get their own git worktree (only without agentId). Omitted when false. */
+  worktree?: boolean;
+  /** Model (`provider/id`) for new agents; absent = default. */
+  model?: string;
+  enabled: boolean;
+  /** Next time it runs (Unix ms); absent while disabled or when a one-off run is over. */
+  nextRunAt?: number;
+  lastRun?: ScheduleRun;
+  createdAt: number;
+  updatedAt: number;
+  /** The agent that created it via its `coocoo_schedule_save` tool. */
+  addedBy?: { id: string; title: string };
+}
+
 export interface AgentDetail {
   summary: AgentSummary;
   todos: TodoPhase[];
@@ -1183,6 +1234,23 @@ export interface Methods {
   ];
   'boards.sourceRemove': [{ projectId: string; sourceId: string }, Board];
   'boards.sourceRefresh': [{ projectId: string; sourceId: string }, SourceRun];
+  /** Without `projectId` all schedules of the host, oldest first. */
+  'schedules.list': [{ projectId?: string }, Schedule[]];
+  /** Exactly one of `cron`/`at`; `at` must lie in the future; `timezone` defaults to the host's zone. */
+  'schedules.add': [
+    { projectId: string; name: string; prompt: string; cron?: string; at?: number; timezone?: string; agentId?: string; worktree?: boolean; model?: string; enabled?: boolean },
+    Schedule,
+  ];
+  /** Giving `cron` drops `at` and vice versa; `agentId: ""` = new agent per run, `model: ""` = default. */
+  'schedules.update': [
+    { projectId: string; scheduleId: string; name?: string; prompt?: string; cron?: string; at?: number; timezone?: string; agentId?: string; worktree?: boolean; model?: string; enabled?: boolean },
+    Schedule,
+  ];
+  'schedules.remove': [{ projectId: string; scheduleId: string }, Ok];
+  /** Runs it now (also when disabled); `nextRunAt` stays. */
+  'schedules.run': [{ projectId: string; scheduleId: string }, Schedule];
+  /** Next run times (Unix ms) of a cron expression; `invalid_params` with the parse error. */
+  'schedules.preview': [{ cron: string; timezone?: string; count?: number }, { next: number[] }];
   'agents.hibernate': [{ id: string }, AgentSummary];
   'agents.archive': [{ id: string }, AgentSummary];
   'agents.delete': [{ id: string; removeWorktree?: boolean; deleteBranch?: boolean }, Ok];
@@ -1224,6 +1292,7 @@ export interface Events {
   'agent.request': UiRequest;
   'agent.requestResolved': { agentId: string; requestId: string };
   'project.board': { projectId: string; board: Board };
+  'project.schedules': { projectId: string; schedules: Schedule[] };
   'agent.commands': { agentId: string; commands: SlashCommand[] };
   'browser.updated': BrowserProfileInfo;
   'browser.frame': BrowserFrame;

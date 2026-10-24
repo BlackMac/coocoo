@@ -47,7 +47,8 @@ driven by the official Rust client (vendored in `crates/omp-rpc`):
 - **Orchestration:** host tools (`coocoo_spawn`, `coocoo_send`, `coocoo_wait`, `coocoo_agents`,
   `coocoo_projects`, `coocoo_hosts`, `coocoo_output`) are registered over RPC — no MCP server, no
   extra process — and route through the Orchestrator, so an agent on a laptop can start and
-  supervise agents on any server in the fleet.
+  supervise agents on any server in the fleet. `coocoo_schedules`, `coocoo_schedule_save` and
+  `coocoo_schedule_delete` let an agent schedule runs in its project (`schedules.*`).
 - **Attention:** omp `ask`/`confirm`/`select`/`input` dialogs become `UiRequest`s, surfaced in the
   overview's needs-you queue and answerable from any client.
 - **Lifecycle:** status follows `prompt_result`/`session_settled`, not just `agent_end`. Idle
@@ -67,7 +68,7 @@ driven by the official Rust client (vendored in `crates/omp-rpc`):
 | Concern | Approach |
 |---|---|
 | Desktop shell | Tauri 2 + system webview; the daemon runs in the same process |
-| Idle cost | No timers or polling while nobody watches: stats sample only during `stats.watch`, git refresh is driven by a `.git` watcher (the project actions reload by a name-filtered watch on the project directory and `.coocoo/`), Chromium starts on first use and stops when idle |
+| Idle cost | No timers or polling while nobody watches: stats sample only during `stats.watch`, git refresh is driven by a `.git` watcher (the project actions reload by a name-filtered watch on the project directory and `.coocoo/`), Chromium starts on first use and stops when idle; the scheduler sleeps until the next scheduled run (re-reading the wall clock at least once a minute) and has no timer without an enabled schedule |
 | Agents | omp processes hibernate after inactivity; timelines live on disk (JSONL), memory holds summaries |
 | Event fan-out | Each event is serialized once into `Arc<str>` and shared by all connections; bounded queues; slow clients get `system.resync` instead of unbounded buffers |
 | Browser | One Chromium per project, headless; screencast only while a client watches, fps-capped, JPEG passed through without re-encoding; lossy queue for frames |

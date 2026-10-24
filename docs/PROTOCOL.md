@@ -210,6 +210,38 @@ enters `done` (`boards.cardDone`, `kanban_done` or a move) its `doneUrl` gets a 
 project's host in the background (15 s timeout); a non-2xx answer or network error is stored in
 `Card.hookError` (cleared by the next successful call), nothing is retried.
 
+### schedules — `coocoo-agents` (scheduled agent runs per project)
+Stored per host in `<data_dir>/schedules.json`. A `Schedule` (`id`, `projectId`, `name`, `prompt`,
+`cron?` or `at?`, `timezone`, `agentId?`, `agentTitle?`, `worktree?`, `model?`, `enabled`,
+`nextRunAt?`, `lastRun?`, `createdAt`, `updatedAt`, `addedBy?: { id, title }`) runs `prompt` either
+in a new agent of the project (title = `name`, optionally in its own worktree and with `model`) or,
+with `agentId`, as a message to that agent of the project. `cron` has the five classic fields
+(minute hour day-of-month month day-of-week; `*`, lists, ranges, steps, month and weekday names, 0
+and 7 = Sunday; day of month and day of week both restricted = either matches) or `@hourly`,
+`@daily`, `@weekly`, `@monthly`, `@yearly`, read in the IANA zone `timezone` (a time skipped by a DST
+change runs shifted, 02:30 → 03:30); runs are at least 5 minutes apart. `at` (Unix ms) is a one-off
+run, after which the schedule disables itself.
+
+| Method | Params | Result |
+|---|---|---|
+| `schedules.list` | `{ projectId? }` | `Schedule[]` (oldest first; all of the host without `projectId`) |
+| `schedules.add` | `{ projectId, name, prompt (≤ 32 KiB), cron? \| at?, timezone? (default: the host's zone), agentId?, worktree?, model?, enabled? (true), byAgentId? }` | `Schedule` — exactly one of `cron`/`at`; `at` must lie in the future; `agentId` must be a non-archived agent of the project (then `worktree`/`model` are dropped); `worktree` needs a git project; `byAgentId`: the agent creating it (`coocoo_schedule_save`), recorded as `addedBy` |
+| `schedules.update` | `{ projectId, scheduleId, name?, prompt?, cron?, at?, timezone?, agentId? ("" = new agent per run), worktree?, model? ("" = default), enabled? }` | `Schedule` — `cron` drops `at` and vice versa; `nextRunAt` is recomputed when the timing or `enabled` changes (re-enabling a one-off run whose time has passed is `invalid_params`) |
+| `schedules.remove` | `{ projectId, scheduleId }` | `{}` (agents it started stay) |
+| `schedules.run` | `{ projectId, scheduleId }` | `Schedule` — runs it now (also when disabled; `nextRunAt` stays) and returns it with the new `lastRun` |
+| `schedules.preview` | `{ cron, timezone?, count? (5, ≤ 20) }` | `{ next: [Unix ms] }` — the next run times; `invalid_params` with the parse error otherwise |
+
+Runs happen on the project's host while its daemon runs: the scheduler sleeps until the earliest
+`nextRunAt` (at most a minute, as the wall clock can jump) and wakes on every change. A schedule
+moves on to its next time before its run starts, so a run missed while the daemon was down (or
+draining for a restart) happens once when it is back, never several times. A new agent's chat
+starts with the notice `Started by the schedule “<name>”`, then the prompt (its usage-log
+`agent.created` has `source: "schedule"`). An existing agent gets the same notice and the prompt
+like `agents.prompt`; if it is `starting`, `running` or `waiting` the run is skipped (never queued),
+an archived or deleted agent fails it. `lastRun` = `{ at, outcome: "started" | "skipped" | "failed",
+agentId?, agentTitle?, message? (why it was skipped or failed), manual? (by schedules.run) }`; every
+run is also a `schedule.run` usage-log event.
+
 ### browser — `coocoo-browser`
 | Method | Params | Result |
 |---|---|---|
@@ -303,6 +335,7 @@ agents stay in the statistics.
 | `agent.delta` | `TimelineDelta` (append to partial item text) | all |
 | `agent.request` / `agent.requestResolved` | `UiRequest` / `{ agentId, requestId }` | all |
 | `project.board` | `BoardEvent` (`{ projectId, board }`, the whole board after every change) | all |
+| `project.schedules` | `{ projectId, schedules: Schedule[] }` — the project's whole list after every change, including each run | all |
 | `agent.commands` | `{ agentId, commands: SlashCommand[] }` — the catalog changed (startup, skills/plugins reloaded) | all |
 | `browser.updated` | `BrowserProfileInfo` | all |
 | `browser.frame` | `BrowserFrame` | watching connection only |
@@ -326,8 +359,9 @@ such as `ask`; via the vendored official Rust client `crates/omp-rpc`). The daem
   `coocoo_insights` (read-only: the Stats/Workflows numbers by section — usage, workflows,
   friction, features, sequences, events — for a period, project and host),
   `coocoo_actions` (read-only: the project's parsed `.coocoo/actions.toml` and its problems; the tool description carries the file format),
-  `coocoo_task_summary` (sets `AgentSummary.task` = `{ text, since? }`: one or two sentences on the agent's current task, single line, ≤ 400 bytes, and the time of the newest user message, so the UI pins it above the transcript and jumps to that message), and
-  `kanban_list`, `kanban_add` (suggestions go to the inbox, work the user asked for to todo), `kanban_move`, `kanban_done`, `kanban_refine` (attach a refinement with mocks, see `boards.refinementSave`) for the board of the agent's project, and `kanban_importers`, `kanban_importer_save` (create/change a script or feed importer; runs it once and reports the result), `kanban_importer_delete` for its inbox importers (agents cannot create or change `command` importers);
+  `coocoo_task_summary` (sets `AgentSummary.task` = `{ text, since? }`: one or two sentences on the agent's current task, single line, ≤ 400 bytes, and the time of the newest user message, so the UI pins it above the transcript and jumps to that message),
+  `kanban_list`, `kanban_add` (suggestions go to the inbox, work the user asked for to todo), `kanban_move`, `kanban_done`, `kanban_refine` (attach a refinement with mocks, see `boards.refinementSave`) for the board of the agent's project, `kanban_importers`, `kanban_importer_save` (create/change a script or feed importer; runs it once and reports the result), `kanban_importer_delete` for its inbox importers (agents cannot create or change `command` importers), and
+  `coocoo_schedules`, `coocoo_schedule_save` (create/change a scheduled run of the agent's project: `cron` or `at` as an ISO 8601 date-time, read in `timezone` without an offset; `agentId: "self"` targets the agent itself) and `coocoo_schedule_delete`;
 - passes `--append-system-prompt` telling the agent it runs in Coocoo and to call `coocoo_task_summary` first whenever it starts a new task;
 - enables `set_ask_dialog` and surfaces omp `extension_ui_request`s as `UiRequest`s;
 - hibernates idle agents (process exit, session kept) and resumes them with `--resume <sessionFile>`.

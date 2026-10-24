@@ -14,6 +14,7 @@
   import ConfirmDialog from './components/ConfirmDialog.svelte';
   import PushDialog from './components/PushDialog.svelte';
   import SubagentDialog from './components/SubagentDialog.svelte';
+  import ScheduleDialog from './components/ScheduleDialog.svelte';
   import Overview from './views/Overview.svelte';
   import ProjectView from './views/ProjectView.svelte';
   import AgentView from './views/AgentView.svelte';
@@ -147,6 +148,8 @@
     <ConfirmDialog dialog={ui.dialog} />
   {:else if ui.dialog?.kind === 'push'}
     <PushDialog dialog={ui.dialog} />
+  {:else if ui.dialog?.kind === 'schedule'}
+    <ScheduleDialog hostId={ui.dialog.hostId} projectId={ui.dialog.projectId} scheduleId={ui.dialog.scheduleId} />
   {/if}
 {/if}
 <Toasts />

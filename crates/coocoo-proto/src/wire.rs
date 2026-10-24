@@ -90,6 +90,8 @@ pub mod events {
     pub const AGENT_REQUEST_RESOLVED: &str = "agent.requestResolved";
     /// `BoardEvent` — a project's Kanban board changed.
     pub const PROJECT_BOARD: &str = "project.board";
+    /// `SchedulesEvent` — a project's scheduled runs changed (also after each run).
+    pub const PROJECT_SCHEDULES: &str = "project.schedules";
     /// `CommandsEvent` — an agent's slash-command catalog changed.
     pub const AGENT_COMMANDS: &str = "agent.commands";
     /// `BrowserProfileInfo` — profile started/stopped or its tab list changed.
