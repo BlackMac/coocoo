@@ -20,6 +20,9 @@
   let value = $state('');
   let busy = $state(false);
   onDestroy(() => (value = ''));
+  // On touch screens a focused field pops up the keyboard before the card is even read (and
+  // squeezes the transcript away), so the field waits for a tap there.
+  const touch = matchMedia('(pointer: coarse)').matches;
 
   async function save() {
     if (busy || !value) return;
@@ -56,7 +59,7 @@
 {#if p.replace}
   <div class="hint">Replaces the value saved before, also in the files it was written into.</div>
 {/if}
-<SecretInput bind:value multiline={p.multiline} autofocus={!compact} onsubmit={save} />
+<SecretInput bind:value multiline={p.multiline} autofocus={!compact && !touch} onsubmit={save} />
 {#if !compact}
   <div class="ok">
     <ShieldCheck size={14} />

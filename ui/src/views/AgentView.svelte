@@ -45,6 +45,22 @@
     void fleet.loadDetail(host, id);
   });
 
+  // A field in a request card that gets focus (and the keyboard sliding in afterwards, which
+  // shrinks the cards' box) is scrolled into view inside the cards.
+  let reqsBox = $state<HTMLDivElement>();
+  function revealField() {
+    const el = document.activeElement;
+    if (el instanceof HTMLElement && reqsBox?.contains(el)) el.scrollIntoView({ block: 'nearest' });
+  }
+  $effect(() => {
+    const vv = window.visualViewport;
+    if (!vv || !reqsBox) return;
+    // After main.ts has applied the new `--app-height`.
+    const onresize = () => requestAnimationFrame(revealField);
+    vv.addEventListener('resize', onresize);
+    return () => vv.removeEventListener('resize', onresize);
+  });
+
   // Opening the agent (or it finishing while open and visible) marks it read.
   $effect(() => {
     if (a?.unread && document.visibilityState === 'visible') {
@@ -162,7 +178,8 @@
       <Transcript {timeline} agent={a} at={router.route.name === 'agent' ? router.route.at : undefined} />
       <div class="bottom">
         {#if requests.length}
-          <div class="reqs">{#each requests as r (r.id)}<RequestCard request={r} {host} />{/each}</div>
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="reqs" bind:this={reqsBox} onfocusin={revealField}>{#each requests as r (r.id)}<RequestCard request={r} {host} />{/each}</div>
         {/if}
         {#if git}<GitBar agent={a} {git} />{/if}
         <NextCard agent={a} />
@@ -304,11 +321,13 @@
     color: var(--red);
     font-size: var(--fs-sm);
   }
+  /* A share of the visible viewport (`--app-height`, main.ts), not of the layout viewport: with
+     the on-screen keyboard up the transcript keeps some room and the cards scroll inside. */
   .reqs {
     display: flex;
     flex-direction: column;
     gap: 8px;
-    max-height: 55vh;
+    max-height: calc(var(--app-height, 100vh) * 0.55);
     overflow-y: auto;
     border-radius: var(--r-lg);
   }
@@ -445,6 +464,9 @@
     }
     .bottom {
       padding: 0 10px 10px;
+    }
+    .reqs {
+      max-height: calc(var(--app-height, 100vh) * 0.4);
     }
     .ahead {
       padding: 0 6px 0 12px;
