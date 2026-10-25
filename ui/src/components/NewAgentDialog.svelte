@@ -3,10 +3,12 @@
   import { fleet } from '../lib/fleet.svelte';
   import ModelPicker from './ModelPicker.svelte';
   import { router } from '../lib/router.svelte';
-  import { ui } from '../lib/ui.svelte';
+  import { ui, type ImageChip } from '../lib/ui.svelte';
   import type { ModelInfo } from '../lib/protocol';
+  import { imageFiles, onImagePaste, readImage, type PickedImage } from '../lib/images';
   import Dialog from './Dialog.svelte';
-  import { GitBranch } from '../lib/icons';
+  import ImageThumbs from './ImageThumbs.svelte';
+  import { GitBranch, Image } from '../lib/icons';
 
   let { hostId, projectId }: { hostId?: string; projectId?: string } = $props();
 
@@ -26,6 +28,9 @@
   let cwd = $state('');
   let title = $state('');
   let prompt = $state('');
+  let images = $state<ImageChip[]>([]);
+  let dragOver = $state(false);
+  let imageSeq = 0;
   let worktree = $state(false);
   let branch = $state('');
   let base = $state('');
@@ -51,6 +56,11 @@
       .catch((e) => (modelsError = e.message));
   });
 
+  const add = (im: PickedImage) => images.push({ id: ++imageSeq, name: im.name, image: im.image });
+  const addFiles = (files: File[]) => files.forEach((f) => void readImage(f).then((im) => im && add(im)));
+  const onpaste = (e: ClipboardEvent) => onImagePaste(e, add);
+  const thumbs = $derived(images.map((im) => ({ key: String(im.id), name: im.name, src: `data:${im.image.mimeType};base64,${im.image.data}` })));
+
   async function create(e?: SubmitEvent) {
     e?.preventDefault();
     if (busy) return;
@@ -65,6 +75,7 @@
           cwd: project ? undefined : cwd.trim(),
           title: title.trim() || undefined,
           prompt: prompt.trim() || undefined,
+          images: images.length ? $state.snapshot(images).map((i) => i.image) : undefined,
           worktree: wt,
           model: model || undefined,
           thinking: thinking || undefined,
@@ -74,7 +85,7 @@
       );
       fleet.agents[`${a.hostId}:${a.id}`] = a;
       // Shown at once while omp starts; its `user` item replaces it.
-      if (prompt.trim()) fleet.noteSent(a.hostId, a.id, prompt.trim());
+      if (prompt.trim() || images.length) fleet.noteSent(a.hostId, a.id, prompt.trim(), $state.snapshot(images));
       ui.submitDialog();
       router.go({ name: 'agent', host: a.hostId, id: a.id });
     } catch (err) {
@@ -93,7 +104,25 @@
 </script>
 
 <Dialog title="New agent" width={560} onclose={() => (ui.dialog = null)}>
-  <form class="form" id="new-agent" onsubmit={create}>
+  <form
+    class="form"
+    id="new-agent"
+    onsubmit={create}
+    ondragover={(e) => {
+      if (!e.dataTransfer?.types.includes('Files')) return;
+      e.preventDefault();
+      dragOver = true;
+    }}
+    ondragleave={(e) => {
+      if (!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node)) dragOver = false;
+    }}
+    ondrop={(e) => {
+      if (!e.dataTransfer?.types.includes('Files')) return;
+      e.preventDefault();
+      dragOver = false;
+      addFiles(imageFiles(e.dataTransfer.files));
+    }}
+  >
     <div class="row2">
       <label class="field">
         <span>Project</span>
@@ -126,11 +155,14 @@
         <input class="input mono" bind:value={cwd} placeholder="/home/me/src/repo" spellcheck="false" />
       </label>
     {/if}
-    <label class="field">
-      <span>Task</span>
-      <!-- svelte-ignore a11y_autofocus -->
-      <textarea class="textarea" rows="5" bind:value={prompt} {onkeydown} placeholder="What should the agent do? (optional — you can prompt later)" autofocus></textarea>
-    </label>
+    <div class="field">
+      <label class="field">
+        <span>Task</span>
+        <!-- svelte-ignore a11y_autofocus -->
+        <textarea class="textarea" rows="5" bind:value={prompt} {onkeydown} {onpaste} placeholder="What should the agent do? (optional — you can prompt later)" autofocus></textarea>
+      </label>
+      <ImageThumbs images={thumbs} onpick={addFiles} onremove={(key) => (images = images.filter((im) => String(im.id) !== key))} />
+    </div>
     <label class="field">
       <span>Title <span class="faint">(optional)</span></span>
       <input class="input" bind:value={title} placeholder="Derived from the task when empty" />
@@ -170,6 +202,7 @@
         </select>
       </label>
     </div>
+    {#if dragOver}<div class="dropzone"><Image size={16} />Drop images to attach</div>{/if}
   </form>
   {#snippet footer()}
     <span class="hint grow">⌘↵ to create</span>
@@ -182,9 +215,25 @@
 
 <style>
   .form {
+    position: relative;
     display: flex;
     flex-direction: column;
     gap: 14px;
+  }
+  .dropzone {
+    position: absolute;
+    inset: -4px;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    border: 2px dashed var(--accent);
+    border-radius: var(--r-lg);
+    background: color-mix(in srgb, var(--bg-1) 80%, var(--accent));
+    color: var(--text);
+    font-weight: 500;
+    pointer-events: none;
   }
   .row2 {
     display: grid;

@@ -28,7 +28,7 @@ import { href } from './router.svelte';
 import { agentState } from './status';
 import { parseError } from './providerError';
 import { clientId, device } from './track';
-import type { Draft } from './ui.svelte';
+import type { Draft, ImageChip } from './ui.svelte';
 
 export const key = (host: string, id: string) => `${host}:${id}`;
 
@@ -353,9 +353,10 @@ export class Fleet {
   }
 
   /** Records the first prompt of an agent `agents.create` started (already accepted). */
-  noteSent(host: string, agentId: string, message: string) {
+  noteSent(host: string, agentId: string, message: string, images: ImageChip[] = []) {
     const k = key(host, agentId);
-    this.#addOutgoing(k, { message, images: [], draft: { text: message, images: [], elements: [] }, mode: 'auto', state: 'sent' });
+    const draft = { text: message, images, elements: [] };
+    this.#addOutgoing(k, { message, images: images.map((i) => i.image), draft, mode: 'auto', state: 'sent' });
     this.#sweepSoon(k);
   }
 

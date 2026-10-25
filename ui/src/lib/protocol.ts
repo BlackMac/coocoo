@@ -1252,6 +1252,8 @@ export interface Methods {
       cwd?: string;
       title?: string;
       prompt?: string;
+      /** Attached to the first prompt. */
+      images?: ImageInput[];
       worktree?: CreateWorktree;
       model?: string;
       thinking?: string;

@@ -62,6 +62,9 @@ struct CreateParams {
     cwd: Option<String>,
     title: Option<String>,
     prompt: Option<String>,
+    /// Attached to the first prompt; without `prompt` they are sent alone.
+    #[serde(default)]
+    images: Vec<ImageInput>,
     worktree: Option<WorktreeParam>,
     model: Option<String>,
     thinking: Option<String>,
@@ -333,6 +336,7 @@ impl Agents {
             worktree: worktree.then_some(WorktreeParam::Enabled(true)),
             model,
             thinking: None,
+            images: Vec::new(),
             parent_id: None,
             source: Some(source),
             notice,
@@ -431,8 +435,9 @@ impl Agents {
             subagents: 0,
         };
         let mut state = State::new(summary, Life::Starting);
-        if let Some(message) = prompt {
-            state.pending.push(PendingPrompt { message, images: None, behavior: StreamingBehavior::FollowUp });
+        if prompt.is_some() || !p.images.is_empty() {
+            let images = (!p.images.is_empty()).then(|| p.images.into_iter().map(image_content).collect());
+            state.pending.push(PendingPrompt { message: prompt.unwrap_or_default(), images, behavior: StreamingBehavior::FollowUp });
             state.begin_prompt();
         }
         let agent = Arc::new(Agent::new(self.root.join(&id), state));
