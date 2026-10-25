@@ -4,10 +4,9 @@
 
 <script lang="ts">
   import { fleet, key } from '../lib/fleet.svelte';
-  import { copyText } from '../lib/clipboard';
   import { ago, shortPath } from '../lib/format';
   import { now } from '../lib/clock.svelte';
-  import { href, router } from '../lib/router.svelte';
+  import { href } from '../lib/router.svelte';
   import { ui } from '../lib/ui.svelte';
   import { track } from '../lib/track';
   import type { CommitInfo } from '../lib/protocol';
@@ -19,6 +18,7 @@
   import SecretsPanel from '../panels/SecretsPanel.svelte';
   import HostDot from '../components/HostDot.svelte';
   import Menu from '../components/Menu.svelte';
+  import { copy, projectMenu, renameProject } from '../lib/menus';
   import InlineEdit from '../components/InlineEdit.svelte';
   import ActionsButton from '../components/ActionsButton.svelte';
 
@@ -90,28 +90,6 @@
     void saveUrls([...(p.devUrls ?? []), u]);
   }
 
-  function rename(name: string) {
-    fleet
-      .call('projects.update', { id, name }, host)
-      .then((np) => (fleet.projects[`${host}:${id}`] = np))
-      .catch((err) => ui.error('Rename failed', err));
-  }
-
-  function remove() {
-    ui.dialog = {
-      kind: 'confirm',
-      title: 'Remove project',
-      message: `Remove “${p?.name}” from Coocoo? Files on disk are not touched.`,
-      action: 'Remove',
-      danger: true,
-      run: async () => {
-        await fleet.call('projects.remove', { id }, host);
-        delete fleet.projects[`${host}:${id}`];
-        router.go({ name: 'overview' });
-      },
-    };
-  }
-
   function removeWorktree(path: string, branch?: string | null) {
     ui.dialog = {
       kind: 'confirm',
@@ -125,10 +103,6 @@
       },
     };
   }
-
-  function copy(text: string) {
-    copyText(text).then(() => ui.toast('success', 'Copied'), (err) => ui.error('Copy failed', err));
-  }
 </script>
 
 <div class="scroll">
@@ -138,7 +112,7 @@
     <div class="page">
       <header class="phead">
         <div class="ttl">
-          <h1><InlineEdit value={p.name} label="Project name" onsave={rename} /></h1>
+          <h1><InlineEdit value={p.name} label="Project name" onsave={(name) => renameProject(p, name)} /></h1>
           <span class="chip"><HostDot online={h?.online ?? false} size={5} />{h?.name ?? host}</span>
           <div class="acts">
             <button class="btn ghost icon" title="Refresh git status" aria-label="Refresh" onclick={refresh} disabled={refreshing}>
@@ -153,15 +127,7 @@
               <Terminal size={14} />
             </button>
             <ActionsButton project={p} />
-            <Menu
-              label="Project actions"
-              items={[
-                { label: 'Copy path', icon: Copy, run: () => copy(p!.path) },
-                { label: 'Remove project', icon: Trash2, danger: true, run: remove },
-              ]}
-            >
-              {#snippet trigger()}<Ellipsis size={15} />{/snippet}
-            </Menu>
+            <Menu label="Project actions" items={projectMenu(p)}>{#snippet trigger()}<Ellipsis size={15} />{/snippet}</Menu>
             <button class="btn primary" title="New agent" aria-label="New agent" onclick={() => (ui.dialog = { kind: 'newAgent', hostId: host, projectId: id })}><Plus size={14} /><span class="lbl">New agent</span></button>
           </div>
         </div>

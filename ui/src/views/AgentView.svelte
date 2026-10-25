@@ -13,10 +13,11 @@
   import { ui, type PanelTab } from '../lib/ui.svelte';
   import { track } from '../lib/track';
   import { errorInTimeline, parseError } from '../lib/providerError';
-  import { Archive, Ellipsis, FileDiff, Globe, Info, ListChecks, Moon, PanelRight, SquareKanban, Terminal, Trash2, MessageSquareText } from '../lib/icons';
+  import { Ellipsis, FileDiff, Globe, Info, ListChecks, PanelRight, SquareKanban, Terminal, MessageSquareText } from '../lib/icons';
   import StatusDot from '../components/StatusDot.svelte';
   import InlineEdit from '../components/InlineEdit.svelte';
-  import Menu, { type MenuItem } from '../components/Menu.svelte';
+  import Menu from '../components/Menu.svelte';
+  import { agentMenu, deleteAgent, renameAgent } from '../lib/menus';
   import Transcript from '../agent/Transcript.svelte';
   import Composer from '../agent/Composer.svelte';
   import NextCard from '../agent/NextCard.svelte';
@@ -89,40 +90,6 @@
     if (ui.panel.open) track('panel', { ...by, meta: { panel: ui.panel.tab } });
   }
 
-  async function act(method: 'agents.hibernate' | 'agents.archive', label: string) {
-    try {
-      const s = await fleet.call(method, { id }, host);
-      fleet.agents[k] = s;
-    } catch (err) {
-      ui.error(`${label} failed`, err);
-    }
-  }
-
-  function del(removeWorktree: boolean, deleteBranch = false) {
-    ui.dialog = {
-      kind: 'confirm',
-      title: deleteBranch ? 'Clean up worktree' : 'Delete agent',
-      message: deleteBranch
-        ? `Delete “${a?.title}”, its session, the worktree ${a?.worktree?.path} and the branch ${a?.worktree?.branch}? Everything on it is merged.`
-        : removeWorktree
-          ? `Delete “${a?.title}”, its session and the worktree ${a?.worktree?.path}? Uncommitted work in the worktree is lost.`
-          : `Delete “${a?.title}” and its session? The working directory is kept.`,
-      action: 'Delete',
-      danger: true,
-      run: async () => {
-        await fleet.call('agents.delete', { id, removeWorktree, deleteBranch }, host);
-        router.go(a?.projectId ? { name: 'project', host, id: a.projectId } : { name: 'overview' });
-      },
-    };
-  }
-
-  const menu = $derived<MenuItem[]>([
-    { label: 'Hibernate', icon: Moon, disabled: !a || ['hibernated', 'stopped'].includes(a.status), run: () => act('agents.hibernate', 'Hibernate') },
-    { label: 'Archive', icon: Archive, disabled: a?.status === 'stopped', run: () => act('agents.archive', 'Archive') },
-    { label: 'Delete', icon: Trash2, danger: true, run: () => del(false) },
-    ...(a?.worktree ? [{ label: 'Delete with worktree', icon: Trash2, danger: true, run: () => del(true) }] : []),
-  ]);
-
   // ─── Resizable panel ───────────────────────────────────────────────────────────────────────
   let dragging = $state(false);
   function startResize(e: PointerEvent) {
@@ -149,9 +116,9 @@
     <section class="chat">
       <header class="ahead">
         <StatusDot state={st} />
-        <h1><InlineEdit value={a.title} label="Agent title" onsave={(title) => fleet.call('agents.rename', { id, title }, host).then((s) => (fleet.agents[k] = s)).catch((e) => ui.error('Rename failed', e))} /></h1>
+        <h1><InlineEdit value={a.title} label="Agent title" onsave={(title) => renameAgent(a, title)} /></h1>
         <span class="state" data-state={st}>{STATE_LABEL[st]}</span>
-        {#if git}<GitChip agent={a} {git} oncleanup={() => del(true, true)} />{/if}
+        {#if git}<GitChip agent={a} {git} oncleanup={() => deleteAgent(a, true, true)} />{/if}
         <span class="meta num">
           <span title={a.model}>{modelName(a.model)}</span>
           {#if a.thinking}<span class="faint">· {a.thinking}</span>{/if}
@@ -160,7 +127,7 @@
         </span>
         <div class="hacts">
           {#if project}<ActionsButton {project} agent={a} />{/if}
-          <Menu label="Agent actions" items={menu}>{#snippet trigger()}<Ellipsis size={15} />{/snippet}</Menu>
+          <Menu label="Agent actions" items={agentMenu(a)}>{#snippet trigger()}<Ellipsis size={15} />{/snippet}</Menu>
           <button class="btn ghost icon sm toggle" class:active={ui.panel.open} title="Toggle side panel" aria-label="Toggle side panel" onclick={togglePanel}>
             <PanelRight size={15} />
           </button>
