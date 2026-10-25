@@ -60,7 +60,7 @@ Params marked `?` are optional. Return types refer to `types.rs`.
 | `projects.update` | `{ id, name?, devUrls? }` | `Project` |
 | `projects.remove` | `{ id }` | `{}` (never touches files) |
 | `projects.refresh` | `{ id }` | `Project` (recomputes `git`, `icon` and `actions`) |
-| `projects.icon` | `{ id }` | `{ mime, data: base64 }` — the file named by `Project.icon` (`not_found` without one). `icon` is picked from the project's favicon/app icon/logo at the usual places (root, `public/`, `static/`, `app/`, `src/app/`, `assets/`, `src/assets/`, `src/`, `web/`, `src-tauri/icons/`, `resources/`, `build/`, `.github/`, `docs/`): icons before logos, SVG before PNG before ICO, ≤ 512 KiB; re-detected on every git refresh |
+| `projects.icon` | `{ id }` | `{ mime, data: base64 }` — the file named by `Project.icon` (`not_found` without one). `icon` is picked from the project's favicon/app icon/logo at the usual places (root, `public/`, `public/icons/`, `static/`, `static/icons/`, `app/`, `src/app/`, `assets/`, `assets/icons/`, `src/assets/`, `src/assets/icons/`, `src/`, `web/`, `web/icons/`, `src-tauri/icons/`, Android `[app/]src/main/res/mipmap-xxxhdpi/` (`ic_launcher`), `resources/`, `build/`, `.github/`, `docs/`), below the root and, ranked after it, below each top-level directory (monorepos; hidden ones, `node_modules`, `target`, `vendor`, `dist`, `build`, `Pods`, `DerivedData` skipped): icons before logos, SVG before PNG before WebP before ICO, ≤ 512 KiB; re-detected on every git refresh |
 
 `Project.git` (`GitInfo`) describes the main checkout (`branch`, `head`, `upstream`, `ahead`/`behind`
 against it, `changed`, `lastCommit`) plus `fetchedAt` (newest `FETCH_HEAD` mtime over all
