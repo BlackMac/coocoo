@@ -151,7 +151,7 @@ Clients carry out `prompt` and `url` actions themselves (`agents.prompt`/`agents
 |---|---|---|
 | `agents.list` | `{ projectId? }` | `AgentSummary[]` |
 | `agents.get` | `{ id }` | `AgentDetail` |
-| `agents.create` | `{ projectId?, cwd?, title?, prompt?, worktree?: bool \| { branch?, base? }, model?, thinking?, parentId? }` | `AgentSummary` — one of `projectId`/`cwd` required; `unavailable` while the daemon drains for a restart |
+| `agents.create` | `{ projectId?, cwd?, title?, prompt?, worktree?: bool \| { branch?, base? }, model?, thinking?, parentId? }` | `AgentSummary` — one of `projectId`/`cwd` required; `unavailable` while the daemon drains for a restart. The worktree's branch defaults to `coocoo/<title-slug>-<first 4 chars of the agent id>` from the title (given, else the prompt's first line; card agents: the card title), e.g. `coocoo/git-status-push-pr-1a2b`: lowercase ASCII words (ä/ö/ü/ß transliterated), at most 40 chars; `coocoo/<agent id>` without a usable title |
 | `agents.prompt` | `{ id, message, mode?: "auto" \| "steer" \| "followUp", images?: ImageInput[] }` | `{}` — `auto`: prompt when idle, follow-up when running; wakes hibernated agents; `unavailable` while the daemon drains for a restart (running agents are asked to pause, see ARCHITECTURE.md) |
 | `agents.abort` | `{ id }` | `{}` |
 | `agents.respond` | `{ id, requestId, response }` | `{}` — see `UiRequest` docs for `response` shapes; for a `secret` request only `{ cancelled: true }` (decline) is accepted, the value goes through `secrets.provide` |
