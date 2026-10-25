@@ -4,9 +4,11 @@
   import { agentState, STATE_RANK, type AgentState } from '../lib/status';
   import { ui } from '../lib/ui.svelte';
   import type { AgentSummary, Project } from '../lib/protocol';
-  import { ChevronRight, Download, FolderGit2, LayoutDashboard, Moon, Plus, Search, Server, Sun, Bot } from '../lib/icons';
+  import { ChevronRight, Download, Ellipsis, FolderGit2, LayoutDashboard, Moon, Plus, Search, Server, Sun, Bot } from '../lib/icons';
+  import { agentMenu, projectMenu, renameAgent, renameProject } from '../lib/menus';
   import StatusDot from './StatusDot.svelte';
   import HostDot from './HostDot.svelte';
+  import Menu from './Menu.svelte';
 
   /** Desktop installers (deb, AppImage, dmg, nsis) built by .github/workflows/desktop-release.yml. */
   const DESKTOP_DOWNLOAD_URL = 'https://github.com/BlackMac/coocoo/releases/latest';
@@ -22,6 +24,13 @@
   const route = $derived(router.route);
   const activeAgent = $derived(route.name === 'agent' ? key(route.host, route.id) : null);
   const activeProject = $derived(route.name === 'project' ? key(route.host, route.id) : null);
+  /** Row being renamed in place from its menu: `a:<key>` or `p:<key>`. */
+  let renaming = $state<string | null>(null);
+
+  function focusSelect(el: HTMLInputElement) {
+    el.focus();
+    el.select();
+  }
 
   interface Group {
     hostId: string;
@@ -59,13 +68,45 @@
   }
 </script>
 
+{#snippet renameInput(value: string, label: string, save: (v: string) => void)}
+  <input
+    class="rename"
+    {value}
+    aria-label={label}
+    use:focusSelect
+    onblur={(e) => {
+      if (renaming === null) return;
+      renaming = null;
+      const v = e.currentTarget.value.trim();
+      if (v && v !== value) save(v);
+    }}
+    onkeydown={(e) => {
+      if (e.key === 'Enter') e.currentTarget.blur();
+      else if (e.key === 'Escape') {
+        e.stopPropagation();
+        renaming = null;
+      }
+    }}
+  />
+{/snippet}
+
 {#snippet agentRow(a: AgentSummary, depth: number)}
   {@const k = key(a.hostId, a.id)}
-  <a class="row agent" class:active={activeAgent === k} style:--depth={depth} href={href({ name: 'agent', host: a.hostId, id: a.id })}>
-    <StatusDot state={agentState(a)} size={7} />
-    <span class="ellipsis" class:unread={a.unread}>{a.title}</span>
-    {#if a.pendingRequests}<span class="badge sm">{a.pendingRequests}</span>{/if}
-  </a>
+  <div class="row agent" class:active={activeAgent === k} style:--depth={depth}>
+    {#if renaming === `a:${k}`}
+      <StatusDot state={agentState(a)} size={7} />
+      {@render renameInput(a.title, 'Agent title', (title) => renameAgent(a, title))}
+    {:else}
+      <a class="alink" href={href({ name: 'agent', host: a.hostId, id: a.id })}>
+        <StatusDot state={agentState(a)} size={7} />
+        <span class="ellipsis" class:unread={a.unread}>{a.title}</span>
+        {#if a.pendingRequests}<span class="badge sm">{a.pendingRequests}</span>{/if}
+      </a>
+      <span class="more">
+        <Menu label="Agent actions" items={agentMenu(a, () => (renaming = `a:${k}`))}>{#snippet trigger()}<Ellipsis size={14} />{/snippet}</Menu>
+      </span>
+    {/if}
+  </div>
 {/snippet}
 
 {#snippet agentTree(agents: AgentSummary[], depth: number)}
@@ -142,12 +183,20 @@
             <button class="caret" class:open aria-label={open ? 'Collapse' : 'Expand'} aria-expanded={open} onclick={() => toggle(k)}>
               <ChevronRight size={13} />
             </button>
-            <a class="plink" href={href({ name: 'project', host: p.hostId, id: p.id })}>
+            {#if renaming === `p:${k}`}
               {#if icon}<img class="picon" src={icon} alt="" />{:else}<FolderGit2 size={14} />{/if}
-              <span class="ellipsis">{p.name}</span>
-            </a>
-            {#if !open && sum}<StatusDot state={sum} size={6} />{/if}
-            {#if agents.length}<span class="cnt num">{agents.length}</span>{/if}
+              {@render renameInput(p.name, 'Project name', (name) => renameProject(p, name))}
+            {:else}
+              <a class="plink" href={href({ name: 'project', host: p.hostId, id: p.id })}>
+                {#if icon}<img class="picon" src={icon} alt="" />{:else}<FolderGit2 size={14} />{/if}
+                <span class="ellipsis">{p.name}</span>
+              </a>
+              {#if !open && sum}<StatusDot state={sum} size={6} />{/if}
+              {#if agents.length}<span class="cnt num">{agents.length}</span>{/if}
+              <span class="more">
+                <Menu label="Project actions" items={projectMenu(p, { rename: () => (renaming = `p:${k}`) })}>{#snippet trigger()}<Ellipsis size={14} />{/snippet}</Menu>
+              </span>
+            {/if}
           </div>
           {#if open}
             {@render agentTree(agents, 1)}
@@ -303,7 +352,7 @@
     background: var(--bg-active);
     color: var(--text);
   }
-  .row > span:not(.badge):not(.kbd):not(.cnt) {
+  .row > span:not(.badge):not(.kbd):not(.cnt):not(.more) {
     flex: 1;
     min-width: 0;
   }
@@ -378,7 +427,8 @@
     object-fit: contain;
     border-radius: 3px;
   }
-  .plink {
+  .plink,
+  .alink {
     display: flex;
     align-items: center;
     gap: 7px;
@@ -386,6 +436,52 @@
     min-width: 0;
     height: 100%;
     color: inherit;
+  }
+  .alink {
+    gap: 8px;
+  }
+  .alink > .ellipsis {
+    flex: 1;
+  }
+  /* The "…" menu shows on hover (always on touch screens) and while open; on hover it takes the
+     place of the agent count. */
+  .more {
+    display: none;
+    flex: none;
+    margin-right: -5px;
+  }
+  .more :global(.btn) {
+    width: 20px;
+    height: 20px;
+  }
+  .row:is(:hover, :focus-within) .more,
+  .more:has(:global([aria-expanded='true'])) {
+    display: block;
+  }
+  @media (hover: hover) {
+    .row:is(:hover, :focus-within):has(.more) .cnt {
+      display: none;
+    }
+  }
+  @media (hover: none) {
+    .more {
+      display: block;
+    }
+  }
+  .rename {
+    user-select: text;
+    flex: 1;
+    min-width: 0;
+    height: 22px;
+    margin-left: 3px;
+    padding: 0 5px;
+    border: 1px solid var(--accent);
+    border-radius: var(--r-sm);
+    outline: none;
+    box-shadow: 0 0 0 2px var(--accent-soft);
+    background: var(--bg);
+    color: var(--text);
+    font: inherit;
   }
   .cnt {
     color: var(--text-3);

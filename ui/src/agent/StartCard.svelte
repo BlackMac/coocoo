@@ -3,7 +3,8 @@
   import { ui } from '../lib/ui.svelte';
   import type { AgentSummary, Card } from '../lib/protocol';
   import { Bot, ChevronDown, GitBranch, NotebookPen, Play, Plus } from '../lib/icons';
-  import Menu, { type MenuItem } from '../components/Menu.svelte';
+  import Menu from '../components/Menu.svelte';
+  import type { MenuItem } from '../lib/menus';
 
   // Hands a card to an agent. The button starts it in the agent the board is shown for (or a
   // new agent on the project page); the menu offers the project's other agents and new ones.
