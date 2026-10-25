@@ -18,6 +18,7 @@ import type {
   ProviderUsage,
   ResultOf,
   Schedule,
+  SecretInfo,
   SlashCommand,
   TerminalInfo,
   TimelineItem,
@@ -189,6 +190,8 @@ export class Fleet {
   boards = $state<Record<string, Board>>({});
   /** Scheduled runs per `host:projectId`, loaded on demand and kept current by `project.schedules`. */
   schedules = $state<Record<string, Schedule[]>>({});
+  /** Secrets (names and files, never values) per `host:projectId`, kept current by `project.secrets`. */
+  secrets = $state<Record<string, SecretInfo[]>>({});
   /** Slash-command catalogs per `host:agentId`, loaded on demand and kept current by `agent.commands`. */
   commands = $state<Record<string, SlashCommand[]>>({});
   /** `agents.usage` per `host:provider`. */
@@ -492,6 +495,13 @@ export class Fleet {
     return list;
   }
 
+  /** Load a project's secrets (without values); later changes arrive as `project.secrets` events. */
+  async loadSecrets(host: string, projectId: string): Promise<SecretInfo[]> {
+    const list = await this.call('secrets.list', { projectId }, host);
+    this.secrets[key(host, projectId)] = list;
+    return list;
+  }
+
   /** Puts a schedule a call returned into its project's list (the `project.schedules` event follows). */
   putSchedule(host: string, s: Schedule) {
     const list = this.schedules[key(host, s.projectId)];
@@ -737,6 +747,9 @@ export class Fleet {
     });
     c.on('project.schedules', ({ projectId, schedules }, host) => {
       this.schedules[key(host, projectId)] = schedules;
+    });
+    c.on('project.secrets', ({ projectId, secrets }, host) => {
+      this.secrets[key(host, projectId)] = secrets;
     });
     c.on('agent.commands', ({ agentId, commands }, host) => {
       this.commands[key(host, agentId)] = commands;

@@ -16,6 +16,7 @@
   import AgentRow from '../components/AgentRow.svelte';
   import BoardPanel from '../panels/BoardPanel.svelte';
   import SchedulesPanel from '../panels/SchedulesPanel.svelte';
+  import SecretsPanel from '../panels/SecretsPanel.svelte';
   import HostDot from '../components/HostDot.svelte';
   import Menu from '../components/Menu.svelte';
   import InlineEdit from '../components/InlineEdit.svelte';
@@ -30,6 +31,7 @@
   const busyFetch = $derived(!!fetching[`${host}:${id}`]);
   const archived = $derived(agents.filter((a) => a.status === 'stopped'));
   const schedules = $derived(fleet.schedules[key(host, id)]);
+  const secrets = $derived(fleet.secrets[key(host, id)]);
 
   let commits = $state<CommitInfo[]>([]);
   let refreshing = $state(false);
@@ -225,6 +227,16 @@
           {/if}
         </h2>
         <div class="card"><SchedulesPanel {host} projectId={id} /></div>
+      </section>
+
+      <section>
+        <h2 class="section-title">
+          Secrets {#if secrets}<span class="count">{secrets.length}</span>{/if}
+          {#if secrets?.length}
+            <button class="btn ghost sm add" onclick={() => (ui.dialog = { kind: 'secret', hostId: host, projectId: id })}><Plus size={13} /> New secret</button>
+          {/if}
+        </h2>
+        <div class="card"><SecretsPanel {host} projectId={id} /></div>
       </section>
 
       <section class="board-sec">

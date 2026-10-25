@@ -48,7 +48,9 @@ export type Dialog =
   /** Push the project checkout an agent works in, after listing the outgoing commits. */
   | { kind: 'push'; hostId: string; agentId: string }
   /** Create (without `scheduleId`) or edit a project's scheduled run. */
-  | { kind: 'schedule'; hostId: string; projectId: string; scheduleId?: string };
+  | { kind: 'schedule'; hostId: string; projectId: string; scheduleId?: string }
+  /** Create (without `name`) or replace a project's secret. */
+  | { kind: 'secret'; hostId: string; projectId: string; name?: string };
 
 const THEME_KEY = 'coocoo.theme';
 const PANEL_KEY = 'coocoo.panel';

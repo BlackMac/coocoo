@@ -405,7 +405,7 @@ export interface TimelinePage {
   hasMore: boolean;
 }
 
-export type UiRequestMethod = 'select' | 'confirm' | 'input' | 'editor' | 'ask';
+export type UiRequestMethod = 'select' | 'confirm' | 'input' | 'editor' | 'ask' | 'secret';
 
 export interface UiRequest {
   id: string;
@@ -703,7 +703,63 @@ export interface AskUiPayload {
   timeout?: number;
 }
 
-export type UiRequestPayload = SelectUiPayload | ConfirmUiPayload | InputUiPayload | EditorUiPayload | AskUiPayload;
+/** A file Coocoo wrote a secret into. */
+export interface SecretFile {
+  /** Absolute path on the agent's host. */
+  path: string;
+  /** Path relative to the directory it was written in (agent's cwd/worktree or the project), shown in lists. */
+  relPath: string;
+  format: 'dotenv' | 'raw';
+  /** Git branch of that directory when written (worktree branch or the project's branch). */
+  branch?: string;
+}
+
+/** A project's secret without its value (`secrets.*`, `project.secrets`). */
+export interface SecretInfo {
+  /** Env var name, `^[A-Z_][A-Z0-9_]*$`. Every agent of the project gets `$NAME`. */
+  name: string;
+  files: SecretFile[];
+  /** The agent that asked for it via coocoo_secret_request; absent = added by the user. */
+  addedBy?: { id: string; title: string };
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** Payload of a `UiRequest` with `method: 'secret'` (created by Coocoo, not omp). Never contains a value. */
+export interface SecretUiPayload {
+  method: 'secret';
+  name: string;
+  /** Why the agent needs it (agent-written text, show as a quote). */
+  description: string;
+  projectId: string;
+  projectName: string;
+  /** PEM/JSON etc.: use a (masked) textarea instead of a password input. */
+  multiline?: boolean;
+  /** A secret with this name exists already; saving replaces it. */
+  replace?: boolean;
+  /** Also written to this file in the agent's directory. */
+  file?: {
+    /** Relative to the agent's directory, as the agent gave it. */
+    path: string;
+    format: 'dotenv' | 'raw';
+    /** Already ignored by git. */
+    gitIgnored: boolean;
+    /** Not ignored: Coocoo adds it to .git/info/exclude so no commit picks it up. */
+    exclude: boolean;
+  };
+  /** Branch of the agent's directory. */
+  branch?: string;
+  /** The agent works in its own worktree. */
+  worktree?: boolean;
+}
+
+export type UiRequestPayload =
+  | SelectUiPayload
+  | ConfirmUiPayload
+  | InputUiPayload
+  | EditorUiPayload
+  | AskUiPayload
+  | SecretUiPayload;
 
 export interface AskAnswer {
   id: string;
@@ -1251,6 +1307,14 @@ export interface Methods {
   'schedules.run': [{ projectId: string; scheduleId: string }, Schedule];
   /** Next run times (Unix ms) of a cron expression; `invalid_params` with the parse error. */
   'schedules.preview': [{ cron: string; timezone?: string; count?: number }, { next: number[] }];
+  /** Sorted by name; values are never returned. */
+  'secrets.list': [{ projectId: string }, SecretInfo[]];
+  /** Create or replace; replacing rewrites every listed file; `file` (relative to the project) is written too. */
+  'secrets.set': [{ projectId: string; name: string; value: string; file?: { path: string; format: 'dotenv' | 'raw' } }, SecretInfo];
+  /** Removes it from the store and the `NAME=` line / raw file Coocoo wrote. */
+  'secrets.remove': [{ projectId: string; name: string }, Ok];
+  /** Answers a `secret` UiRequest of agent `id`; decline with `agents.respond` `{ cancelled: true }`. */
+  'secrets.provide': [{ id: string; requestId: string; value: string }, Ok];
   'agents.hibernate': [{ id: string }, AgentSummary];
   'agents.archive': [{ id: string }, AgentSummary];
   'agents.delete': [{ id: string; removeWorktree?: boolean; deleteBranch?: boolean }, Ok];
@@ -1293,6 +1357,7 @@ export interface Events {
   'agent.requestResolved': { agentId: string; requestId: string };
   'project.board': { projectId: string; board: Board };
   'project.schedules': { projectId: string; schedules: Schedule[] };
+  'project.secrets': { projectId: string; secrets: SecretInfo[] };
   'agent.commands': { agentId: string; commands: SlashCommand[] };
   'browser.updated': BrowserProfileInfo;
   'browser.frame': BrowserFrame;

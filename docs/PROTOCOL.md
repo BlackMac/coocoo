@@ -149,7 +149,7 @@ Clients carry out `prompt` and `url` actions themselves (`agents.prompt`/`agents
 | `agents.create` | `{ projectId?, cwd?, title?, prompt?, worktree?: bool \| { branch?, base? }, model?, thinking?, parentId? }` | `AgentSummary` — one of `projectId`/`cwd` required; `unavailable` while the daemon drains for a restart |
 | `agents.prompt` | `{ id, message, mode?: "auto" \| "steer" \| "followUp", images?: ImageInput[] }` | `{}` — `auto`: prompt when idle, follow-up when running; wakes hibernated agents; `unavailable` while the daemon drains for a restart (running agents are asked to pause, see ARCHITECTURE.md) |
 | `agents.abort` | `{ id }` | `{}` |
-| `agents.respond` | `{ id, requestId, response }` | `{}` — see `UiRequest` docs for `response` shapes |
+| `agents.respond` | `{ id, requestId, response }` | `{}` — see `UiRequest` docs for `response` shapes; for a `secret` request only `{ cancelled: true }` (decline) is accepted, the value goes through `secrets.provide` |
 | `agents.timeline` | `{ id, before?: seq, limit? (200) }` | `TimelinePage` — a `user` item's `images` (`TimelineImage[]`: `name`, `mime`, `size`, `width?`, `height?`) are the message's images as the agent got them (omp scales them to at most 1568 px and usually re-encodes them as WebP); fetch each with `agents.image`. Items from before images were stored end in `[N image(s)]` instead |
 | `agents.output` | `{ id }` | `{ status: AgentStatus, text: String? }` — full last assistant text |
 | `agents.markRead` | `{ id }` | `{}` |
@@ -241,6 +241,60 @@ like `agents.prompt`; if it is `starting`, `running` or `waiting` the run is ski
 an archived or deleted agent fails it. `lastRun` = `{ at, outcome: "started" | "skipped" | "failed",
 agentId?, agentTitle?, message? (why it was skipped or failed), manual? (by schedules.run) }`; every
 run is also a `schedule.run` usage-log event.
+
+### secrets — `coocoo-agents` (secrets for agents, per project)
+Stored on the project's host in `<data_dir>/secrets/<projectId>.json` (directory 0700, file 0600,
+values in plain text, like a hand-written `.env`). No method or event ever returns a value: a
+`SecretInfo` is `{ name, files: SecretFile[], addedBy?: { id, title } (the agent that asked; absent =
+the user), createdAt, updatedAt }`, a `SecretFile` `{ path (absolute), relPath, format: "dotenv" |
+"raw", branch? }` — a file Coocoo wrote the value into. `name` is an env var name
+(`^[A-Z_][A-Z0-9_]*$`, ≤ 100 chars; `PATH`, `HOME`, `USER`, `SHELL`, `PWD`, `TERM`, `LANG`,
+`TMPDIR`, `IFS` and `COOCOO_*`, `LD_*`, `DYLD_*` are refused), a value ≤ 64 KiB without NUL.
+
+| Method | Params | Result |
+|---|---|---|
+| `secrets.list` | `{ projectId }` | `SecretInfo[]` sorted by name |
+| `secrets.set` | `{ projectId, name, value, file?: { path, format? ("dotenv") } }` | `SecretInfo` — creates or replaces; replacing rewrites every listed file (records of files whose directory is gone, e.g. a removed worktree, are dropped); `file` (relative to the project directory) is written in addition |
+| `secrets.remove` | `{ projectId, name }` | `{}` — also removes its `NAME=` line from dotenv files and deletes raw files that still hold exactly the value |
+| `secrets.provide` | `{ id, requestId, value }` | `{}` — answers agent `id`'s `secret` request: saves like `secrets.set` (into the agent's directory, `addedBy` = the agent) and resolves the request; on an error (path, git) the request stays open |
+
+Files: the path must stay below the directory (no absolute path, `..`, `.git`; existing symlinks
+that lead outside and a target that is not a regular file are refused; missing parent directories
+are created). `dotenv` replaces the first `NAME=`/`export NAME=` definition in place (a quoted value
+spanning lines as a whole), drops later ones and appends one otherwise; every other line stays
+byte for byte. The value is written bare when it has only `A–Z a–z 0–9 _ - . : / + = @ , % ~`, else
+single-quoted (literal, may span lines), and only when it contains `'` double-quoted with `\"`/`\\`
+escapes. `raw` makes the value the whole file. A new file gets mode 0600, an existing one keeps its
+mode (written atomically). In a git repository a file tracked by git is refused (`invalid_params`);
+one that is not ignored (`git check-ignore`) is added as `/<path>` to the repository's
+`info/exclude` (`git rev-parse --git-path info/exclude`, shared by its worktrees).
+
+**Agents:** every omp process of the project starts with each secret as env var `NAME`, plus
+`COOCOO_SECRET_<NAME>` when the name does not match omp's pattern
+`/(KEY|SECRET|TOKEN|PASSWORD|PASS|AUTH|CREDENTIAL|PRIVATE|OAUTH)(_|$)/i`, and with
+`secrets.enabled: true` in its overlay, so omp replaces the values with placeholders in everything
+it sends to the model (and puts the value back into tool arguments). omp collects them only at
+session start and ignores values under 8 characters. The host tool `coocoo_secret_request`
+(`{ name, description, file?: { path, format? }, multiline?, replace? }`) opens a `UiRequest` with
+method `secret` and a `SecretUiPayload` (`{ method: "secret", name, description, projectId,
+projectName, multiline?, replace? (it exists), file?: { path, format, gitIgnored, exclude (will be
+added to info/exclude) }, branch?, worktree? }`); the agent is `waiting` until the user saves
+(`secrets.provide`), declines (`agents.respond` with `{ cancelled: true }`) or omp cancels the call.
+The tool result names the variable, the value's length and the files, never the value. A secret
+the project has already (without `replace`) returns at once, after writing the value into a
+requested file it is not in yet. When the running process does not have the secret (new or
+changed since it started), the agent is told to end its turn; once it is idle (no prompt, dialog
+or subagent left) Coocoo hibernates it with the notice `Restarting the session so it gets the
+secret NAME` and prompts it to continue, the new process having `$NAME`. Values (and their
+JSON-escaped forms; at least 4 characters, also when cut off by a truncation) are replaced with
+`••••NAME` in every timeline item, streaming delta (a chunk ending in the start of a value is held
+back until the next one), `UiRequest` payload, `agents.output` text and `agents.subagentTimeline`
+page before it is stored or sent — omp's RPC events carry tool output unmasked. Re-encoded values
+(base64, hex, substrings) are caught by neither. Running agents see `secrets.set`/`remove`
+changes at their next process start; values they started with stay redacted until then. A value
+for another host travels client → home daemon → peer link like every other request: inside an SSH
+tunnel for SSH hosts, as plain as the rest of the traffic on a direct `ws://` link. The usage log
+records `secrets.set`/`remove`/`provide` with ids only (never name or value).
 
 ### browser — `coocoo-browser`
 | Method | Params | Result |
@@ -336,6 +390,7 @@ agents stay in the statistics.
 | `agent.request` / `agent.requestResolved` | `UiRequest` / `{ agentId, requestId }` | all |
 | `project.board` | `BoardEvent` (`{ projectId, board }`, the whole board after every change) | all |
 | `project.schedules` | `{ projectId, schedules: Schedule[] }` — the project's whole list after every change, including each run | all |
+| `project.secrets` | `{ projectId, secrets: SecretInfo[] }` — the project's whole list after every change (never values) | all |
 | `agent.commands` | `{ agentId, commands: SlashCommand[] }` — the catalog changed (startup, skills/plugins reloaded) | all |
 | `browser.updated` | `BrowserProfileInfo` | all |
 | `browser.frame` | `BrowserFrame` | watching connection only |
@@ -360,8 +415,10 @@ such as `ask`; via the vendored official Rust client `crates/omp-rpc`). The daem
   friction, features, sequences, events — for a period, project and host),
   `coocoo_actions` (read-only: the project's parsed `.coocoo/actions.toml` and its problems; the tool description carries the file format),
   `coocoo_task_summary` (sets `AgentSummary.task` = `{ text, since? }`: one or two sentences on the agent's current task, single line, ≤ 400 bytes, and the time of the newest user message, so the UI pins it above the transcript and jumps to that message),
-  `kanban_list`, `kanban_add` (suggestions go to the inbox, work the user asked for to todo), `kanban_move`, `kanban_done`, `kanban_refine` (attach a refinement with mocks, see `boards.refinementSave`) for the board of the agent's project, `kanban_importers`, `kanban_importer_save` (create/change a script or feed importer; runs it once and reports the result), `kanban_importer_delete` for its inbox importers (agents cannot create or change `command` importers), and
-  `coocoo_schedules`, `coocoo_schedule_save` (create/change a scheduled run of the agent's project: `cron` or `at` as an ISO 8601 date-time, read in `timezone` without an offset; `agentId: "self"` targets the agent itself) and `coocoo_schedule_delete`;
-- passes `--append-system-prompt` telling the agent it runs in Coocoo and to call `coocoo_task_summary` first whenever it starts a new task;
+  `kanban_list`, `kanban_add` (suggestions go to the inbox, work the user asked for to todo), `kanban_move`, `kanban_done`, `kanban_refine` (attach a refinement with mocks, see `boards.refinementSave`) for the board of the agent's project, `kanban_importers`, `kanban_importer_save` (create/change a script or feed importer; runs it once and reports the result), `kanban_importer_delete` for its inbox importers (agents cannot create or change `command` importers),
+  `coocoo_schedules`, `coocoo_schedule_save` (create/change a scheduled run of the agent's project: `cron` or `at` as an ISO 8601 date-time, read in `timezone` without an offset; `agentId: "self"` targets the agent itself) and `coocoo_schedule_delete`, and
+  `coocoo_secret_request` (ask the user for a secret without seeing it, see `secrets`);
+- passes `--append-system-prompt` telling the agent it runs in Coocoo, to call `coocoo_task_summary` first whenever it starts a new task, and to get secrets only through `coocoo_secret_request` and never print or re-encode them;
 - enables `set_ask_dialog` and surfaces omp `extension_ui_request`s as `UiRequest`s;
+- starts every process of a project with its secrets in the env and omp's secret obfuscation on;
 - hibernates idle agents (process exit, session kept) and resumes them with `--resume <sessionFile>`.

@@ -261,6 +261,7 @@ impl Agents {
             "agents.delete" => self.delete(params(p)?).await,
             m if m.starts_with("boards.") => self.board_method(m, p).await,
             m if m.starts_with("schedules.") => self.schedule_method(m, p).await,
+            m if m.starts_with("secrets.") => self.secret_method(m, p).await,
             _ => Err(ApiError::unknown_method(method)),
         }
     }
@@ -500,8 +501,17 @@ impl Agents {
         let Value::Object(mut body) = p.response else {
             return Err(ApiError::invalid("`response` must be an object"));
         };
-        body.insert("id".to_owned(), Value::String(p.request_id.clone()));
         let cancelled = body.get("cancelled") == Some(&Value::Bool(true));
+        // A secret request is Coocoo's own, not omp's: it is declined here or answered with
+        // `secrets.provide` (so the value never passes through this method).
+        let secret = agent.state.lock().requests.iter().any(|r| r.id == p.request_id && r.method == "secret");
+        if secret {
+            if !cancelled {
+                return Err(ApiError::invalid("answer a secret request with secrets.provide"));
+            }
+            return self.decline_secret(&agent, &p.request_id);
+        }
+        body.insert("id".to_owned(), Value::String(p.request_id.clone()));
         let response = ExtensionUiResponse::from_value(Value::Object(body)).map_err(|e| ApiError::invalid(e.to_string()))?;
         let client = {
             let st = agent.state.lock();
@@ -672,11 +682,20 @@ impl Agents {
 
     async fn subagent_timeline(&self, p: SubagentTimelineParams) -> ApiResult<Value> {
         let agent = self.get(&p.id)?;
-        let parent = agent.state.lock().summary.session_file.clone();
+        let (parent, project_id) = {
+            let st = agent.state.lock();
+            (st.summary.session_file.clone(), st.summary.project_id.clone())
+        };
         let parent = parent.ok_or_else(|| ApiError::not_found(format_args!("session of agent {}", p.id)))?;
+        // omp's session files hold tool output unmasked.
+        let redactor = self.project_redactor(project_id.as_deref());
         let page = tokio::task::spawn_blocking(move || {
             let file = transcript::resolve(std::path::Path::new(&parent), std::path::Path::new(&p.session_file))?;
-            transcript::read(&file, p.live)
+            let mut page = transcript::read(&file, p.live)?;
+            for item in &mut page.items {
+                redactor.redact_item(item);
+            }
+            ApiResult::Ok(page)
         })
         .await
         .map_err(ApiError::internal)??;

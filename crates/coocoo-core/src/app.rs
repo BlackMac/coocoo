@@ -261,7 +261,7 @@ impl App {
             "terminal" => self.terminals.dispatch(method, params, &caller.sink).await,
             "projects" | "git" | "fs" => self.workspace.dispatch(method, params).await,
             "actions" => self.workspace.dispatch_actions(&self.terminals, method, params).await,
-            "agents" | "boards" | "schedules" => self.agents.dispatch(method, params).await,
+            "agents" | "boards" | "schedules" | "secrets" => self.agents.dispatch(method, params).await,
             "browser" => self.browser.dispatch(method, params, &caller.sink).await,
             "insights" => self.insights_method(caller, method, params).await,
             _ => Err(ApiError::unknown_method(method)),

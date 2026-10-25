@@ -736,14 +736,15 @@ pub struct TimelinePage {
     pub has_more: bool,
 }
 
-/// An omp extension UI request awaiting the user.
+/// A dialog awaiting the user: an omp extension UI request, or a secret an agent asked for.
 ///
-/// `payload` is the omp `extension_ui_request` frame verbatim; `method` is one of
-/// `select`, `confirm`, `input`, `editor`, `ask`. The client answers with `agents.respond`,
-/// whose `response` is the matching omp reply body without `type`/`id`:
+/// `method` is one of `select`, `confirm`, `input`, `editor`, `ask` (then `payload` is the omp
+/// `extension_ui_request` frame verbatim) or `secret` (a [`SecretUiPayload`], answered with
+/// `secrets.provide`). The client answers omp dialogs with `agents.respond`, whose `response`
+/// is the matching omp reply body without `type`/`id`:
 /// `{ "value": String }` (select/input/editor), `{ "confirmed": bool }` (confirm),
 /// `{ "answers": [{ "id", "selectedOptions": [String], "customInput"? }] }` (ask),
-/// or `{ "cancelled": true }` (any).
+/// or `{ "cancelled": true }` (any, also declines a `secret`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UiRequest {
@@ -1039,6 +1040,93 @@ pub enum RunOutcome {
 pub struct SchedulesEvent {
     pub project_id: String,
     pub schedules: Vec<Schedule>,
+}
+
+/// Format of a file Coocoo writes a secret into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SecretFormat {
+    /// One `NAME=value` line in a dotenv file; other lines stay as they are.
+    Dotenv,
+    /// The value is the whole file.
+    Raw,
+}
+
+/// A file Coocoo wrote a secret into.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecretFile {
+    /// Absolute path on the agent's host.
+    pub path: String,
+    /// Path relative to the directory it was written in (an agent's directory or the project).
+    pub rel_path: String,
+    pub format: SecretFormat,
+    /// Git branch of that directory when it was written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+}
+
+/// A project's secret without its value (`secrets.*`, `project.secrets`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecretInfo {
+    /// Env var name every agent of the project gets.
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<SecretFile>,
+    /// The agent that asked for it (`coocoo_secret_request`); `None`: added by the user.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_by: Option<AgentRef>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// Payload of `project.secrets`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecretsEvent {
+    pub project_id: String,
+    pub secrets: Vec<SecretInfo>,
+}
+
+/// `payload` of a [`UiRequest`] with method `secret`: an agent asks for a secret. Never holds
+/// a value; the client answers with `secrets.provide`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecretUiPayload {
+    /// Always `secret`.
+    pub method: String,
+    pub name: String,
+    /// Why the agent needs it.
+    pub description: String,
+    pub project_id: String,
+    pub project_name: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub multiline: bool,
+    /// A secret of this name exists; saving replaces it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub replace: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<SecretFileTarget>,
+    /// Branch of the agent's directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// The agent works in its own worktree.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub worktree: bool,
+}
+
+/// The file a requested secret is also written into.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecretFileTarget {
+    /// Relative to the agent's directory.
+    pub path: String,
+    pub format: SecretFormat,
+    /// Already ignored by git.
+    pub git_ignored: bool,
+    /// Not ignored: Coocoo adds it to `.git/info/exclude`.
+    pub exclude: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

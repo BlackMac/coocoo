@@ -51,6 +51,17 @@ driven by the official Rust client (vendored in `crates/omp-rpc`):
   `coocoo_schedule_delete` let an agent schedule runs in its project (`schedules.*`).
 - **Attention:** omp `ask`/`confirm`/`select`/`input` dialogs become `UiRequest`s, surfaced in the
   overview's needs-you queue and answerable from any client.
+- **Secrets:** `coocoo_secret_request` opens a `secret` `UiRequest`; the value goes from the client
+  to the daemon of the agent's host only (`secrets.provide`), never through omp. It is stored per
+  project (`<data_dir>/secrets/`, 0600) and given to every process of the project as an env var
+  (optionally also written into a `.env`/raw file in the agent's directory, kept out of git via
+  `.git/info/exclude`), with omp's secret obfuscation on, so the model sees placeholders and
+  commands still run with the value. omp collects secrets only at session start, so the agent is
+  restarted (hibernate + resume + "continue" prompt) once its turn ends. omp masks only what goes
+  to the provider, so Coocoo redacts the values (`••••NAME`) from every timeline item, delta,
+  dialog and output before storing or sending them. Not a sandbox: the agent runs as the same
+  user and could read the store; a deliberately re-encoded value (base64, hex, substrings) or one
+  under 8 characters reaches the model unmasked.
 - **Lifecycle:** status follows `prompt_result`/`session_settled`, not just `agent_end`. Idle
   agents hibernate (process exits, session kept) and resume with `--resume <sessionFile>` on the
   next prompt. A crashing omp process only marks its own agent as errored.

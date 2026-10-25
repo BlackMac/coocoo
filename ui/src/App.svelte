@@ -15,6 +15,7 @@
   import PushDialog from './components/PushDialog.svelte';
   import SubagentDialog from './components/SubagentDialog.svelte';
   import ScheduleDialog from './components/ScheduleDialog.svelte';
+  import SecretDialog from './components/SecretDialog.svelte';
   import Overview from './views/Overview.svelte';
   import ProjectView from './views/ProjectView.svelte';
   import AgentView from './views/AgentView.svelte';
@@ -150,6 +151,8 @@
     <PushDialog dialog={ui.dialog} />
   {:else if ui.dialog?.kind === 'schedule'}
     <ScheduleDialog hostId={ui.dialog.hostId} projectId={ui.dialog.projectId} scheduleId={ui.dialog.scheduleId} />
+  {:else if ui.dialog?.kind === 'secret'}
+    <SecretDialog hostId={ui.dialog.hostId} projectId={ui.dialog.projectId} name={ui.dialog.name} />
   {/if}
 {/if}
 <Toasts />

@@ -285,6 +285,29 @@ impl ToolEnv {
         Ok(HostToolOutput::Text("Shown at the top of the chat.".to_owned()))
     }
 
+    /// `coocoo_secret_request`: the user types the value into a dialog; the agent only learns
+    /// where it went.
+    fn secret_request(&self, args: Map<String, Value>, ctx: &HostToolContext) -> ToolResult {
+        let agents = self.agents.upgrade().ok_or_else(|| err("daemon is shutting down"))?;
+        let file = match args.get("file") {
+            None | Some(Value::Null) => None,
+            Some(Value::Object(file)) => {
+                let path = str_arg(file, "path").ok_or_else(|| err("`file.path` is required"))?;
+                Some((path, str_arg(file, "format")))
+            }
+            Some(_) => return Err(err("`file` must be an object { path, format }")),
+        };
+        let flag = |key: &str| args.get(key).and_then(Value::as_bool).unwrap_or(false);
+        let ask = crate::secret::SecretAsk {
+            name: required(&args, "name")?,
+            description: required(&args, "description")?,
+            file,
+            multiline: flag("multiline"),
+            replace: flag("replace"),
+        };
+        agents.request_secret(&self.agent_id, ask, ctx).map(HostToolOutput::Text).map_err(|e| Box::new(e) as HostToolError)
+    }
+
     // ─── Kanban board (this agent's project) ──────────────────────────────────────────────
 
     /// The project whose board and schedules these tools work on.
@@ -924,6 +947,33 @@ pub(crate) fn host_tools(agents: &Arc<Agents>, agent_id: &str, orchestrator: Arc
             |env, args, _| env.task_summary(args),
         ),
         tool(
+            "coocoo_secret_request",
+            "Request secret",
+            SECRET_REQUEST_DOC,
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Env var name, e.g. OPENAI_API_KEY (A–Z, 0–9, _)." },
+                    "description": { "type": "string", "description": "Why you need it and what it is for; shown to the user in the dialog." },
+                    "file": {
+                        "type": "object",
+                        "description": "Also write it into this file in your working directory, for code that reads a file instead of the env.",
+                        "properties": {
+                            "path": { "type": "string", "description": "Relative to your working directory, e.g. .env" },
+                            "format": { "type": "string", "enum": ["dotenv", "raw"], "description": "dotenv (default): a NAME=value line, other lines stay; raw: the value is the whole file (PEM, JSON key files)." }
+                        },
+                        "required": ["path"],
+                        "additionalProperties": false
+                    },
+                    "multiline": { "type": "boolean", "description": "The value spans lines (PEM, JSON): the dialog shows a text area." },
+                    "replace": { "type": "boolean", "description": "Ask for a new value even though the project has this secret already (it is invalid or expired)." }
+                },
+                "required": ["name", "description"],
+                "additionalProperties": false
+            }),
+            |env, args, ctx| env.secret_request(args, ctx),
+        ),
+        tool(
             "kanban_list",
             "Kanban board",
             "List the cards on your project's Kanban board by column with the agent working on each (inbox: suggestions from external sources the user has not accepted yet; todo: the user's queue, top first; doing; done).",
@@ -1117,7 +1167,13 @@ pub(crate) fn host_tools(agents: &Arc<Agents>, agent_id: &str, orchestrator: Arc
 /// Appended to every agent's system prompt: the tool description alone does not get the summary
 /// written before the work starts.
 pub(crate) const SYSTEM_APPENDIX: &str = "You run inside Coocoo, which shows this session to the user as a chat. \
-Whenever you start on a new task (a new request from the user or a Kanban card), call `coocoo_task_summary` first with one or two sentences describing it; Coocoo pins them at the top of the chat.";
+Whenever you start on a new task (a new request from the user or a Kanban card), call `coocoo_task_summary` first with one or two sentences describing it; Coocoo pins them at the top of the chat. \
+When you need a secret (API key, token, password, private key), never ask for it in the chat or with `ask`: call `coocoo_secret_request`, which hands it to you as an env var without showing you the value. \
+Never print, echo, log or re-encode (base64, hex, substrings) a secret's value, also not from env vars or .env files.";
+
+const SECRET_REQUEST_DOC: &str = "Ask the user for a secret (API key, token, password, private key) without seeing it: the user types it into a Coocoo dialog, and Coocoo stores it for your project and gives it to every agent of the project as the env var $NAME (optionally also written into a file in your directory, kept out of git). \
+You never get the value: omp shows a placeholder wherever it appears in output, and commands you write with that placeholder or $NAME run with the real value. Never ask for secrets in the chat or with `ask`, and never print, echo or re-encode (base64, hex, substrings) the value. \
+If the project has the secret already, it returns at once. After the user saved a new one, end your turn as the result says: Coocoo restarts your session so it has the variable, then tells you to continue.";
 
 const TASK_SUMMARY_DOC: &str = "Set the short summary of your current task that Coocoo pins at the top of your chat, so the user sees at a glance what you are working on, even far down a long transcript. \
 Call it whenever you start on a new task (a new request from the user or a Kanban card), before the actual work, and again only when the task itself changes substantially; not for progress, the plan shows that. \

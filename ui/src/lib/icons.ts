@@ -75,6 +75,8 @@ export { default as Play } from '@lucide/svelte/icons/play';
 export { default as GripVertical } from '@lucide/svelte/icons/grip-vertical';
 export { default as Webhook } from '@lucide/svelte/icons/webhook';
 export { default as FileCode } from '@lucide/svelte/icons/file-code';
+export { default as Eye } from '@lucide/svelte/icons/eye';
+export { default as EyeOff } from '@lucide/svelte/icons/eye-off';
 export { default as ShieldCheck } from '@lucide/svelte/icons/shield-check';
 export { default as ShieldOff } from '@lucide/svelte/icons/shield-off';
 export { default as NotebookPen } from '@lucide/svelte/icons/notebook-pen';

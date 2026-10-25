@@ -23,6 +23,7 @@ use serde_json::{Value, json};
 
 use crate::Agents;
 use crate::mapper::{Effect, Mapper, Sink};
+use crate::secret::Redactor;
 use crate::state::{Agent, Life, PendingPrompt, Proc, State, Turn};
 
 /// Session events the supervisor consumes; everything else (`agent_end` with the whole
@@ -128,6 +129,8 @@ struct SpawnSpec {
     agent_id: String,
     host_id: String,
     tools: Vec<omp_rpc::HostTool>,
+    /// The project's secrets (and their shadow variables, [`crate::secret::SHADOW_PREFIX`]).
+    env: Vec<(String, String)>,
 }
 
 struct Spawned {
@@ -157,7 +160,12 @@ fn spawn_omp(spec: SpawnSpec) -> Result<Spawned, String> {
     std::fs::create_dir_all(&spec.dir).map_err(|e| format!("cannot create {}: {e}", spec.dir.display()))?;
     let overlay = spec.dir.join("omp-overlay.yml");
     // A JSON string is a valid YAML double-quoted scalar.
-    let yaml = format!("browser:\n  cdpUrl: {}\n", serde_json::Value::String(spec.cdp_url.clone()));
+    let mut yaml = format!("browser:\n  cdpUrl: {}\n", serde_json::Value::String(spec.cdp_url.clone()));
+    if !spec.env.is_empty() {
+        // omp then replaces the values (collected from the env at startup) with placeholders in
+        // everything it sends to the model.
+        yaml.push_str("secrets:\n  enabled: true\n");
+    }
     std::fs::write(&overlay, yaml).map_err(|e| format!("cannot write {}: {e}", overlay.display()))?;
     let stderr = std::fs::File::create(spec.dir.join(STDERR_LOG)).map_err(|e| format!("cannot create stderr log: {e}"))?;
 
@@ -175,6 +183,9 @@ fn spawn_omp(spec: SpawnSpec) -> Result<Spawned, String> {
         .env("COOCOO_AGENT_ID", &spec.agent_id)
         .env("COOCOO_HOST_ID", &spec.host_id)
         .stderr(stderr);
+    for (name, value) in &spec.env {
+        process.env(name, value);
+    }
     let mut lost_session = None;
     if let Some(session) = spec.resume {
         if Path::new(&session).is_file() {
@@ -305,6 +316,7 @@ impl Agents {
         // Told to the agent in the `kanban_done` description.
         let done_action =
             project_id.as_deref().and_then(|pid| self.edit_board(pid, |b| Ok((b.done_action, false))).ok()).unwrap_or_default();
+        let secrets = self.spawn_secrets(project_id.as_deref());
         let profile = project_id.unwrap_or_else(|| "default".to_owned());
         let cdp_url = match cdp_endpoint(orchestrator.as_ref(), &profile).await {
             Ok(url) => url,
@@ -314,6 +326,9 @@ impl Agents {
             let mut st = agent.state.lock();
             st.life = Life::Starting;
             st.summary.error = None;
+            st.spawn_versions = secrets.versions;
+            // This process gets every secret saved so far.
+            st.secret_restart.clear();
             st.sync();
             SpawnSpec {
                 omp: self.omp.clone(),
@@ -327,6 +342,7 @@ impl Agents {
                 agent_id: agent.id.clone(),
                 host_id: self.host_id().to_owned(),
                 tools: crate::tools::host_tools(self, &agent.id, orchestrator.clone(), done_action),
+                env: secrets.env,
             }
         };
         let resume = spec.resume.is_some();
@@ -355,9 +371,10 @@ impl Agents {
         let me = self.clone();
         let thread_agent = agent.clone();
         let events = spawned.events;
+        let spawn_redactor = secrets.redactor;
         let started = std::thread::Builder::new()
             .name(format!("omp-{}", agent.id))
-            .spawn(move || me.run_events(&thread_agent, generation, events));
+            .spawn(move || me.run_events(&thread_agent, generation, events, spawn_redactor));
         if let Err(err) = started {
             // Without its event thread the process is unusable; tear it down again.
             let (proc, _) = agent.state.lock().take_process(Life::Crashed);
@@ -442,9 +459,12 @@ impl Agents {
     }
 
     /// Body of the per-process event thread: map frames until the process is gone.
-    fn run_events(self: Arc<Self>, agent: &Arc<Agent>, generation: u64, events: Receiver<Event>) {
+    /// `spawn_redactor` covers the secrets the process started with (also once they are
+    /// deleted or replaced, as its env still has them).
+    fn run_events(self: Arc<Self>, agent: &Arc<Agent>, generation: u64, events: Receiver<Event>, spawn_redactor: Arc<Redactor>) {
         let mut mapper = Mapper::new();
-        let mut sink = LiveSink { agents: &self, agent, generation, unsaved: Vec::new() };
+        let secrets = SinkSecrets { project_id: agent.summary().project_id, spawn: spawn_redactor, cached: None, held: None };
+        let mut sink = LiveSink { agents: &self, agent, generation, unsaved: Vec::new(), secrets };
         loop {
             let event = match mapper.deadline() {
                 Some(deadline) => match events.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
@@ -594,6 +614,37 @@ struct LiveSink<'a> {
     generation: u64,
     /// Images whose `SaveImage` failed; their item is upserted without them.
     unsaved: Vec<String>,
+    secrets: SinkSecrets,
+}
+
+/// Keeps secret values out of what the event thread stores and sends ([`crate::secret`]).
+struct SinkSecrets {
+    project_id: Option<String>,
+    /// The secrets the process started with.
+    spawn: Arc<Redactor>,
+    /// The project's redactor seen last, and its union with `spawn`.
+    cached: Option<(Arc<Redactor>, Arc<Redactor>)>,
+    /// Streaming text held back as it may be the start of a value: `(item id, text)`.
+    held: Option<(String, String)>,
+}
+
+impl SinkSecrets {
+    /// The project's current secrets plus those the process started with.
+    fn redactor(&mut self, agents: &Agents) -> Arc<Redactor> {
+        let current = agents.project_redactor(self.project_id.as_deref());
+        if let Some((seen, merged)) = &self.cached
+            && Arc::ptr_eq(seen, &current)
+        {
+            return merged.clone();
+        }
+        let merged = match (current.is_empty(), self.spawn.is_empty()) {
+            (_, true) => current.clone(),
+            (true, false) => self.spawn.clone(),
+            (false, false) => Arc::new(Redactor::merged(&current, &self.spawn)),
+        };
+        self.cached = Some((current, merged.clone()));
+        merged
+    }
 }
 
 impl LiveSink<'_> {
@@ -634,16 +685,43 @@ impl Sink for LiveSink<'_> {
                     item.images.retain(|image| !self.unsaved.contains(&image.name));
                     self.unsaved.clear();
                 }
+                // The item carries the whole text; anything held back from its stream is in it.
+                if self.secrets.held.as_ref().is_some_and(|(id, _)| *id == item.id) {
+                    self.secrets.held = None;
+                }
+                self.secrets.redactor(agents).redact_item(&mut item);
                 if let Err(err) = agent.timeline.lock().upsert(&item) {
                     tracing::warn!(agent = %agent.id, %err, "timeline write failed");
                 }
                 agents.emit_item(&agent.id, item);
             }
-            Effect::Progress(item) => {
+            Effect::Progress(mut item) => {
+                self.secrets.redactor(agents).redact_item(&mut item);
                 agent.timeline.lock().overlay(item.clone());
                 agents.emit_item(&agent.id, item);
             }
-            Effect::Delta { item_id, text } => {
+            Effect::Delta { item_id, mut text } => {
+                let redactor = self.secrets.redactor(agents);
+                if !redactor.is_empty() || self.secrets.held.is_some() {
+                    match self.secrets.held.take() {
+                        Some((id, held)) if id == item_id => text.insert_str(0, &held),
+                        Some((id, held)) => {
+                            let held = redactor.redact(&held).unwrap_or(held);
+                            agent.timeline.lock().append_text(&id, &held);
+                            agents.emitter.emit(events::AGENT_DELTA, &TimelineDelta { agent_id: agent.id.clone(), item_id: id, text: held });
+                        }
+                        None => {}
+                    }
+                    // A value split across chunks must not go out half by half.
+                    let rest = text.split_off(text.len() - redactor.held_len(&text));
+                    if !rest.is_empty() {
+                        self.secrets.held = Some((item_id.clone(), rest));
+                    }
+                    redactor.redact_string(&mut text);
+                    if text.is_empty() {
+                        return;
+                    }
+                }
                 agent.timeline.lock().append_text(&item_id, &text);
                 agents.emitter.emit(events::AGENT_DELTA, &TimelineDelta { agent_id: agent.id.clone(), item_id, text });
             }
@@ -677,6 +755,7 @@ impl Sink for LiveSink<'_> {
                     if finished {
                         agents.schedule_refresh(agent, true);
                         agents.run_ended(agent);
+                        agents.restart_for_secrets_when_idle(agent);
                     }
                     agents.changed(agent);
                 }
@@ -694,11 +773,13 @@ impl Sink for LiveSink<'_> {
                     if finished {
                         agents.schedule_refresh(agent, true);
                         agents.run_ended(agent);
+                        agents.restart_for_secrets_when_idle(agent);
                     }
                     agents.changed(agent);
                 }
             }
-            Effect::Request { id, method, payload } => {
+            Effect::Request { id, method, mut payload } => {
+                self.secrets.redactor(agents).redact_value(&mut payload);
                 let questions = payload.get("questions").and_then(Value::as_array).map_or(1, Vec::len);
                 let request = UiRequest { id, agent_id: agent.id.clone(), method, payload, created_at: now_ms() };
                 let added = self.update(|st| {
@@ -742,6 +823,7 @@ impl Sink for LiveSink<'_> {
                     removed
                 }) {
                     agents.changed(agent);
+                    agents.restart_for_secrets_when_idle(agent);
                 }
             }
             Effect::Queue { steering, follow_up } => {
@@ -762,7 +844,8 @@ impl Sink for LiveSink<'_> {
                     agents.changed(agent);
                 }
             }
-            Effect::Output(text) => {
+            Effect::Output(mut text) => {
+                self.secrets.redactor(agents).redact_string(&mut text);
                 if self.update(|st| {
                     st.summary.preview = Some(preview(&text, 240));
                     st.last_output = Some(text);
