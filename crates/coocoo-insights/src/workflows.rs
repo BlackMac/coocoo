@@ -91,7 +91,7 @@ const SHAPES: [(&str, &str, &str); 6] = [
     ("other", "Other", "Everything else."),
 ];
 
-const FEATURES: [(&str, &str); 18] = [
+const FEATURES: [(&str, &str); 19] = [
     ("board", "Kanban board"),
     ("changes", "Changes panel"),
     ("browser", "Browser panel"),
@@ -110,6 +110,7 @@ const FEATURES: [(&str, &str); 18] = [
     ("stats", "Stats & Workflows"),
     ("analyze", "Analyze patterns"),
     ("schedules", "Scheduled runs"),
+    ("secrets", "Agent secrets"),
 ];
 
 const FRICTION: [(&str, &str); 10] = [
@@ -1075,6 +1076,7 @@ fn features_of(e: &InsightEvent, mut hit: impl FnMut(&'static str)) {
         "insights.analyze" => hit("analyze"),
         kind if kind.starts_with("boards.") => hit("board"),
         kind if kind.starts_with("schedules.") => hit("schedules"),
+        kind if kind.starts_with("secrets.") => hit("secrets"),
         kind if kind.starts_with("browser.") => hit("browser"),
         _ => {}
     }

@@ -70,6 +70,7 @@
   /** One-line summary for requests that are not expanded. */
   function summary(r: UiRequest): string {
     const p = r.payload;
+    if (p.method === 'secret') return `Secret ${p.name} requested`;
     if (p.method !== 'ask') return p.title;
     const first = p.questions[0]?.question ?? 'Question';
     return p.questions.length > 1 ? `${p.questions.length} questions · ${first}` : first;

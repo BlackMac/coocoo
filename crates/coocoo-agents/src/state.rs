@@ -4,7 +4,7 @@
 //! ([`Life`]), outstanding prompts, the streaming flag, pending dialogs and the last turn's
 //! error, so concurrent updates from the event thread and API calls cannot disagree.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8};
@@ -125,6 +125,11 @@ pub(crate) struct State {
     pub turn: Option<Turn>,
     /// omp switched to its fallback model; the refresh that sees the new model reports why.
     pub fallback_pending: bool,
+    /// Secrets the running process got (name → `updatedAt` when it started).
+    pub spawn_versions: HashMap<String, i64>,
+    /// Secrets saved for this agent that its process does not have yet: it is restarted once
+    /// it is idle ([`crate::Agents::restart_for_secrets_when_idle`]).
+    pub secret_restart: Vec<String>,
 }
 
 impl State {
@@ -150,6 +155,8 @@ impl State {
             restart: None,
             turn: None,
             fallback_pending: false,
+            spawn_versions: HashMap::new(),
+            secret_restart: Vec::new(),
         };
         state.sync();
         state
@@ -312,6 +319,7 @@ impl State {
         self.subagents.clear();
         self.turn = None;
         self.fallback_pending = false;
+        self.spawn_versions.clear();
         self.pending.clear();
         self.queued_steering.clear();
         self.queued_follow_up.clear();

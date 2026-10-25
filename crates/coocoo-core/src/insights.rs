@@ -46,6 +46,10 @@ const ACTIONS: &[&str] = &[
     "schedules.update",
     "schedules.remove",
     "schedules.run",
+    // Only ids are recorded (never `value`, never the name): see `Action::begin`.
+    "secrets.set",
+    "secrets.remove",
+    "secrets.provide",
     "git.commit",
     "git.merge",
     "git.push",
@@ -108,7 +112,7 @@ impl Action {
         if let Some(by) = origin.agent_id {
             event.meta.insert("by".into(), by.into());
         }
-        event.agent_id = if method.starts_with("agents.") { s("id") } else { s("agentId") };
+        event.agent_id = if method.starts_with("agents.") || method == "secrets.provide" { s("id") } else { s("agentId") };
         event.project_id = s("projectId");
         event.card_id = s("cardId");
         let meta = &mut event.meta;

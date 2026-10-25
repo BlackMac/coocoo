@@ -20,6 +20,7 @@ mod process;
 mod restart;
 mod sandbox;
 mod schedule;
+mod secret;
 mod slash;
 mod state;
 mod timeline;
@@ -110,6 +111,14 @@ pub struct Agents {
     schedules_file: PathBuf,
     /// Wakes the scheduler when the schedules change.
     schedule_wake: Arc<tokio::sync::Notify>,
+    /// `<data_dir>/secrets`: one store per project (`<projectId>.json`, 0600).
+    secrets_dir: PathBuf,
+    /// Secrets loaded so far, by project id.
+    secrets: parking_lot::Mutex<HashMap<String, secret::ProjectSecrets>>,
+    /// Serializes changes to the stores and the files secrets are written into.
+    secret_io: parking_lot::Mutex<()>,
+    /// Open `coocoo_secret_request` calls by request id.
+    secret_waiters: parking_lot::Mutex<HashMap<String, secret::Waiter>>,
 }
 
 impl Agents {
@@ -146,6 +155,10 @@ impl Agents {
             schedules: parking_lot::Mutex::new(schedules),
             schedules_file,
             schedule_wake: Arc::new(tokio::sync::Notify::new()),
+            secrets_dir: paths.data_dir.join("secrets"),
+            secrets: parking_lot::Mutex::new(HashMap::new()),
+            secret_io: parking_lot::Mutex::new(()),
+            secret_waiters: parking_lot::Mutex::new(HashMap::new()),
         })
     }
 
@@ -180,7 +193,7 @@ impl Agents {
         self.agents.read().get(id).map(|agent| agent.summary())
     }
 
-    /// `agents.*`, `boards.*` and `schedules.*`.
+    /// `agents.*`, `boards.*`, `schedules.*` and `secrets.*`.
     pub async fn dispatch(self: &Arc<Self>, method: &str, params: Value) -> ApiResult<Value> {
         self.runtime.get_or_init(Handle::current);
         self.handle_method(method, params).await

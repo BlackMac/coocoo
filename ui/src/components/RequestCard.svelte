@@ -3,7 +3,8 @@
   import { fleet, key } from '../lib/fleet.svelte';
   import { ui } from '../lib/ui.svelte';
   import type { AskAnswer, AskUiPayload, UiRequest, UiResponse } from '../lib/protocol';
-  import { MessageSquareText, Check } from '../lib/icons';
+  import { MessageSquareText, Check, KeyRound } from '../lib/icons';
+  import SecretRequest from './SecretRequest.svelte';
 
   let { request, host, compact = false }: { request: UiRequest; host: string; compact?: boolean } = $props();
 
@@ -16,15 +17,19 @@
   /** Compact cards reveal the free-text field on demand. */
   let otherOpen = $state<Record<string, boolean>>({});
 
+  /** The request is answered: take it off the list now (`agent.requestResolved` follows). */
+  function drop() {
+    const list = fleet.requests[key(host, request.agentId)];
+    const i = list?.findIndex((r) => r.id === request.id) ?? -1;
+    if (list && i >= 0) list.splice(i, 1);
+  }
+
   async function respond(response: UiResponse) {
     if (busy) return;
     busy = true;
     try {
       await fleet.call('agents.respond', { id: request.agentId, requestId: request.id, response }, host);
-      const k = key(host, request.agentId);
-      const list = fleet.requests[k];
-      const i = list?.findIndex((r) => r.id === request.id) ?? -1;
-      if (list && i >= 0) list.splice(i, 1);
+      drop();
     } catch (err) {
       ui.error('Could not send the answer', err);
     } finally {
@@ -59,12 +64,14 @@
 
 <div class="req" class:compact>
   <div class="head">
-    <MessageSquareText size={14} />
-    <span class="kind">{p.method === 'ask' ? (p.questions.length > 1 ? `${p.questions.length} questions` : 'Question') : p.method === 'confirm' ? 'Confirmation' : 'Input requested'}</span>
-    <button class="btn ghost sm dismiss" disabled={busy} onclick={() => respond({ cancelled: true })}>Dismiss</button>
+    {#if p.method === 'secret'}<KeyRound size={14} />{:else}<MessageSquareText size={14} />{/if}
+    <span class="kind">{p.method === 'secret' ? 'Secret requested' : p.method === 'ask' ? (p.questions.length > 1 ? `${p.questions.length} questions` : 'Question') : p.method === 'confirm' ? 'Confirmation' : 'Input requested'}</span>
+    <button class="btn ghost sm dismiss" disabled={busy} onclick={() => respond({ cancelled: true })}>{p.method === 'secret' ? 'Decline' : 'Dismiss'}</button>
   </div>
 
-  {#if p.method === 'ask'}
+  {#if p.method === 'secret'}
+    <SecretRequest {request} {host} {compact} ondone={drop} />
+  {:else if p.method === 'ask'}
     {#each p.questions as q (q.id)}
       <fieldset class="q">
         <legend>
