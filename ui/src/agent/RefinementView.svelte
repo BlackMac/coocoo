@@ -3,7 +3,7 @@
   import { ago } from '../lib/format';
   import { now } from '../lib/clock.svelte';
   import type { Attachment, Card } from '../lib/protocol';
-  import { NotebookPen } from '../lib/icons';
+  import { ChevronLeft, ChevronRight, Maximize, NotebookPen, ZoomIn, ZoomOut } from '../lib/icons';
   import Dialog from '../components/Dialog.svelte';
   import { files as loaded, loadCardFile } from '../lib/files.svelte';
 
@@ -22,8 +22,30 @@
   const r = $derived(card.refinement!);
   const html = $derived(renderMarkdown(r.text, `refinement:${card.id}:${r.at}`));
   const keys = $derived((r.attachments ?? []).map((a) => ({ a, k: loadCardFile(host, projectId, card.id, 'attachment', a, r.at) })));
-  let view = $state<{ a: Attachment; k: string } | null>(null);
   const isHtml = (a: Attachment) => a.mime === 'text/html';
+
+  // The mock open in the viewer, which takes the whole window. Images fit it, or show at their
+  // own size (scrolling) after a click on them or Zoom; Full screen hands the mock the screen.
+  let view = $state<number | null>(null);
+  const shown = $derived(view === null ? undefined : keys[view]);
+  let actual = $state(false);
+  let stage = $state<HTMLDivElement>();
+  const canFullscreen = typeof document !== 'undefined' && document.fullscreenEnabled;
+  function open(i: number) {
+    view = i;
+    actual = false;
+  }
+  const step = (d: number) => view !== null && open((view + d + keys.length) % keys.length);
+  /** Focus moves into the stage, so Escape still closes the viewer once full screen is left. */
+  async function fullscreen() {
+    await stage?.requestFullscreen();
+    stage?.focus({ preventScroll: true });
+  }
+  function onkeydown(e: KeyboardEvent) {
+    if (view === null || keys.length < 2 || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return;
+    e.preventDefault();
+    step(e.key === 'ArrowLeft' ? -1 : 1);
+  }
 </script>
 
 <div class="refinement">
@@ -37,8 +59,8 @@
   {/if}
   {#if keys.length}
     <div class="atts">
-      {#each keys as { a, k } (a.name)}
-        <button class="att" onclick={() => (view = { a, k })} title="Open {a.name}">
+      {#each keys as { a, k }, i (a.name)}
+        <button class="att" onclick={() => open(i)} title="Open {a.name}">
           <span class="thumb">
             {#if !(k in loaded)}
               <span class="spinner"></span>
@@ -57,13 +79,37 @@
   {/if}
 </div>
 
-{#if view}
-  <Dialog title={view.a.name} width={1200} onclose={() => (view = null)}>
-    {#if isHtml(view.a)}
-      <iframe class="full" srcdoc={loaded[view.k]} sandbox="allow-scripts allow-forms" title={view.a.name}></iframe>
-    {:else}
-      <img class="full" src={loaded[view.k]} alt={view.a.name} />
-    {/if}
+<svelte:window {onkeydown} />
+
+{#if shown}
+  {@const { a, k } = shown}
+  <Dialog title={keys.length > 1 ? `${a.name} (${view! + 1} of ${keys.length})` : a.name} fill onclose={() => (view = null)}>
+    {#snippet actions()}
+      {#if keys.length > 1}
+        <button class="btn ghost icon sm" onclick={() => step(-1)} aria-label="Previous mock" title="Previous (←)"><ChevronLeft size={15} /></button>
+        <button class="btn ghost icon sm" onclick={() => step(1)} aria-label="Next mock" title="Next (→)"><ChevronRight size={15} /></button>
+      {/if}
+      {#if !isHtml(a) && loaded[k]}
+        <button class="btn ghost icon sm" onclick={() => (actual = !actual)} aria-label={actual ? 'Fit to window' : 'Actual size'} title={actual ? 'Fit to window' : 'Actual size'}>
+          {#if actual}<ZoomOut size={15} />{:else}<ZoomIn size={15} />{/if}
+        </button>
+      {/if}
+      {#if canFullscreen && loaded[k]}
+        <button class="btn ghost icon sm" onclick={fullscreen} aria-label="Full screen" title="Full screen (Esc to leave)"><Maximize size={15} /></button>
+      {/if}
+    {/snippet}
+    <div class="stage" class:actual tabindex="-1" bind:this={stage}>
+      {#if !(k in loaded)}
+        <span class="spinner"></span>
+      {:else if !loaded[k]}
+        <span class="faint">Not available</span>
+      {:else if isHtml(a)}
+        <iframe srcdoc={loaded[k]} sandbox="allow-scripts allow-forms" title={a.name}></iframe>
+      {:else}
+        <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
+        <img src={loaded[k]} alt={a.name} onclick={() => (actual = !actual)} />
+      {/if}
+    </div>
   </Dialog>
 {/if}
 
@@ -170,18 +216,43 @@
   .aname {
     padding: 0 2px;
   }
-  .full {
-    display: block;
-    width: 100%;
-    border: 0;
+  /* Fills the viewer's body; also the element taken to full screen. */
+  .stage {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
     border-radius: var(--r);
+    background: var(--bg-2);
+    outline: none;
   }
-  iframe.full {
-    height: min(75vh, 800px);
+  .stage:fullscreen {
+    border-radius: 0;
+  }
+  .stage iframe {
+    width: 100%;
+    height: 100%;
+    border: 0;
     background: #fff;
   }
-  img.full {
-    max-height: 75vh;
+  .stage img {
+    max-width: 100%;
+    max-height: 100%;
     object-fit: contain;
+    cursor: zoom-in;
+  }
+  /* Actual size: the image as large as it is, scrolling when it does not fit. */
+  .stage.actual {
+    display: block;
+    overflow: auto;
+  }
+  .stage.actual img {
+    display: block;
+    max-width: none;
+    max-height: none;
+    margin: auto;
+    cursor: zoom-out;
   }
 </style>

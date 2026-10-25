@@ -88,3 +88,6 @@ export { default as Package } from '@lucide/svelte/icons/package';
 export { default as Database } from '@lucide/svelte/icons/database';
 export { default as Clock } from '@lucide/svelte/icons/clock';
 export { default as CalendarClock } from '@lucide/svelte/icons/calendar-clock';
+export { default as Maximize } from '@lucide/svelte/icons/maximize';
+export { default as ZoomIn } from '@lucide/svelte/icons/zoom-in';
+export { default as ZoomOut } from '@lucide/svelte/icons/zoom-out';
