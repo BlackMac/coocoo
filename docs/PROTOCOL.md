@@ -56,7 +56,7 @@ Params marked `?` are optional. Return types refer to `types.rs`.
 |---|---|---|
 | `projects.list` | – | `Project[]` |
 | `projects.get` | `{ id }` | `Project` |
-| `projects.add` | `{ path, name? }` | `Project` (directory must exist; git optional) |
+| `projects.add` | `{ path, name?, create?: bool, cloneUrl? }` | `Project` (directory must exist; git optional). `create`: make `path` as a new directory first (`conflict` if it exists). `cloneUrl`: `git clone` it into `path` first (`path` must not exist or be empty; up to 600 s). Both create missing parents |
 | `projects.update` | `{ id, name?, devUrls? }` | `Project` |
 | `projects.remove` | `{ id }` | `{}` (never touches files) |
 | `projects.refresh` | `{ id }` | `Project` (recomputes `git`, `icon` and `actions`) |

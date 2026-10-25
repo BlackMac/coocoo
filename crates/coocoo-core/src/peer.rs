@@ -799,7 +799,6 @@ fn request_timeout(method: &str) -> Duration {
         "git.diff",
         "git.worktreeCreate",
         "git.worktreeRemove",
-        "projects.add",
         "projects.refresh",
         "browser.start",
         "browser.open",
@@ -811,7 +810,14 @@ fn request_timeout(method: &str) -> Duration {
         "insights.workflows",
         "insights.analyze",
     ];
-    if LONG.contains(&method) { Duration::from_secs(120) } else { Duration::from_secs(30) }
+    if method == "projects.add" {
+        // May clone a repository first (up to 600 s).
+        Duration::from_secs(630)
+    } else if LONG.contains(&method) {
+        Duration::from_secs(120)
+    } else {
+        Duration::from_secs(30)
+    }
 }
 
 type WsStream = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;

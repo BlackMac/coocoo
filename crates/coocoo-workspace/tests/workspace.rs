@@ -161,6 +161,45 @@ async fn project_git_info_diff_and_persistence() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn add_creates_or_clones_the_directory() {
+    let e = env();
+    let fresh = e.root.join("new/nested/fresh");
+    let made: Project = call(&e.ws, "projects.add", json!({ "path": fresh, "create": true })).await;
+    assert_eq!((made.name.as_str(), made.git.is_none()), ("fresh", true));
+    assert_eq!(std::fs::read_dir(&fresh).unwrap().count(), 0);
+    let err = e.ws.dispatch("projects.add", json!({ "path": fresh, "create": true })).await.unwrap_err();
+    assert_eq!(err.code, "conflict");
+
+    let upstream = e.root.join("upstream");
+    init_repo(&upstream, true);
+    let clone = e.root.join("clones/mine");
+    let cloned: Project =
+        call(&e.ws, "projects.add", json!({ "path": clone, "cloneUrl": upstream.to_string_lossy() })).await;
+    assert_eq!(cloned.name, "mine");
+    assert_eq!(cloned.git.unwrap().remote.as_deref(), Some("origin"));
+    assert!(clone.join("a.txt").is_file());
+
+    // Into an existing empty directory, which a failed clone leaves empty.
+    let empty = e.root.join("empty");
+    std::fs::create_dir(&empty).unwrap();
+    let bad = json!({ "path": empty, "cloneUrl": e.root.join("missing").to_string_lossy() });
+    let err = e.ws.dispatch("projects.add", bad).await.unwrap_err();
+    assert_eq!(err.code, "conflict");
+    assert_eq!(std::fs::read_dir(&empty).unwrap().count(), 0);
+    let _: Project = call(&e.ws, "projects.add", json!({ "path": empty, "cloneUrl": upstream.to_string_lossy() })).await;
+    assert!(empty.join("a.txt").is_file());
+
+    // A failed clone into a new directory leaves nothing behind; a non-empty target is refused.
+    let gone = e.root.join("gone");
+    let err = e.ws.dispatch("projects.add", json!({ "path": gone, "cloneUrl": "/nonexistent/repo" })).await.unwrap_err();
+    assert_eq!(err.code, "conflict");
+    assert!(!gone.exists());
+    let err = e.ws.dispatch("projects.add", json!({ "path": clone, "cloneUrl": upstream.to_string_lossy() })).await.unwrap_err();
+    assert!(err.message.contains("not empty"), "{}", err.message);
+    assert_eq!(e.ws.projects().len(), 3);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn worktree_diff_and_merge() {
     let e = env();
     let repo = e.root.join("repo");

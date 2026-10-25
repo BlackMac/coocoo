@@ -30,6 +30,7 @@ export { default as FileDiff } from '@lucide/svelte/icons/file-diff';
 export { default as FileText } from '@lucide/svelte/icons/file-text';
 export { default as Folder } from '@lucide/svelte/icons/folder';
 export { default as FolderGit2 } from '@lucide/svelte/icons/folder-git-2';
+export { default as FolderPlus } from '@lucide/svelte/icons/folder-plus';
 export { default as GitBranch } from '@lucide/svelte/icons/git-branch';
 export { default as GitCommitHorizontal } from '@lucide/svelte/icons/git-commit-horizontal';
 export { default as GitMerge } from '@lucide/svelte/icons/git-merge';

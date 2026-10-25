@@ -92,9 +92,17 @@ pub(crate) async fn run_ok(cwd: &Path, args: &[&str]) -> ApiResult<GitOutput> {
 /// Network operations (fetch, push) give up after this.
 const NETWORK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// A clone may transfer a whole repository; it gives up after this.
+pub(crate) const CLONE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// Run a git command that talks to remotes. Never prompts: credentials come from the configured
 /// helpers/keys or the command fails with git's message; a timeout becomes a failed output.
 pub(crate) async fn run_network(cwd: &Path, args: &[&str]) -> ApiResult<GitOutput> {
+    run_network_within(cwd, args, NETWORK_TIMEOUT).await
+}
+
+/// [`run_network`] with its own time limit.
+pub(crate) async fn run_network_within(cwd: &Path, args: &[&str], limit: std::time::Duration) -> ApiResult<GitOutput> {
     let mut cmd = command(cwd);
     cmd.args(args);
     // Without a terminal ssh would wait forever for a passphrase or host-key answer.
@@ -104,7 +112,7 @@ pub(crate) async fn run_network(cwd: &Path, args: &[&str]) -> ApiResult<GitOutpu
     if !custom_ssh {
         cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
     }
-    match tokio::time::timeout(NETWORK_TIMEOUT, cmd.output()).await {
+    match tokio::time::timeout(limit, cmd.output()).await {
         Ok(out) => {
             let out = out.map_err(spawn_error)?;
             Ok(GitOutput { ok: out.status.success(), stdout: out.stdout, stderr: out.stderr })
@@ -112,7 +120,7 @@ pub(crate) async fn run_network(cwd: &Path, args: &[&str]) -> ApiResult<GitOutpu
         Err(_) => Ok(GitOutput {
             ok: false,
             stdout: Vec::new(),
-            stderr: format!("git {} timed out after {} s", args.first().copied().unwrap_or(""), NETWORK_TIMEOUT.as_secs()).into_bytes(),
+            stderr: format!("git {} timed out after {} s", args.first().copied().unwrap_or(""), limit.as_secs()).into_bytes(),
         }),
     }
 }
