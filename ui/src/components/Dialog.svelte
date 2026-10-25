@@ -5,14 +5,32 @@
   let {
     title,
     width = 480,
+    fill = false,
     onclose,
     children,
+    actions,
     footer,
-  }: { title: string; width?: number; onclose: () => void; children: Snippet; footer?: Snippet } = $props();
+  }: {
+    title: string;
+    width?: number;
+    /** Take the whole window (viewers for images and mocks); `width` is ignored. */
+    fill?: boolean;
+    onclose: () => void;
+    children: Snippet;
+    /** Buttons in the header, left of Close. */
+    actions?: Snippet;
+    footer?: Snippet;
+  } = $props();
 
+  let overlay: HTMLDivElement;
   let box: HTMLDivElement;
 
   $effect(() => {
+    // Rendered at the end of `<body>`: an ancestor with `content-visibility`, `contain` or
+    // `container-type` (the transcript's items, the board) would clip a fixed overlay and place
+    // it inside itself. Moved before focusing, since moving a node takes the focus from it.
+    // The overlay sits in a wrapper that stays in place, so Svelte can remove its block as usual.
+    document.body.appendChild(overlay);
     const prev = document.activeElement as HTMLElement | null;
     const first = box.querySelector<HTMLElement>('[autofocus], input:not([type=hidden]), textarea, select, button.primary');
     // On touch screens a focused field pops up the keyboard before the form is even seen, so the
@@ -20,7 +38,10 @@
     // field, the dialog takes focus so Escape reaches it.
     const touch = matchMedia('(pointer: coarse)').matches;
     (touch ? box : (first ?? box)).focus({ preventScroll: true });
-    return () => prev?.focus?.({ preventScroll: true });
+    return () => {
+      overlay.remove();
+      prev?.focus?.({ preventScroll: true });
+    };
   });
 
   // The keyboard sliding in shrinks the dialog: keep the field being typed in visible.
@@ -43,19 +64,28 @@
   }
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="overlay" onmousedown={(e) => e.target === e.currentTarget && onclose()} {onkeydown}>
-  <div class="dialog" role="dialog" aria-modal="true" aria-label={title} tabindex="-1" style:max-width="{width}px" bind:this={box}>
-    <header>
-      <h2>{title}</h2>
-      <button class="btn ghost icon sm" onclick={onclose} aria-label="Close"><X size={15} /></button>
-    </header>
-    <div class="body">{@render children()}</div>
-    {#if footer}<footer>{@render footer()}</footer>{/if}
+<div class="anchor">
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="overlay" class:fill bind:this={overlay} onmousedown={(e) => e.target === e.currentTarget && onclose()} {onkeydown}>
+    <div class="dialog" role="dialog" aria-modal="true" aria-label={title} tabindex="-1" style:max-width={fill ? null : `${width}px`} bind:this={box}>
+      <header>
+        <h2 class="ellipsis">{title}</h2>
+        <div class="hbtns">
+          {#if actions}{@render actions()}{/if}
+          <button class="btn ghost icon sm" onclick={onclose} aria-label="Close" title="Close (Esc)"><X size={15} /></button>
+        </div>
+      </header>
+      <div class="body">{@render children()}</div>
+      {#if footer}<footer>{@render footer()}</footer>{/if}
+    </div>
   </div>
 </div>
 
 <style>
+  /* Holds the overlay's place in the component tree once the overlay moved to `<body>`. */
+  .anchor {
+    display: contents;
+  }
   /* As tall as the visible viewport (`--app-height`, set in main.ts), not the layout viewport:
      with the on-screen keyboard up, a dialog must fit above it and scroll inside. */
   .overlay {
@@ -85,12 +115,20 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 8px;
     padding: 14px 14px 6px 18px;
   }
   h2 {
+    min-width: 0;
     margin: 0;
     font-size: 14px;
     font-weight: 600;
+  }
+  .hbtns {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 2px;
   }
   .body {
     padding: 8px 18px 16px;
@@ -98,6 +136,17 @@
     display: flex;
     flex-direction: column;
     gap: 14px;
+  }
+  .overlay.fill {
+    padding: 16px;
+  }
+  .fill .dialog {
+    height: 100%;
+    max-height: none;
+  }
+  .fill .body {
+    flex: 1;
+    min-height: 0;
   }
   footer {
     display: flex;
@@ -131,6 +180,12 @@
     /* Without the keyboard the sheet ends at the screen's bottom edge. */
     footer {
       padding-bottom: max(12px, env(safe-area-inset-bottom));
+    }
+    .overlay.fill {
+      padding: env(safe-area-inset-top) 0 0;
+    }
+    .fill .body {
+      padding: 4px 8px max(8px, env(safe-area-inset-bottom));
     }
   }
 </style>
