@@ -1218,7 +1218,8 @@ export interface Methods {
 
   'projects.list': [Empty | undefined, Project[]];
   'projects.get': [{ id: string }, Project];
-  'projects.add': [{ path: string; name?: string }, Project];
+  /** `create` makes `path` as a new directory; `cloneUrl` is `git clone`d into it (up to 600 s). */
+  'projects.add': [{ path: string; name?: string; create?: boolean; cloneUrl?: string }, Project];
   'projects.update': [{ id: string; name?: string; devUrls?: string[] }, Project];
   'projects.remove': [{ id: string }, Ok];
   'projects.refresh': [{ id: string }, Project];

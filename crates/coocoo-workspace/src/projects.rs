@@ -65,9 +65,15 @@ struct IdParams {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct AddParams {
     path: String,
     name: Option<String>,
+    /// Create `path` as a new, empty directory first; it must not exist.
+    #[serde(default)]
+    create: bool,
+    /// `git clone` this URL into `path` first; `path` must not exist or be empty.
+    clone_url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -176,7 +182,13 @@ impl Workspace {
             "projects.get" => ok(self.get(&params::<IdParams>(p)?.id)?),
             "projects.add" => {
                 let p: AddParams = params(p)?;
-                ok(self.add(&p.path, p.name).await?)
+                let dir = expand(&p.path);
+                if let Some(url) = p.clone_url.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
+                    clone_into(url, &dir).await?;
+                } else if p.create {
+                    create_dir(&dir).await?;
+                }
+                ok(self.add(&dir, p.name).await?)
             }
             "projects.update" => ok(self.update(params(p)?)?),
             "projects.remove" => {
@@ -292,8 +304,7 @@ impl Workspace {
         write_json_atomic(&self.file, &stored).map_err(ApiError::from)
     }
 
-    async fn add(self: &Arc<Self>, path: &str, name: Option<String>) -> ApiResult<Project> {
-        let raw = expand(path);
+    async fn add(self: &Arc<Self>, raw: &Path, name: Option<String>) -> ApiResult<Project> {
         let dir = tokio::fs::canonicalize(&raw)
             .await
             .map_err(|_| ApiError::not_found(format!("directory {}", raw.display())))?;
@@ -712,6 +723,49 @@ impl Workspace {
         self.refresh(project_id, Emit::IfChanged).await?;
         Ok(())
     }
+}
+
+/// Create `dir` as a new directory (with missing parents); `conflict` when it exists.
+async fn create_dir(dir: &Path) -> ApiResult<()> {
+    if let Some(parent) = dir.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    match tokio::fs::create_dir(dir).await {
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(ApiError::conflict(format!("{} already exists", dir.display())))
+        }
+        other => Ok(other?),
+    }
+}
+
+/// `git clone url dir`; `dir` must not exist or be an empty directory, missing parents are
+/// created. On failure `dir` is left as it was before.
+async fn clone_into(url: &str, dir: &Path) -> ApiResult<()> {
+    let existed = match tokio::fs::read_dir(dir).await {
+        Ok(mut entries) => {
+            if entries.next_entry().await?.is_some() {
+                return Err(ApiError::conflict(format!("{} is not empty", dir.display())));
+            }
+            true
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
+        Err(err) => return Err(ApiError::invalid(format!("{}: {err}", dir.display()))),
+    };
+    let parent = dir.parent().ok_or_else(|| ApiError::invalid("cannot clone into the root directory"))?;
+    let target = dir.to_str().ok_or_else(|| ApiError::invalid("path is not valid UTF-8"))?;
+    tokio::fs::create_dir_all(parent).await?;
+    let out = git::run_network_within(parent, &["clone", "--quiet", "--", url, target], git::CLONE_TIMEOUT).await?;
+    if out.ok {
+        return Ok(());
+    }
+    // git removes what it wrote on failure, but not when killed by the timeout.
+    if tokio::fs::try_exists(dir).await.unwrap_or(false) {
+        let _ = tokio::fs::remove_dir_all(dir).await;
+        if existed {
+            let _ = tokio::fs::create_dir(dir).await;
+        }
+    }
+    Err(ApiError::conflict(format!("git clone failed: {}", out.error_text())))
 }
 
 /// Current branch, or the HEAD sha when detached.
