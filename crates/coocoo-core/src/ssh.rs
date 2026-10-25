@@ -16,7 +16,10 @@ use crate::peer::DEFAULT_PORT;
 
 const TUNNEL_READY_TIMEOUT: Duration = Duration::from_secs(25);
 const REMOTE_CMD_TIMEOUT: Duration = Duration::from_secs(90);
-const SCP_TIMEOUT: Duration = Duration::from_secs(600);
+/// Copying or downloading the binary.
+const TRANSFER_TIMEOUT: Duration = Duration::from_secs(600);
+/// The release install script (`curl … | sh`), run on remotes this binary can't be copied to.
+const INSTALL_SCRIPT: &str = include_str!("../../../install.sh");
 /// Bytes of ssh stderr kept for error messages.
 const STDERR_KEEP: usize = 2048;
 
@@ -109,6 +112,10 @@ impl std::fmt::Display for RemoteError {
 
 /// Run `script` with `sh -c` on the remote (independent of the remote login shell).
 async fn run_remote(target: &str, ssh_port: Option<u16>, script: &str) -> Result<String, RemoteError> {
+    run_remote_within(target, ssh_port, script, REMOTE_CMD_TIMEOUT).await
+}
+
+async fn run_remote_within(target: &str, ssh_port: Option<u16>, script: &str, timeout: Duration) -> Result<String, RemoteError> {
     let mut cmd = Command::new("ssh");
     cmd.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=15"]);
     if let Some(p) = ssh_port {
@@ -117,7 +124,7 @@ async fn run_remote(target: &str, ssh_port: Option<u16>, script: &str) -> Result
     cmd.arg(target).arg(format!("sh -c {}", shell_quote(script)));
     prepare(&mut cmd);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let out = match tokio::time::timeout(REMOTE_CMD_TIMEOUT, cmd.output()).await {
+    let out = match tokio::time::timeout(timeout, cmd.output()).await {
         Ok(Ok(out)) => out,
         Ok(Err(err)) => return Err(RemoteError::Ssh(format!("cannot run ssh: {err}"))),
         Err(_) => return Err(RemoteError::Ssh(format!("ssh to {target} timed out"))),
@@ -145,30 +152,38 @@ pub(crate) async fn fetch_token(target: &str, ssh_port: Option<u16>) -> Result<S
     }
 }
 
-/// Copy this build of `coocoo` to `~/.local/bin/coocoo` on the remote and start it.
-/// Only when the remote OS/arch matches this binary.
+/// Install `coocoo` to `~/.local/bin/coocoo` on the remote and start it. Copies this build when
+/// the remote runs the same OS/arch and the CLI binary is at hand; otherwise the remote downloads
+/// this version's release build with the install script.
 pub(crate) async fn install(target: &str, ssh_port: Option<u16>, remote_port: u16) -> Result<(), String> {
     let uname = run_remote(target, ssh_port, "uname -sm").await.map_err(|e| e.to_string())?;
-    let uname = uname.trim();
-    if !uname_matches(uname) {
-        return Err(format!(
-            "{target} runs `{uname}` but this coocoo is built for {}/{}; install coocoo there manually",
-            std::env::consts::OS,
-            std::env::consts::ARCH
-        ));
+    let local = if uname_matches(uname.trim()) { coocoo_binary() } else { None };
+    match local {
+        Some(exe) => copy_binary(target, ssh_port, &exe).await?,
+        None => {
+            let script = format!(
+                "COOCOO_VERSION=v{}\nCOOCOO_INSTALL_DIR=\"$HOME/.local/bin\"\nexport COOCOO_VERSION COOCOO_INSTALL_DIR\n{INSTALL_SCRIPT}",
+                env!("CARGO_PKG_VERSION")
+            );
+            run_remote_within(target, ssh_port, &script, TRANSFER_TIMEOUT).await.map_err(|e| e.to_string())?;
+        }
     }
-    let exe = coocoo_binary()?;
-    run_remote(target, ssh_port, "mkdir -p ~/.local/bin ~/.cache").await.map_err(|e| e.to_string())?;
+    run_remote(target, ssh_port, "~/.local/bin/coocoo token >/dev/null").await.map_err(|e| e.to_string())?;
+    start_remote(target, ssh_port, remote_port).await
+}
 
+/// `scp` this build to `~/.local/bin/coocoo` on the remote.
+async fn copy_binary(target: &str, ssh_port: Option<u16>, exe: &std::path::Path) -> Result<(), String> {
+    run_remote(target, ssh_port, "mkdir -p ~/.local/bin").await.map_err(|e| e.to_string())?;
     let mut scp = Command::new("scp");
     scp.args(["-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15"]);
     if let Some(p) = ssh_port {
         scp.arg("-P").arg(p.to_string());
     }
-    scp.arg(&exe).arg(format!("{target}:.local/bin/coocoo.new"));
+    scp.arg(exe).arg(format!("{target}:.local/bin/coocoo.new"));
     prepare(&mut scp);
     scp.stdout(Stdio::null()).stderr(Stdio::piped());
-    match tokio::time::timeout(SCP_TIMEOUT, scp.output()).await {
+    match tokio::time::timeout(TRANSFER_TIMEOUT, scp.output()).await {
         Ok(Ok(out)) if out.status.success() => {}
         Ok(Ok(out)) => {
             let stderr = String::from_utf8_lossy(&out.stderr);
@@ -177,14 +192,10 @@ pub(crate) async fn install(target: &str, ssh_port: Option<u16>, remote_port: u1
         Ok(Err(err)) => return Err(format!("cannot run scp: {err}")),
         Err(_) => return Err(format!("copying coocoo to {target} timed out")),
     }
-    run_remote(
-        target,
-        ssh_port,
-        "chmod 755 ~/.local/bin/coocoo.new && mv -f ~/.local/bin/coocoo.new ~/.local/bin/coocoo && ~/.local/bin/coocoo token >/dev/null",
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-    start_remote(target, ssh_port, remote_port).await
+    run_remote(target, ssh_port, "chmod 755 ~/.local/bin/coocoo.new && mv -f ~/.local/bin/coocoo.new ~/.local/bin/coocoo")
+        .await
+        .map(drop)
+        .map_err(|e| e.to_string())
 }
 
 /// Start `coocoo serve` on the remote unless it already runs: a lingering systemd user unit
@@ -236,19 +247,14 @@ echo nohup
     Ok(())
 }
 
-/// The `coocoo` CLI binary to install: this executable, or a `coocoo` sidecar next to it
-/// (the desktop app ships the CLI alongside its own binary).
-fn coocoo_binary() -> Result<std::path::PathBuf, String> {
-    let exe = std::env::current_exe().map_err(|e| format!("cannot locate own executable: {e}"))?;
+/// The `coocoo` CLI binary to copy: this executable, or a `coocoo` sidecar next to it.
+fn coocoo_binary() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
     if exe.file_stem().is_some_and(|s| s == "coocoo") {
-        return Ok(exe);
+        return Some(exe);
     }
     let sidecar = exe.with_file_name(format!("coocoo{}", std::env::consts::EXE_SUFFIX));
-    if sidecar.is_file() {
-        Ok(sidecar)
-    } else {
-        Err(format!("automatic install needs the `coocoo` CLI binary next to {}", exe.display()))
-    }
+    sidecar.is_file().then_some(sidecar)
 }
 
 /// Does `uname -sm` output describe the platform this binary was built for?

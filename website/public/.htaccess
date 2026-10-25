@@ -32,6 +32,9 @@ AddDefaultCharset utf-8
   RewriteCond %{THE_REQUEST} \s/+index\.php[\s?] [NC]
   RewriteRule ^ / [R=301,L]
 
+  # `curl -fsSL https://coocoo.dev/install.sh | sh`: the CLI install script from the repo
+  RewriteRule ^install\.sh$ https://raw.githubusercontent.com/BlackMac/coocoo/master/install.sh [R=302,L]
+
   # Pretty URLs
   RewriteRule ^(changelog|impressum|datenschutz)/?$ $1.php [L]
 </IfModule>

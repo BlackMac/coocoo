@@ -1,17 +1,26 @@
-# Builds the Tauri desktop app (deb, AppImage, dmg, nsis) and publishes it as a GitHub release.
-# The web UI's download icon links to /releases/latest, so every pushed `v*` tag ships installers.
+# Builds the Tauri desktop app (deb, AppImage, dmg, nsis) and the headless `coocoo` CLI
+# (static Linux x86_64/aarch64, universal macOS) and publishes them as a GitHub release.
+# The web UI's download icon links to /releases/latest, so every pushed `v*` tag ships installers;
+# install.sh downloads the CLI archives (coocoo-<target>.tar.gz) from the same release.
+# Run by hand with `cli_tag` set to only add the CLI archives to an existing release.
 name: Desktop release
 
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      cli_tag:
+        description: 'Only build the CLI from this existing tag and add it to its release (e.g. v0.4.0)'
+        type: string
+        default: ''
 
 permissions:
   contents: write
 
 jobs:
   build:
+    if: inputs.cli_tag == ''
     strategy:
       fail-fast: false
       matrix:
@@ -62,3 +71,99 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
+
+  cli:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-22.04
+            name: linux-x86_64
+            targets: x86_64-unknown-linux-musl
+          - platform: ubuntu-22.04-arm
+            name: linux-aarch64
+            targets: aarch64-unknown-linux-musl
+          - platform: macos-latest
+            name: macos-universal
+            targets: aarch64-apple-darwin,x86_64-apple-darwin
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.cli_tag || github.ref }}
+
+      - name: musl toolchain
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.targets }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          key: cli-${{ matrix.name }}
+
+      # The daemon embeds ui/dist to serve the web/phone UI.
+      - name: Web UI
+        run: npm ci --prefix ui && npm run build --prefix ui
+
+      - name: Build
+        shell: bash
+        run: |
+          for t in ${TARGETS//,/ }; do
+            # bundled SQLite is C: compile it against musl, not glibc
+            [ "$RUNNER_OS" = Linux ] && export "CC_${t//-/_}=musl-gcc"
+            cargo build --release --locked -p coocoo-cli --target "$t"
+          done
+          mkdir -p dist
+          if [ "$RUNNER_OS" = macOS ]; then
+            lipo -create -output dist/coocoo target/aarch64-apple-darwin/release/coocoo target/x86_64-apple-darwin/release/coocoo
+            codesign --force --sign - dist/coocoo
+          else
+            cp "target/$TARGETS/release/coocoo" dist/coocoo
+          fi
+          dist/coocoo version
+          tar -czf "coocoo-$NAME.tar.gz" -C dist coocoo
+        env:
+          TARGETS: ${{ matrix.targets }}
+          NAME: ${{ matrix.name }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coocoo-${{ matrix.name }}
+          path: coocoo-${{ matrix.name }}.tar.gz
+          if-no-files-found: error
+
+  cli-publish:
+    needs: [build, cli]
+    # The desktop job creates the release (skipped when only the CLI is added to an existing one).
+    if: always() && needs.cli.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.build.result)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.cli_tag || github.ref }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: coocoo-*
+          merge-multiple: true
+          path: dist
+
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CLI_TAG: ${{ inputs.cli_tag }}
+        run: |
+          if [ -n "$CLI_TAG" ]; then tag="$CLI_TAG"
+          elif [ "${{ github.ref_type }}" = tag ]; then tag="${{ github.ref_name }}"
+          else tag="v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+          fi
+          gh release upload "$tag" dist/coocoo-*.tar.gz --clobber --repo "${{ github.repository }}"

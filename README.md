@@ -53,9 +53,11 @@ download icon next to the logo in the web UI) or build the Tauri app yourself (s
 running with the same config, it attaches to that one instead. Closing the window hides it to the
 tray and the agents keep running.
 
-**Server (headless):**
+**Server (headless):** install the `coocoo` binary (Linux x86_64/aarch64, macOS; no Rust needed)
+to `~/.local/bin` from the latest release, then start it:
 
 ```sh
+curl -fsSL https://coocoo.dev/install.sh | sh   # `| COOCOO_VERSION=v0.5.0 sh` pins a release
 coocoo serve                      # listens on 127.0.0.1:7421 by default
 coocoo serve --listen 0.0.0.0:7421  # LAN / Tailscale access
 coocoo pair                       # prints a web-UI link with token + QR code for your phone
@@ -66,9 +68,10 @@ coocoo status | token | version
 - **Link** (default): paste the server's connect link (`http://host:7421/#token=…`) from
   `coocoo pair` on it or from *Hosts & Settings* in its UI; Coocoo connects directly to it.
 - **SSH:** enter `user@server`. Coocoo opens `ssh -N -L …` with your existing keys, fetches the
-  token with `coocoo token`, and keeps the tunnel alive. Tick *install* to copy the binary to
-  `~/.local/bin/coocoo` and start it as a systemd user service (or with `nohup` when systemd isn't
-  available).
+  token with `coocoo token`, and keeps the tunnel alive. Tick *install* to put the binary in
+  `~/.local/bin/coocoo` (a copy of the local one when OS and architecture match, otherwise the
+  server downloads the release build of the same version) and start it as a systemd user service
+  (or with `nohup` when systemd isn't available).
 - **Direct URL:** the server's WebSocket URL and token (pasting a connect link fills both).
 
 **Phone:** open the pairing link from `coocoo pair` (on your LAN or tailnet). It serves the same
@@ -216,7 +219,10 @@ cd src-tauri && npm install && npm run build   # deb / AppImage / dmg / nsis bun
 
 Releases: pushing a `v*` tag (or running *Desktop release* manually) makes
 `.github/workflows/desktop-release.yml` build the Linux, macOS (universal, ad-hoc signed) and Windows
-installers and publish them as a GitHub release. The ad-hoc signature avoids macOS calling the app
+installers plus the `coocoo` CLI archives (`coocoo-linux-x86_64.tar.gz`, `coocoo-linux-aarch64.tar.gz`,
+static musl; `coocoo-macos-universal.tar.gz`) that `install.sh` downloads, and publish them as a
+GitHub release. Running it manually with *cli_tag* (e.g. `v0.4.0`) only adds the CLI archives to that
+existing release. The ad-hoc signature avoids macOS calling the app
 "damaged" on Apple Silicon; it is not notarized, so macOS blocks the first launch: open it once, then
 allow it under System Settings → Privacy & Security → "Open Anyway" (again after every update, since
 each build has a new signature).
@@ -227,8 +233,8 @@ each build has a new signature).
   human takeover, design mode, two-host fleet with cross-host orchestration, and the desktop app
   under Xvfb. macOS and Windows builds exist only through the release workflow and have not been
   tested by hand.
-- SSH peers (tunnel, token fetch, install over SSH) are covered by tests that use fake
-  `ssh`/`scp`; they have not been run against a real remote host yet.
+- SSH peers (tunnel, token fetch, install over SSH) have been run against a real `sshd` only in a
+  local Alpine container (install by download, wget, static Linux build), not yet a remote machine.
 - Direct peer links are plain `ws://` with a bearer token. Use them on a LAN or VPN (Tailscale,
   WireGuard), or use SSH peers. Each daemon has a single shared token; there are no per-device
   tokens and no way to revoke one device.
@@ -236,8 +242,9 @@ each build has a new signature).
 - Agent secrets rely on omp behaviour that is not a documented contract (omp 18.12): which env var
   names it masks, the 8-character minimum and that it loads secrets only when a session starts
   (hence Coocoo's restart after a new secret). An omp update can change that.
-- Installing over SSH needs the same OS and architecture on both ends, because it copies the
-  running binary.
+- Installing over SSH downloads the release build on the server when it can't copy the local
+  binary (other OS/architecture, or the desktop app, which ships no `coocoo` CLI). That needs `curl`
+  or `wget` there and a release with CLI archives for the local version.
 - An agent working in a worktree can't see its changes on a dev server that runs from the main
   checkout. It has to start its own server for the worktree.
 - `crates/omp-rpc` tracks omp v18.12.3. Frames it doesn't know decode to `Unknown` and are ignored.

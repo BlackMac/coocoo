@@ -320,11 +320,10 @@ function download_button(array $download, array $release, string $extraClass = '
     <div class="term panel" role="tabpanel" id="panel-server" aria-labelledby="tab-server" hidden>
       <button type="button" class="copy" data-copy>Copy</button>
       <div><span class="c"># easiest: desktop app → Hosts &amp; Settings → Add host → SSH → user@server, tick “install”</span></div>
-      <div><span class="c"># or build it on the server:</span></div>
-      <div><span class="pr">$</span> <span data-cmd>git clone <?= e(repo_url()) ?> &amp;&amp; cd coocoo</span></div>
-      <div><span class="pr">$</span> <span data-cmd>cargo build --release -p coocoo-cli</span></div>
-      <div><span class="pr">$</span> <span data-cmd>./target/release/coocoo serve --listen 0.0.0.0:7421</span> <span class="c"># LAN / Tailscale</span></div>
-      <div><span class="pr">$</span> <span data-cmd>./target/release/coocoo pair</span> <span class="c"># connect link + QR code</span></div>
+      <div><span class="c"># or install it on the server (Linux, macOS; no Rust needed):</span></div>
+      <div><span class="pr">$</span> <span data-cmd>curl -fsSL https://coocoo.dev/install.sh | sh</span></div>
+      <div><span class="pr">$</span> <span data-cmd>coocoo serve --listen 0.0.0.0:7421</span> <span class="c"># LAN / Tailscale</span></div>
+      <div><span class="pr">$</span> <span data-cmd>coocoo pair</span> <span class="c"># connect link + QR code</span></div>
     </div>
     <div class="term panel" role="tabpanel" id="panel-phone" aria-labelledby="tab-phone" hidden>
       <button type="button" class="copy" data-copy>Copy</button>

@@ -11,6 +11,10 @@ if (preg_match('#^/(inc|cache)(/|$)#', $path) || preg_match('#/\.(?!well-known/)
     echo 'Forbidden';
     return true;
 }
+if ($path === '/install.sh') {
+    header('Location: https://raw.githubusercontent.com/BlackMac/coocoo/master/install.sh', true, 302);
+    return true;
+}
 if (preg_match('#^/(changelog|impressum|datenschutz)/?$#', $path, $m)) {
     require $root . '/' . $m[1] . '.php';
     return true;
