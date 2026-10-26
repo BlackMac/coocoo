@@ -203,6 +203,41 @@ pub struct Project {
     /// Problems in that file (`actions.toml:LINE:COL – …`); valid actions stay usable.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub action_errors: Vec<String>,
+    /// From `.coocoo/persona.toml` in `path` (runtime state, like `actions`); fetch the avatar
+    /// with `projects.personaAvatar`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persona: Option<Persona>,
+    /// Problems in that file (`persona.toml:LINE:COL – …`); invalid keys are dropped.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub persona_errors: Vec<String>,
+}
+
+/// The assistant a project is the home of (`.coocoo/persona.toml`). Metadata only: Coocoo shows
+/// it and keeps the project's agents awake on request, everything else is up to its readers.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Persona {
+    pub name: String,
+    /// `#RRGGBB`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    /// Passed through uninterpreted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wake_word: Option<String>,
+    /// The idle hibernation never stops this project's agents.
+    #[serde(default)]
+    pub keep_awake: bool,
+    /// `avatar` names a readable image; fetch it with `projects.personaAvatar`.
+    #[serde(default)]
+    pub has_avatar: bool,
+    /// Avatar file relative to the project directory; the daemon's own, not sent.
+    #[serde(skip)]
+    pub avatar: Option<String>,
+    /// Keys Coocoo does not know, as JSON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -11,6 +11,7 @@
   import DiffCount from './DiffCount.svelte';
   import HostDot from './HostDot.svelte';
   import PrBadge from './PrBadge.svelte';
+  import PersonaAvatar from './PersonaAvatar.svelte';
   import { parseError } from '../lib/providerError';
 
   let { agent: a, showProject = true }: { agent: AgentSummary; showProject?: boolean } = $props();
@@ -44,7 +45,13 @@
   </span>
   <span class="c-where">
     {#if showProject}
-      <span class="ellipsis proj">{project?.name ?? a.cwd.split('/').pop()}</span>
+      {#if project?.persona}
+        <span class="proj persona" title="{project.persona.name} · project {project.name}">
+          <PersonaAvatar {project} size={14} /><span class="ellipsis">{project.persona.name}</span>
+        </span>
+      {:else}
+        <span class="ellipsis proj">{project?.name ?? a.cwd.split('/').pop()}</span>
+      {/if}
     {/if}
     <span class="chip host"><HostDot online={host?.online ?? false} size={5} />{host?.name ?? a.hostId}</span>
   </span>
@@ -140,6 +147,12 @@
     max-width: 100%;
     color: var(--text-2);
     font-size: var(--fs-sm);
+  }
+  .persona {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
   }
   .host {
     height: 18px;

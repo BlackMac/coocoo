@@ -203,6 +203,30 @@ target = "browser"                 # browser; `target` overrides (browser | exte
   view it starts a new agent with that prompt.
 - **`url`** opens in the project's browser panel (agent view, loopback hosts) or the system browser.
 
+## Project personas
+
+A project can be the home of an assistant (a voice assistant, a chat bot) with
+`.coocoo/persona.toml` in its directory. Coocoo only keeps it as metadata: the project and agent
+lists show the avatar and the persona's name instead of the project icon and name, and
+`keepAwake` keeps its agents running. Everything else is for the assistant's own tooling, which
+reads it with `projects.get` (`Project.persona`) and `projects.personaAvatar`. The file is reloaded
+on every change; problems end up in `Project.personaErrors` with their line.
+
+```toml
+name      = "Orlando"            # required
+avatar    = "orlando.png"        # relative to .coocoo/; png, jpg or webp, at most 1 MiB
+color     = "#3A7BD5"            # #RRGGBB
+voice     = "de-DE-Florian"      # passed through as is
+wakeWord  = "Hey Orlando"
+keepAwake = true                 # default false
+
+language = "de"                  # any other key is passed through in `extra`
+```
+
+With `keepAwake = true`, agents working in the project directory are never hibernated for being
+idle (`hibernateAfterSecs`); agents in its worktrees still are, and *Hibernate* in the agent menu
+still works.
+
 ## Development
 
 ```sh

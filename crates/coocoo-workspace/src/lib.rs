@@ -1,6 +1,6 @@
 //! Projects registry, git (status, diff, worktrees, commit, merge, push), GitHub pull requests
-//! via `gh`, filesystem browsing, host resource stats, terminals and project actions. Handles the
-//! `projects.*`, `git.*`, `fs.*`, `stats.*`, `terminal.*` and `actions.*` methods.
+//! via `gh`, filesystem browsing, host resource stats, terminals, project actions and personas.
+//! Handles the `projects.*`, `git.*`, `fs.*`, `stats.*`, `terminal.*` and `actions.*` methods.
 //!
 //! git is driven through the `git` CLI (no libgit2): smaller binary, exact user semantics.
 
@@ -10,6 +10,7 @@ mod fs;
 mod git;
 mod github;
 mod icon;
+mod persona;
 mod projects;
 mod publish;
 mod stats;

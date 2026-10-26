@@ -29,7 +29,7 @@ mod tools;
 mod transcript;
 mod usage;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
@@ -413,25 +413,41 @@ impl Agents {
 
     async fn sweep(&self) {
         let after = Duration::from_secs(self.config.hibernate_after_secs);
-        let idle: Vec<Arc<Agent>> = self
-            .agents
-            .read()
-            .values()
-            .filter(|agent| {
-                let st = agent.state.lock();
-                st.is_live()
-                    && !st.busy()
-                    && st.requests.is_empty()
-                    && st.subagents.is_empty()
-                    && st.idle_since.elapsed() >= after
-            })
-            .cloned()
-            .collect();
-        for agent in idle {
+        let idle = |keep_awake: &HashSet<String>| -> Vec<Arc<Agent>> {
+            self.agents.read().values().filter(|agent| agent.state.lock().hibernatable(after, keep_awake)).cloned().collect()
+        };
+        let mut agents = idle(&HashSet::new());
+        if agents.is_empty() {
+            return;
+        }
+        // Only now ask which projects keep their agents awake; without an answer, nothing
+        // sleeps this round.
+        let Some(keep_awake) = self.keep_awake_projects().await else { return };
+        if !keep_awake.is_empty() {
+            agents = idle(&keep_awake);
+        }
+        for agent in agents {
             let minutes = after.as_secs().div_ceil(60);
             let note = format!("Hibernated after {minutes} min idle; the session resumes on the next message");
             if let Err(err) = self.hibernate(&agent, note).await {
                 tracing::warn!(agent = %agent.id, %err, "hibernation failed");
+            }
+        }
+    }
+
+    /// Ids of this host's projects whose persona (`.coocoo/persona.toml`) sets `keepAwake`;
+    /// `None` when the projects cannot be read.
+    async fn keep_awake_projects(&self) -> Option<HashSet<String>> {
+        let listed = match self.orch() {
+            Ok(orch) => orch.call(None, "projects.list".to_owned(), Value::Null).await,
+            Err(err) => Err(err),
+        };
+        let list = listed.and_then(|v| serde_json::from_value::<Vec<coocoo_proto::Project>>(v).map_err(ApiError::from));
+        match list {
+            Ok(list) => Some(list.into_iter().filter(|p| p.persona.as_ref().is_some_and(|persona| persona.keep_awake)).map(|p| p.id).collect()),
+            Err(err) => {
+                tracing::warn!(%err, "cannot list projects for the idle sweep");
+                None
             }
         }
     }

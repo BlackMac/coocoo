@@ -14,15 +14,15 @@ use serde_json::{Value, json};
 
 use crate::fs::expand;
 use crate::watch::{Kind, Queue, Watches};
-use crate::{Workspace, actions, diff, fs, git, icon, watch};
+use crate::{Workspace, actions, diff, fs, git, icon, persona, watch};
 
 #[derive(Default)]
 pub(crate) struct State {
     pub projects: Vec<Project>,
     /// Project id → git metadata paths currently watched for it.
     watched: HashMap<String, Vec<PathBuf>>,
-    /// Project id → paths watched for its actions file.
-    watched_actions: HashMap<String, Vec<PathBuf>>,
+    /// Project id → paths watched for its `.coocoo` files.
+    watched_config: HashMap<String, Vec<PathBuf>>,
 }
 
 pub(crate) fn create(emitter: Emitter, paths: &Paths) -> Arc<Workspace> {
@@ -42,6 +42,8 @@ pub(crate) fn create(emitter: Emitter, paths: &Paths) -> Arc<Workspace> {
         project.icon = None;
         project.actions = Vec::new();
         project.action_errors = Vec::new();
+        project.persona = None;
+        project.persona_errors = Vec::new();
     }
     let ws = Arc::new(Workspace {
         emitter,
@@ -201,6 +203,10 @@ impl Workspace {
                 let found = project.icon.as_ref().ok_or_else(|| ApiError::not_found(format!("icon of {}", project.name)))?;
                 ok(icon::read(Path::new(&project.path), found).await?)
             }
+            "projects.personaAvatar" => {
+                let project = self.get(&params::<IdParams>(p)?.id)?;
+                ok(persona::read_avatar(Path::new(&project.path), project.persona.as_ref()).await?)
+            }
             "git.diff" => {
                 let p: CwdBaseParams = params(p)?;
                 ok(diff::diff(&expand(&p.cwd), p.base.as_deref()).await?)
@@ -295,11 +301,19 @@ impl Workspace {
             .ok_or_else(|| ApiError::not_found(format!("project {id}")))
     }
 
-    /// Persist the registry (git info, icon and actions are runtime state and not stored).
+    /// Persist the registry (git info, icon, actions and persona are runtime state and not stored).
     fn save(&self, projects: &[Project]) -> ApiResult<()> {
         let stored: Vec<Project> = projects
             .iter()
-            .map(|p| Project { git: None, icon: None, actions: Vec::new(), action_errors: Vec::new(), ..p.clone() })
+            .map(|p| Project {
+                git: None,
+                icon: None,
+                actions: Vec::new(),
+                action_errors: Vec::new(),
+                persona: None,
+                persona_errors: Vec::new(),
+                ..p.clone()
+            })
             .collect();
         write_json_atomic(&self.file, &stored).map_err(ApiError::from)
     }
@@ -336,6 +350,8 @@ impl Workspace {
             icon: None,
             actions: Vec::new(),
             action_errors: Vec::new(),
+            persona: None,
+            persona_errors: Vec::new(),
         };
         {
             let mut state = self.state.lock();
@@ -372,7 +388,7 @@ impl Workspace {
     }
 
     fn remove(&self, id: &str) -> ApiResult<()> {
-        let (git_paths, action_paths) = {
+        let (git_paths, config_paths) = {
             let mut state = self.state.lock();
             let before = state.projects.len();
             state.projects.retain(|p| p.id != id);
@@ -380,10 +396,10 @@ impl Workspace {
                 return Err(ApiError::not_found(format!("project {id}")));
             }
             self.save(&state.projects)?;
-            (state.watched.remove(id).unwrap_or_default(), state.watched_actions.remove(id).unwrap_or_default())
+            (state.watched.remove(id).unwrap_or_default(), state.watched_config.remove(id).unwrap_or_default())
         };
         self.watches.remove(id, Kind::Git, &git_paths);
-        self.watches.remove(id, Kind::Actions, &action_paths);
+        self.watches.remove(id, Kind::Config, &config_paths);
         self.refresh_locks.lock().remove(id);
         self.emitter.emit(events::PROJECT_REMOVED, &json!({ "id": id }));
         Ok(())
@@ -393,13 +409,13 @@ impl Workspace {
         self.refresh_locks.lock().entry(id.to_owned()).or_default().clone()
     }
 
-    /// Recompute a project's git info, icon and actions, re-sync its watches and emit when it
-    /// changed.
+    /// Recompute a project's git info, icon, actions and persona, re-sync its watches and emit
+    /// when it changed.
     pub(crate) async fn refresh(&self, id: &str, emit: Emit) -> ApiResult<Project> {
         let lock = self.refresh_lock(id);
         let _guard = lock.lock().await;
         let path = PathBuf::from(self.get(id)?.path);
-        let (mut info, found_icon, loaded) = tokio::join!(git::info(&path), icon::find(&path), actions::load(&path));
+        let (mut info, found_icon, (actions, persona)) = tokio::join!(git::info(&path), icon::find(&path), load_config(&path));
         if let Some(info) = &mut info {
             self.github.decorate(info);
         }
@@ -418,18 +434,14 @@ impl Workspace {
                 .iter_mut()
                 .find(|p| p.id == id)
                 .ok_or_else(|| ApiError::not_found(format!("project {id}")))?;
-            let changed = !same_json(&project.git, &info)
-                || project.icon != found_icon
-                || project.actions != loaded.actions
-                || project.action_errors != loaded.errors;
+            let config_changed = apply_config(project, actions, persona);
+            let changed = config_changed || !same_json(&project.git, &info) || project.icon != found_icon;
             project.git = info;
             project.icon = found_icon;
-            project.actions = loaded.actions;
-            project.action_errors = loaded.errors;
             (project.clone(), changed)
         };
         self.sync_watches(id, Kind::Git, targets);
-        self.sync_watches(id, Kind::Actions, watch::action_targets(&path));
+        self.sync_watches(id, Kind::Config, watch::config_targets(&path));
 
         if changed || emit == Emit::Always {
             self.emitter.emit(events::PROJECT_UPDATED, &project);
@@ -437,12 +449,12 @@ impl Workspace {
         Ok(project)
     }
 
-    /// Re-read only `.coocoo/actions.toml` (it changed on disk) and emit when that changed.
-    async fn reload_actions(&self, id: &str) -> ApiResult<()> {
+    /// Re-read only the `.coocoo` files (one changed on disk) and emit when that changed.
+    async fn reload_config(&self, id: &str) -> ApiResult<()> {
         let lock = self.refresh_lock(id);
         let _guard = lock.lock().await;
         let path = PathBuf::from(self.get(id)?.path);
-        let loaded = actions::load(&path).await;
+        let (actions, persona) = load_config(&path).await;
         let project = {
             let mut state = self.state.lock();
             let project = state
@@ -450,13 +462,10 @@ impl Workspace {
                 .iter_mut()
                 .find(|p| p.id == id)
                 .ok_or_else(|| ApiError::not_found(format!("project {id}")))?;
-            let changed = project.actions != loaded.actions || project.action_errors != loaded.errors;
-            project.actions = loaded.actions;
-            project.action_errors = loaded.errors;
-            changed.then(|| project.clone())
+            apply_config(project, actions, persona).then(|| project.clone())
         };
         // `.coocoo` may have just appeared or gone.
-        self.sync_watches(id, Kind::Actions, watch::action_targets(&path));
+        self.sync_watches(id, Kind::Config, watch::config_targets(&path));
         if let Some(project) = project {
             self.emitter.emit(events::PROJECT_UPDATED, &project);
         }
@@ -468,7 +477,7 @@ impl Workspace {
         fn paths(state: &mut State, kind: Kind) -> &mut HashMap<String, Vec<PathBuf>> {
             match kind {
                 Kind::Git => &mut state.watched,
-                Kind::Actions => &mut state.watched_actions,
+                Kind::Config => &mut state.watched_config,
             }
         }
         let old = {
@@ -791,6 +800,24 @@ fn slug(s: &str) -> String {
     if slug.is_empty() { "x".to_owned() } else { slug.to_owned() }
 }
 
+/// `.coocoo/actions.toml` and `.coocoo/persona.toml` of the project at `path`.
+async fn load_config(path: &Path) -> (actions::Loaded, persona::Loaded) {
+    tokio::join!(actions::load(path), persona::load(path))
+}
+
+/// Store freshly loaded `.coocoo` files in `project`; `true` when anything changed.
+fn apply_config(project: &mut Project, actions: actions::Loaded, persona: persona::Loaded) -> bool {
+    let changed = project.actions != actions.actions
+        || project.action_errors != actions.errors
+        || project.persona != persona.persona
+        || project.persona_errors != persona.errors;
+    project.actions = actions.actions;
+    project.action_errors = actions.errors;
+    project.persona = persona.persona;
+    project.persona_errors = persona.errors;
+    changed
+}
+
 fn same_json<T: serde::Serialize>(a: &T, b: &T) -> bool {
     match (serde_json::to_value(a), serde_json::to_value(b)) {
         (Ok(a), Ok(b)) => a == b,
@@ -807,7 +834,7 @@ async fn refresh_loop(ws: Weak<Workspace>, queue: Queue) {
             tokio::spawn(async move {
                 let result = match kind {
                     Kind::Git => ws.refresh(&id, Emit::IfChanged).await.map(drop),
-                    Kind::Actions => ws.reload_actions(&id).await,
+                    Kind::Config => ws.reload_config(&id).await,
                 };
                 if let Err(err) = result
                     && err.code != "not_found"

@@ -213,7 +213,7 @@ export class Fleet {
   /** Local receipt time per `usage` key (hosts' clocks may differ). */
   #usageAt = new Map<string, number>();
   #usageLoads = new Map<string, Promise<ProviderUsage>>();
-  /** Project icon data URLs per `host:id:path:modified`. */
+  /** Project icon and persona avatar data URLs per `host:id:path:modified` / `persona:host:id:…`. */
   projectIcons = $state<Record<string, string>>({});
   #iconLoads = new Set<string>();
   /** Sidebar host filter; `null` = all hosts. */
@@ -564,6 +564,23 @@ export class Fleet {
     if (cached === undefined && !this.#iconLoads.has(k)) {
       this.#iconLoads.add(k);
       this.call('projects.icon', { id: p.id }, p.hostId)
+        .then(({ mime, data }) => (this.projectIcons[k] = `data:${mime};base64,${data}`))
+        .catch(() => {});
+    }
+    return cached;
+  }
+
+  /**
+   * Data URL of a project's persona avatar, fetched once per persona version (any change of
+   * `persona.toml`); `undefined` without one, until loaded or when it cannot be read.
+   */
+  personaAvatar(p: Project): string | undefined {
+    if (!p.persona?.hasAvatar) return undefined;
+    const k = `persona:${key(p.hostId, p.id)}:${JSON.stringify(p.persona)}`;
+    const cached = this.projectIcons[k];
+    if (cached === undefined && !this.#iconLoads.has(k)) {
+      this.#iconLoads.add(k);
+      this.call('projects.personaAvatar', { id: p.id }, p.hostId)
         .then(({ mime, data }) => (this.projectIcons[k] = `data:${mime};base64,${data}`))
         .catch(() => {});
     }

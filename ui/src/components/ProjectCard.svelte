@@ -8,6 +8,7 @@
   import { FolderGit2, GitBranch, GitCommitHorizontal } from '../lib/icons';
   import HostDot from './HostDot.svelte';
   import StatusDot from './StatusDot.svelte';
+  import PersonaAvatar from './PersonaAvatar.svelte';
 
   let { project: p }: { project: Project } = $props();
 
@@ -23,8 +24,8 @@
 
 <a class="pcard card" href={href({ name: 'project', host: p.hostId, id: p.id })}>
   <div class="top">
-    <FolderGit2 size={15} />
-    <span class="name ellipsis">{p.name}</span>
+    {#if p.persona}<PersonaAvatar project={p} size={16} />{:else}<FolderGit2 size={15} />{/if}
+    <span class="name ellipsis" title={p.persona ? `${p.persona.name} · project ${p.name}` : undefined}>{p.persona?.name ?? p.name}</span>
     <span class="chip"><HostDot online={host?.online ?? false} size={5} />{host?.name ?? p.hostId}</span>
   </div>
   <div class="path mono ellipsis" title={p.path}>{shortPath(p.path, 3)}</div>

@@ -89,7 +89,7 @@ driven by the official Rust client (vendored in `crates/omp-rpc`):
 | Concern | Approach |
 |---|---|
 | Desktop shell | Tauri 2 + system webview; the daemon runs in the same process |
-| Idle cost | No timers or polling while nobody watches: stats sample only during `stats.watch`, git refresh is driven by a `.git` watcher (the project actions reload by a name-filtered watch on the project directory and `.coocoo/`), Chromium starts on first use and stops when idle; the scheduler sleeps until the next scheduled run (re-reading the wall clock at least once a minute) and has no timer without an enabled schedule |
+| Idle cost | No timers or polling while nobody watches: stats sample only during `stats.watch`, git refresh is driven by a `.git` watcher (the project actions and persona reload by a name-filtered watch on the project directory and `.coocoo/`), Chromium starts on first use and stops when idle; the scheduler sleeps until the next scheduled run (re-reading the wall clock at least once a minute) and has no timer without an enabled schedule |
 | Agents | omp processes hibernate after inactivity; timelines live on disk (JSONL), memory holds summaries |
 | Event fan-out | Each event is serialized once into `Arc<str>` and shared by all connections; bounded queues; slow clients get `system.resync` instead of unbounded buffers |
 | Browser | One Chromium per project, headless; screencast only while a client watches, fps-capped, JPEG passed through without re-encoding; lossy queue for frames |
