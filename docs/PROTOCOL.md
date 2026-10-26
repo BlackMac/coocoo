@@ -51,6 +51,18 @@ Params marked `?` are optional. Return types refer to `types.rs`.
 | `stats.watch` | `{ enabled: bool }` | `{}` — while ≥1 connection watches, `host.stats` every 2 s |
 | `stats.get` | – | `HostStats` |
 
+### push — `coocoo-core` (Web Push)
+| Method | Params | Result |
+|---|---|---|
+| `push.state` | – | `{ vapidPublicKey: String }` — this daemon's VAPID public key (uncompressed point, base64url) for `PushManager.subscribe` |
+| `push.subscribe` | `{ endpoint, keys: { p256dh, auth }, clientId, device?, prefs? }` | `{}` — registers this device's push subscription (re-registering refreshes `lastSeen` and replaces the same endpoint). `prefs` default to everything on. `invalid_params` when `endpoint` is not an https push-service URL |
+| `push.unsubscribe` | `{ endpoint }` | `{}` |
+| `push.setPrefs` | `{ clientId, prefs: { needsYou, finished, agentNames } }` | `{}` — what the device wants pushed: `ask`/`secret` requests, turn finished/failed, and whether agent titles may appear on the lock screen (privacy mode omits them) |
+| `push.devices` | – | `{ clientId, device, prefs, createdAt, lastSeen }[]` — registered devices (endpoints and keys never leave the daemon) |
+| `push.ack` | `{ clientId, visible: bool }` | `{}` — presence: while a client of `clientId` is visible, this daemon pushes nothing to its subscriptions (the tab already shows it) |
+
+Push delivery: each daemon pushes only its own agents' events (`agent.request` → "Agent needs you"; `agent.updated` with `unread` and no open request → "Ready for review"/"Agent failed"), so a device subscribed to several daemons gets every event exactly once. Payloads carry only the notification title, the agent title (per `agentNames`) and the deep link — never transcript text. A push service answering `404`/`410` prunes the subscription; devices unseen for 90 days are swept every 6 h. The client needs HTTPS and a service worker (`/sw.js`); iOS additionally requires the Home Screen install (the settings view explains this case).
+
 ### projects / git / fs — `coocoo-workspace`
 | Method | Params | Result |
 |---|---|---|

@@ -9,6 +9,8 @@ mod app;
 pub mod config;
 mod conn;
 mod insights;
+mod ece_backend;
+mod push;
 mod peer;
 mod server;
 mod ssh;
@@ -103,6 +105,7 @@ impl Daemon {
             host_id: host_id.clone(),
         }));
         app.start_peers();
+        app.push.start(&app);
         {
             // Warm the `omp --version` cache so the first `system.hello` does not wait for it.
             let app = app.clone();

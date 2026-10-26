@@ -41,6 +41,8 @@ pub(crate) struct App {
     pub terminals: Arc<Terminals>,
     pub agents: Arc<Agents>,
     pub insights: Arc<Insights>,
+    /// Web Push sender (subscriptions, VAPID).
+    pub push: Arc<crate::push::Push>,
     pub browser: Arc<Browser>,
     pub peers: RwLock<Vec<Arc<PeerLink>>>,
     /// Becomes `true` once on shutdown; connection loops and the server watch it.
@@ -136,6 +138,7 @@ impl App {
     pub fn new(paths: Paths, config: Config, emitter: Emitter, subsystems: Subsystems) -> Arc<App> {
         let (detached_tx, _) = mpsc::channel(1);
         let resync = encode_event(events::SYSTEM_RESYNC, &config.host_id, &json!({})).expect("static event");
+        let push = crate::push::Push::new(&paths);
         Arc::new(App {
             host_id: config.host_id.clone(),
             token: config.token.clone(),
@@ -148,6 +151,7 @@ impl App {
             agents: subsystems.agents,
             insights: subsystems.insights,
             browser: subsystems.browser,
+            push,
             peers: RwLock::new(Vec::new()),
             shutdown: watch::Sender::new(false),
             resync,
@@ -263,6 +267,7 @@ impl App {
             "actions" => self.workspace.dispatch_actions(&self.terminals, method, params).await,
             "agents" | "boards" | "schedules" | "secrets" => self.agents.dispatch(method, params).await,
             "browser" => self.browser.dispatch(method, params, &caller.sink).await,
+            "push" => self.push.dispatch(method, params).await,
             "insights" => self.insights_method(caller, method, params).await,
             _ => Err(ApiError::unknown_method(method)),
         }

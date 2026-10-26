@@ -32,6 +32,16 @@
   `InsightsSink` trait in `coocoo-proto`, and they inherit the actor of the request that caused
   them via a task-local. Queries fan out to every online host and are merged once on the home
   daemon, so the UI and the `coocoo_insights` agent tool see the same numbers.
+- **Web Push.** `crates/coocoo-core/src/push.rs` subscribes a device on the daemon it talks to
+  (`push.*`, `docs/PROTOCOL.md`) and pushes that daemon's own agent events (`agent.request`,
+  unread `agent.updated`) — encrypted (RFC 8188) and VAPID-authorized — over rustls with
+  webpki roots; no OpenSSL: `vendor/ece` drops ece's openssl default backend, and
+  `crates/coocoo-core/src/ece_backend.rs` installs a pure-Rust `Cryptographer` (p256,
+  aes-gcm, hkdf, sha2). Payloads carry only the notification title, agent title (per the
+  device's privacy preference) and deep link — never transcript text. Keys and subscriptions
+  live in `<data_dir>/push/` (`vapid.key` 0600, `subscriptions.json` atomic). The UI registers
+  `/sw.js` (root scope, so pushes arrive while the app is closed; iOS needs the Home Screen
+  install) and acks visibility (`push.ack`) so a visible tab suppresses pushes.
 
 ## omp integration (the only harness)
 

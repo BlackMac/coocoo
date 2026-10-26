@@ -860,6 +860,27 @@ export type AddHostParams =
 
 export type Device = 'desktop' | 'phone' | 'browser';
 
+// ─── Web Push ─────────────────────────────────────────────────────────────────────────────────
+
+/** Per-device notification preferences (defaults: everything on). */
+export interface PushPrefs {
+  /** `ask`/`secret` requests ("Agent needs you"). */
+  needsYou: boolean;
+  /** Turn finished or failed ("Ready for review" / "Agent failed"). */
+  finished: boolean;
+  /** Include the agent title in the notification (privacy: names on the lock screen). */
+  agentNames: boolean;
+}
+
+/** A device registered for push on this daemon (endpoint and keys stay server-side). */
+export interface PushDeviceInfo {
+  clientId: string;
+  device: string;
+  prefs: PushPrefs;
+  createdAt: number;
+  lastSeen: number;
+}
+
 export interface InsightsQuery {
   /** Unix ms, inclusive. */
   from: number;
@@ -1195,6 +1216,16 @@ export interface Methods {
   'hosts.rename': [{ id: string; name: string }, HostInfo];
   'stats.watch': [{ enabled: boolean }, Ok];
   'stats.get': [Empty | undefined, HostStats];
+  'push.state': [Empty | undefined, { vapidPublicKey: string }];
+  'push.subscribe': [
+    { endpoint: string; keys: { p256dh: string; auth: string }; clientId: string; device?: Device; prefs?: PushPrefs },
+    Ok,
+  ];
+  'push.unsubscribe': [{ endpoint: string }, Ok];
+  'push.setPrefs': [{ clientId: string; prefs: PushPrefs }, Ok];
+  'push.devices': [Empty | undefined, PushDeviceInfo[]];
+  'push.ack': [{ clientId: string; visible: boolean }, Ok];
+
 
   'insights.usage': [InsightsQuery, UsageReport];
   'insights.workflows': [InsightsQuery, WorkflowReport];

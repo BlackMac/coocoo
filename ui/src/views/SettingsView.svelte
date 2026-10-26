@@ -2,9 +2,10 @@
   import { fleet } from '../lib/fleet.svelte';
   import { copyText } from '../lib/clipboard';
   import { bytes } from '../lib/format';
-  import { notificationsEnabled, notificationsSupported, setNotifications } from '../lib/notify';
+  import { notificationsEnabled, notificationsSupported, pushAvailable, pushPrefs, pushRequiresInstall, setNotifications, setPushPrefs } from '../lib/notify';
+  import { clientId } from '../lib/track';
+  import type { HostInfo, InsightsSettings, PushDeviceInfo } from '../lib/protocol';
   import { ui, type ThemePref } from '../lib/ui.svelte';
-  import type { HostInfo, InsightsSettings } from '../lib/protocol';
   import { Copy, Laptop, Monitor, Moon, Plus, Server, Sun, Trash2, Cloud, Bell, Check, CircleAlert, Download, RefreshCw, RotateCcw } from '../lib/icons';
   import { desktopUpdate } from '../lib/desktop-update.svelte';
   import HostDot from '../components/HostDot.svelte';
@@ -17,6 +18,27 @@
   const loopback = $derived(/\/\/(127\.|localhost|\[::1\])/.test(pairUrl));
   let reveal = $state(false);
   let notify = $state(notificationsEnabled());
+  let prefs = $state(pushPrefs());
+  let devices = $state<PushDeviceInfo[]>([]);
+  const myClientId = clientId();
+
+  $effect(() => {
+    if (notify && pushAvailable() && !pushRequiresInstall()) {
+      fleet
+        .call('push.devices', undefined)
+        .then((d) => (devices = d))
+        .catch(() => {});
+    }
+  });
+
+  async function changePrefs(change: Partial<typeof prefs>) {
+    prefs = { ...prefs, ...change };
+    await setPushPrefs(change);
+  }
+
+  function deviceLabel(d: PushDeviceInfo): string {
+    return d.device === 'phone' ? 'Phone' : d.device === 'desktop' ? 'Desktop' : 'Browser';
+  }
 
   const THEMES: { id: ThemePref; label: string; icon: typeof Sun }[] = [
     { id: 'system', label: 'System', icon: Monitor },
@@ -180,12 +202,53 @@
     {#if notificationsSupported(fleet.native)}
       <section>
         <h2 class="section-title">Notifications</h2>
-        <div class="card pad row">
-          <span class="lbl"><Bell size={14} /> Notify when an agent needs input or finishes while this tab is in the background</span>
-          <label class="switch"><input type="checkbox" checked={notify} onchange={(e) => toggleNotify(e.currentTarget.checked)} /></label>
+        <div class="card pad" style="display:flex;flex-direction:column;gap:12px">
+          <div class="row">
+            <span class="lbl"><Bell size={14} /> Notify when an agent needs input or finishes</span>
+            <label class="switch"><input type="checkbox" checked={notify} onchange={(e) => toggleNotify(e.currentTarget.checked)} /></label>
+          </div>
+          {#if notify}
+            {#if pushRequiresInstall()}
+              <div class="hint-card">
+                <b>Push notifications on iPhone need Coocoo on the Home Screen.</b>
+                <ol>
+                  <li>Open this Coocoo in Safari</li>
+                  <li>Tap <b>Share</b> → <b>Add to Home Screen</b></li>
+                  <li>Open Coocoo from the Home Screen, then switch notifications on</li>
+                </ol>
+              </div>
+            {:else if pushAvailable()}
+              <div class="ok-line"><span class="ok-dot"></span>This device receives push notifications — also while Coocoo is closed.</div>
+              <div class="row">
+                <span class="lbl">Agent names in the notification</span>
+                <label class="switch"><input type="checkbox" checked={prefs.agentNames} onchange={(e) => changePrefs({ agentNames: e.currentTarget.checked })} /></label>
+              </div>
+              <div class="row">
+                <span class="lbl">Notify when an agent needs input</span>
+                <label class="switch"><input type="checkbox" checked={prefs.needsYou} onchange={(e) => changePrefs({ needsYou: e.currentTarget.checked })} /></label>
+              </div>
+              <div class="row">
+                <span class="lbl">Notify when a turn finishes or fails</span>
+                <label class="switch"><input type="checkbox" checked={prefs.finished} onchange={(e) => changePrefs({ finished: e.currentTarget.checked })} /></label>
+              </div>
+              {#if devices.length > 0}
+                <div class="devices">
+                  <div class="sub-title">Registered devices</div>
+                  {#each devices as d (d.clientId)}
+                    <div class="row">
+                      <span class="lbl">{deviceLabel(d)}{d.clientId === myClientId ? ' (this device)' : ''}</span>
+                      <span class="faint">{new Date(d.lastSeen).toLocaleDateString()}</span>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+            {:else}
+              <div class="hint-card">Push notifications need HTTPS and a service worker. This address uses plain HTTP, so notifications only work while the tab is open in the background.</div>
+            {/if}
+          {/if}
         </div>
       </section>
-     {/if}
+    {/if}
 
     {#if fleet.native}
       <section>
@@ -424,6 +487,48 @@
   }
   .hint {
     margin: 10px 0 0 !important;
+  }
+  .hint-card {
+    border: 1px solid var(--line-2);
+    border-radius: 10px;
+    padding: 10px 14px;
+    font-size: 13px;
+    color: var(--text-2);
+  }
+  .hint-card b {
+    color: var(--text-1);
+  }
+  .hint-card ol {
+    margin: 6px 0 0 18px;
+  }
+  .hint-card li {
+    margin: 2px 0;
+  }
+  .ok-line {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 13px;
+    color: var(--ok, #2f7d46);
+  }
+  .ok-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--ok, #2f7d46);
+  }
+  .devices {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-top: 4px;
+    border-top: 1px solid var(--line);
+  }
+  .sub-title {
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-3);
   }
   .row {
     display: flex;

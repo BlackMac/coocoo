@@ -62,3 +62,6 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+[patch.crates-io]
+ece = { path = "vendor/ece" }

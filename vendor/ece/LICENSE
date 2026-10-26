@@ -1,0 +1,11 @@
+Mozilla Public License, Version 2.0
+=================================
+
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+This is a vendored copy of mozilla/rust-ece (https://github.com/mozilla/rust-ece),
+version 2.4.2, with one change: the crate's default features no longer include
+`backend-openssl`, so it builds without OpenSSL (Coocoo installs its own pure-Rust
+`Cryptographer`, see crates/coocoo-core/src/ece_backend.rs).
