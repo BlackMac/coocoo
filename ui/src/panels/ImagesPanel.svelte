@@ -1,6 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { fleet, key } from '../lib/fleet.svelte';
+  import { RpcError } from '../lib/client';
   import { files, loadAgentImage, loadCardFile } from '../lib/files.svelte';
   import { ui } from '../lib/ui.svelte';
   import { router } from '../lib/router.svelte';
@@ -49,7 +50,12 @@
       error = null;
       picked = null;
       seen = {};
-      fleet.loadImages(agent.hostId, agent.id).catch((err) => (error = err instanceof Error ? err.message : String(err)));
+      fleet.loadImages(agent.hostId, agent.id).catch((err) => {
+        // A host on an older Coocoo has no `agents.images` (and stores no tool images).
+        const old = err instanceof RpcError && err.code === 'unknown_method';
+        const name = fleet.hosts[agent.hostId]?.name ?? 'This host';
+        error = old ? `${name} runs an older Coocoo version. Update it to see the agent's screenshots here.` : err instanceof Error ? err.message : String(err);
+      });
     });
   });
   $effect(() => {
