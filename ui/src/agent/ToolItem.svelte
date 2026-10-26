@@ -2,10 +2,11 @@
   import type { Component } from 'svelte';
   import { duration } from '../lib/format';
   import type { Subagent, TimelineItem } from '../lib/protocol';
-  import { Check, ChevronRight, FileText, Globe, Pencil, Search, Terminal, Users, Wrench, X, Link, ListTodo, MessageSquareText } from '../lib/icons';
+  import { Check, ChevronRight, FileText, Globe, Image, Pencil, Search, Terminal, Users, Wrench, X, Link, ListTodo, MessageSquareText } from '../lib/icons';
   import SubagentList from './SubagentList.svelte';
 
-  let { item, onsubagent }: { item: TimelineItem; onsubagent?: (s: Subagent) => void } = $props();
+  // `onimage`: opens one of the call's result images (screenshots, viewed files) in the side panel.
+  let { item, onsubagent, onimage }: { item: TimelineItem; onsubagent?: (s: Subagent) => void; onimage?: (name: string) => void } = $props();
   let open = $state(false);
 
   const ICONS: Record<string, Component<{ size?: number }>> = {
@@ -63,6 +64,12 @@
     </span>
     <span class="chev"><ChevronRight size={12} /></span>
   </button>
+  {#if onimage && item.images?.length}
+    {@const n = item.images.length}
+    <button class="shots" onclick={() => onimage(item.images![0].name)} title="Show in the Images tab">
+      <Image size={12} />{n === 1 ? '1 image' : `${n} images`}
+    </button>
+  {/if}
   {#if open}
     <div class="detail">
       <div class="lbl">Arguments</div>
@@ -140,6 +147,23 @@
   }
   .open .chev {
     transform: rotate(90deg);
+  }
+  .shots {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin: -4px 0 6px 31px;
+    padding: 1px 6px;
+    border: 1px solid var(--border);
+    border-radius: 99px;
+    background: var(--bg);
+    color: var(--text-2);
+    font-size: var(--fs-xs);
+    cursor: pointer;
+  }
+  .shots:hover {
+    border-color: var(--border-strong);
+    color: var(--text);
   }
   .detail {
     padding: 2px 10px 10px 31px;

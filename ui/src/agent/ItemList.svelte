@@ -1,6 +1,8 @@
 <script lang="ts">
   import type { Subagent, TimelineItem } from '../lib/protocol';
   import { mergeErrors, parseError, type ProviderError } from '../lib/providerError';
+  import { key } from '../lib/fleet.svelte';
+  import { ui } from '../lib/ui.svelte';
   import UserItem from './UserItem.svelte';
   import AssistantItem from './AssistantItem.svelte';
   import ThinkingItem from './ThinkingItem.svelte';
@@ -11,9 +13,10 @@
   // Timeline items as rendered in a transcript (an agent's, or a subagent's). Renders no wrapper
   // element, so the parent's layout applies to each block. `host`/`projectId`: the agent's project,
   // whose board shows card refinements (`kanban_refine`) below the call. `host`/`agentId`: the
-  // agent whose user message images are shown. `highlight`: an item id whose block is wrapped in a
-  // briefly flashing `.at` element (a moment jumped to via `?at=`). `erroractions`: offered on the
-  // last block when it is a rate limit or quota error (the agent's turn just failed on it).
+  // agent whose user message images are shown and whose tool result images open in its Images
+  // tab. `highlight`: an item id whose block is wrapped in a briefly flashing `.at` element (a
+  // moment jumped to via `?at=`). `erroractions`: offered on the last block when it is a rate
+  // limit or quota error (the agent's turn just failed on it).
   let {
     items,
     onsubagent,
@@ -32,6 +35,7 @@
     erroractions?: { model: () => void; retry: () => void };
   } = $props();
   const isRefinement = (it: TimelineItem) => it.tool?.name === 'kanban_refine' && it.tool.status === 'ok';
+  const onimage = $derived(host && agentId ? (name: string) => ui.showImages(key(host, agentId), name, { agentId, projectId }) : undefined);
 
   /** Groups consecutive tool calls so they render as one compact block, and consecutive errors
    *  with the same cause (a failed request and its exhausted retries) into one error. */
@@ -63,7 +67,7 @@
 {#snippet block(b: Block)}
   {#if b.kind === 'tools'}
     <div class="tools">
-      {#each b.items as it (it.id)}<ToolItem item={it} {onsubagent} />{/each}
+      {#each b.items as it (it.id)}<ToolItem item={it} {onsubagent} {onimage} />{/each}
     </div>
     {#if host && projectId}
       {#each b.items.filter(isRefinement) as it (it.id)}<RefinementItem item={it} {host} {projectId} />{/each}

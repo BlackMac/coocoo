@@ -1,5 +1,6 @@
 // Files fetched from a host once and kept: refinement attachments (`boards.attachment`), the
-// user's card context images (`boards.cardImage`) and the images of user messages (`agents.image`).
+// user's card context images (`boards.cardImage`) and the images of user messages and tool
+// results (`agents.image`).
 
 import { fleet } from './fleet.svelte';
 import type { Attachment, TimelineImage } from './protocol';
@@ -32,7 +33,7 @@ export function loadCardFile(host: string, projectId: string, cardId: string, ki
   );
 }
 
-/** Starts loading an image of one of an agent's user messages and returns its key into `files`. */
+/** Starts loading an image of an agent's timeline (user message, tool result) and returns its key into `files`. */
 export function loadAgentImage(host: string, agentId: string, img: TimelineImage): string {
   return load(`${host}:agent:${agentId}:${img.name}`, () => fleet.call('agents.image', { id: agentId, name: img.name }, host));
 }

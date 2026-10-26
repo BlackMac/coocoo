@@ -87,7 +87,8 @@ fn strip_ansi(text: &str) -> String {
 /// A state change derived from an omp frame.
 #[derive(Debug, Clone)]
 pub(crate) enum Effect {
-    /// Store a user message image as `images/<name>`; the `Upsert` of its item follows.
+    /// Store a user message or tool result image as `images/<name>`; the `Upsert` of its item
+    /// follows.
     SaveImage { name: String, bytes: Vec<u8> },
     /// Insert or replace a timeline item (persisted + `agent.timeline`).
     Upsert(TimelineItem),
@@ -182,6 +183,16 @@ pub(crate) struct Mapper {
 fn new_item(sink: &mut dyn Sink, kind: ItemKind, text: Option<String>, partial: bool) -> TimelineItem {
     let seq = sink.seq();
     TimelineItem { seq, id: seq.to_string(), ts: now_ms(), kind, text, tool: None, partial, images: Vec::new() }
+}
+
+/// Attach decoded images to `item` as `<seq>-<index>.<ext>` and have them stored.
+fn attach_images(sink: &mut dyn Sink, item: &mut TimelineItem, images: Vec<DecodedImage>) {
+    for (index, (mime, ext, bytes)) in images.into_iter().enumerate() {
+        let name = format!("{}-{index}.{ext}", item.seq);
+        let (width, height) = crate::image::dimensions(&bytes).unzip();
+        item.images.push(TimelineImage { name: name.clone(), mime, size: bytes.len() as u64, width, height });
+        sink.effect(Effect::SaveImage { name, bytes });
+    }
 }
 
 fn notice(sink: &mut dyn Sink, kind: ItemKind, text: String) {
@@ -496,6 +507,10 @@ impl Mapper {
                     tool.output = end.result.as_ref().map(|r| truncate(&tool_output(r), MAX_OUTPUT));
                     tool.duration_ms = duration;
                 }
+                // Screenshots and viewed images, as the agent got them (Images panel).
+                if let Some(result) = &end.result {
+                    attach_images(sink, &mut item, tool_images(result));
+                }
                 self.finished.push((end.tool_call_id.clone(), item.clone()));
                 if self.finished.len() > RECENT_TOOLS
                     && let Some(oldest) = self.finished.iter().position(|(_, item)| !has_running(item))
@@ -675,12 +690,7 @@ impl Mapper {
                     return;
                 }
                 let mut item = new_item(sink, ItemKind::User, Some(text).filter(|t| !t.is_empty()), false);
-                for (index, (mime, ext, bytes)) in images.into_iter().enumerate() {
-                    let name = format!("{}-{index}.{ext}", item.seq);
-                    let (width, height) = crate::image::dimensions(&bytes).unzip();
-                    item.images.push(TimelineImage { name: name.clone(), mime, size: bytes.len() as u64, width, height });
-                    sink.effect(Effect::SaveImage { name, bytes });
-                }
+                attach_images(sink, &mut item, images);
                 sink.effect(Effect::Upsert(item));
             }
             AgentMessage::Assistant(assistant) => {
@@ -786,24 +796,24 @@ fn split_parts(parts: Vec<UserContent>) -> (String, Vec<ImageContent>) {
     (text, images)
 }
 
-/// A decoded user message image: MIME type, file extension, bytes.
+/// A decoded image: MIME type, file extension, bytes.
 type DecodedImage = (String, &'static str, Vec<u8>);
+
+/// An image of an accepted type with valid base64 data.
+fn decode_image(mime: Option<String>, data: Option<&str>) -> Option<DecodedImage> {
+    use base64::Engine as _;
+    let mime = mime?;
+    let ext = crate::image::ext(&mime)?;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data?.as_bytes()).ok()?;
+    Some((mime, ext, bytes))
+}
 
 /// Text of a user message and its images. Images of an unknown type or with broken data are
 /// left out and summarized in the text instead.
 fn user_parts(parts: Vec<UserContent>) -> (String, Vec<DecodedImage>) {
-    use base64::Engine as _;
     let (mut text, raw) = split_parts(parts);
     let total = raw.len();
-    let images: Vec<_> = raw
-        .into_iter()
-        .filter_map(|image| {
-            let mime = image.mime_type?;
-            let ext = crate::image::ext(&mime)?;
-            let bytes = base64::engine::general_purpose::STANDARD.decode(image.data?.as_bytes()).ok()?;
-            Some((mime, ext, bytes))
-        })
-        .collect();
+    let images: Vec<_> = raw.into_iter().filter_map(|image| decode_image(image.mime_type, image.data.as_deref())).collect();
     image_marker(&mut text, total - images.len());
     (text, images)
 }
@@ -841,6 +851,20 @@ pub(crate) fn tool_output(result: &Value) -> String {
         return out;
     }
     result.to_string()
+}
+
+/// Image parts of a tool result (`{content: [{type:"image", data, mimeType}]}`) that decode;
+/// the others stay `[image]` in its text only.
+fn tool_images(result: &Value) -> Vec<DecodedImage> {
+    let Some(parts) = result.get("content").and_then(Value::as_array) else { return Vec::new() };
+    parts
+        .iter()
+        .filter(|part| part.get("type").and_then(Value::as_str) == Some("image"))
+        .filter_map(|part| {
+            let mime = part.get("mimeType").and_then(Value::as_str).map(str::to_owned);
+            decode_image(mime, part.get("data").and_then(Value::as_str))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1121,5 +1145,27 @@ mod tests {
         );
         assert_eq!(items[0].images.len(), 1);
         assert_eq!((items[1].kind, items[1].text.as_deref(), items[1].images.len()), (ItemKind::User, None, 1));
+    }
+
+    #[test]
+    fn tool_result_images_are_saved_with_the_finished_call() {
+        use base64::Engine as _;
+        let png = base64::engine::general_purpose::STANDARD.encode(crate::image::tests::png(800, 600));
+        let (mut mapper, mut rec) = (Mapper::new(), Recorder::default());
+        let frames = [
+            json!({ "type": "tool_execution_start", "toolCallId": "c1", "toolName": "eval", "args": { "i": "Screenshot" } }),
+            json!({ "type": "tool_execution_end", "toolCallId": "c1", "toolName": "eval", "isError": false, "result": { "content": [
+                { "type": "text", "text": "done" },
+                { "type": "image", "mimeType": "image/png", "data": png },
+                { "type": "image", "mimeType": "image/png", "data": "not base64!" },
+            ] } }),
+        ];
+        feed(&mut mapper, &mut rec, &frames.map(|f| f.to_string()).join("\n"));
+        let saves: Vec<&str> = rec.effects.iter().filter_map(|e| if let Effect::SaveImage { name, .. } = e { Some(name.as_str()) } else { None }).collect();
+        assert_eq!(saves, ["1-0.png"]);
+        let item = &rec.items()[0];
+        assert_eq!(item.tool.as_ref().unwrap().output.as_deref(), Some("done\n[image]\n[image]"));
+        let image = &item.images[0];
+        assert_eq!((item.images.len(), image.name.as_str(), image.width, image.height), (1, "1-0.png", Some(800), Some(600)));
     }
 }

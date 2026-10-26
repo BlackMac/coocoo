@@ -4,7 +4,7 @@ import type { ImageInput, InspectResult } from './protocol';
 import { track, type TrackRef } from './track';
 
 export type ThemePref = 'system' | 'dark' | 'light';
-export type PanelTab = 'changes' | 'browser' | 'terminal' | 'board' | 'plan' | 'info';
+export type PanelTab = 'changes' | 'browser' | 'terminal' | 'images' | 'board' | 'plan' | 'info';
 
 export interface Toast {
   id: number;
@@ -96,6 +96,9 @@ class Ui {
   terminalFocus = $state<{ host: string; id: string } | null>(null);
   /** A browser tab the BrowserPanel should select (set when a URL action opened it). */
   browserFocus = $state<{ host: string; profile: string; targetId: string } | null>(null);
+  /** The picture an agent's Images tab should select: a stored timeline image by `name`, or the
+   *  newest with `''`. `n` tells repeated requests for the same picture apart. */
+  imageFocus = $state<{ agent: string; name: string; n: number } | null>(null);
   /** An agent (key) whose composer should open its model picker (an error block asked for another model). */
   modelPicker = $state<string | null>(null);
   /** Terminal font size in px (pinch on a touch screen changes it). */
@@ -200,6 +203,12 @@ class Ui {
     this.panel.tab = tab;
     this.panel.open = true;
     this.mobilePane = tab;
+  }
+
+  /** Opens an agent's (key) Images tab at an image (`''`: the newest). */
+  showImages(agent: string, name: string, by?: Pick<TrackRef, 'agentId' | 'projectId'>) {
+    this.imageFocus = { agent, name, n: seq++ };
+    this.showPanel('images', by);
   }
 }
 

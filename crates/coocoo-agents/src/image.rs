@@ -1,6 +1,7 @@
-//! Image types Coocoo stores (card images, user message images) and their pixel size.
+//! Image types Coocoo stores (card images, user message and tool result images) and their pixel
+//! size.
 
-/// Directory of user message images inside an agent's data directory.
+/// Directory of timeline images (user messages, tool results) inside an agent's data directory.
 pub(crate) const DIR: &str = "images";
 
 /// File extension for an accepted image type (no SVG: it can carry scripts).

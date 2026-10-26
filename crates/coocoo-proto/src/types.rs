@@ -700,12 +700,13 @@ pub struct TimelineItem {
     /// Item still streaming (assistant/thinking text or running tool).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub partial: bool,
-    /// Images of a user message, as the agent got them (fetch with `agents.image`).
+    /// Images of a user message or a tool result (screenshots, viewed image files), as the agent
+    /// got them (fetch with `agents.image`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<TimelineImage>,
 }
 
-/// One image of a user message, stored under the agent's data directory.
+/// One image of a user message or tool result, stored under the agent's data directory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TimelineImage {

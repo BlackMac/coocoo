@@ -176,6 +176,27 @@ pub(crate) fn page(path: &Path, tail: Vec<TimelineItem>, before: Option<u64>, li
     TimelinePage { items, has_more }
 }
 
+/// Every item with images (user messages, tool results), oldest first, without tool arguments,
+/// output and subagents (`agents.images` lists pictures, not transcripts).
+pub(crate) fn with_images(path: &Path, tail: Vec<TimelineItem>) -> Vec<TimelineItem> {
+    let mut items = read_all(path);
+    for item in tail {
+        items.insert(item.seq, item);
+    }
+    items
+        .into_values()
+        .filter(|item| !item.images.is_empty())
+        .map(|mut item| {
+            if let Some(tool) = &mut item.tool {
+                tool.args.clear();
+                tool.output = None;
+                tool.subagents.clear();
+            }
+            item
+        })
+        .collect()
+}
+
 /// Mark a streaming item as finished because its process is gone; its subagents went with it.
 pub(crate) fn settle(item: &mut TimelineItem) {
     if let Some(tool) = &mut item.tool {

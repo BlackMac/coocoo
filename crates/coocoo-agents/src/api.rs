@@ -217,7 +217,7 @@ fn image_content(image: ImageInput) -> ImageContent {
     }
 }
 
-/// MIME type of a stored user message image name (`<seq>-<index>.<ext>`). Anything else is
+/// MIME type of a stored timeline image name (`<seq>-<index>.<ext>`). Anything else is
 /// rejected, so a name can never point outside the agent's image directory.
 fn message_image_mime(name: &str) -> Option<&'static str> {
     let (stem, ext) = name.split_once('.')?;
@@ -283,6 +283,15 @@ impl Agents {
             "agents.usage" => ok(self.usage(params(p)?).await?),
             "agents.subagentTimeline" => self.subagent_timeline(params(p)?).await,
             "agents.image" => self.image(params(p)?).await,
+            "agents.images" => {
+                let IdParams { id } = params(p)?;
+                let agent = self.get(&id)?;
+                let (path, tail) = {
+                    let tl = agent.timeline.lock();
+                    (tl.path().to_owned(), tl.tail())
+                };
+                ok(tokio::task::spawn_blocking(move || timeline::with_images(&path, tail)).await.map_err(ApiError::internal)?)
+            }
             "agents.hibernate" => {
                 let IdParams { id } = params(p)?;
                 let agent = self.get(&id)?;
@@ -741,7 +750,7 @@ impl Agents {
         ok(page)
     }
 
-    /// `agents.image`: one user message image as `{ mime, data }` (base64).
+    /// `agents.image`: one image of a user message or tool result as `{ mime, data }` (base64).
     async fn image(&self, p: ImageParams) -> ApiResult<Value> {
         use base64::Engine as _;
         let mime = message_image_mime(&p.name).ok_or_else(|| ApiError::invalid(format!("invalid image name `{}`", p.name)))?;

@@ -200,6 +200,13 @@ export class Fleet {
   terminals = $state<Record<string, TerminalInfo>>({});
   /** Prompts sent from this client that omp has not confirmed yet, per `host:agentId`, oldest first. */
   outbox = $state<Record<string, Outgoing[]>>({});
+  /** Items with images (`agents.images`) per `host:agentId`, loaded by the Images tab, kept current by `agent.timeline`. */
+  images = $state<Record<string, TimelineItem[]>>({});
+  /** The latest picture an agent produced while this client watched: a tool result image by
+   *  `name`, or `''` for a refinement (its mocks land on the board). `n` counts arrivals. */
+  imageArrived = $state<{ key: string; name: string; n: number } | null>(null);
+  /** Items that already announced a picture (a finished call is upserted again on subagent progress). */
+  #announced = new Set<string>();
   #outboxTimers = new Map<string, number>();
   /** `user` item ids seen per agent: only a new one confirms a prompt (not a re-sent update). */
   #seenUser = new Map<string, Set<string>>();
@@ -342,6 +349,32 @@ export class Fleet {
     } catch (err) {
       console.warn('agents.get failed', err);
     }
+  }
+
+  /** Fetches (or refreshes) the items of an agent's timeline that carry images. */
+  async loadImages(host: string, id: string): Promise<void> {
+    this.images[key(host, id)] = await this.call('agents.images', { id }, host);
+  }
+
+  /** Keeps a loaded image list current and announces pictures the agent produced. */
+  #noteImages(k: string, item: TimelineItem) {
+    if (item.partial) return;
+    if (item.images?.length) {
+      const list = this.images[k];
+      if (list) {
+        const i = list.findIndex((x) => x.id === item.id);
+        if (i >= 0) list[i] = item;
+        else list.push(item);
+      }
+    }
+    const tool = item.tool;
+    // A refinement counts when it attaches mocks (its arguments may be cut off before them).
+    const mocks = tool?.name === 'kanban_refine' && tool.status === 'ok' && /"attachments"\s*:\s*\[\s*"/.test(tool.args);
+    const produced = tool && (item.images?.length || mocks);
+    const id = `${k}:${item.id}`;
+    if (!produced || this.#announced.has(id)) return;
+    this.#announced.add(id);
+    this.imageArrived = { key: k, name: item.images?.at(-1)?.name ?? '', n: (this.imageArrived?.n ?? 0) + 1 };
   }
 
   // ─── Outbox (optimistic prompts) ────────────────────────────────────────────────────────────
@@ -715,11 +748,13 @@ export class Fleet {
       delete this.outbox[k];
       this.#seenUser.delete(k);
       this.#timelines.delete(k);
+      delete this.images[k];
     });
     c.on('agent.timeline', ({ agentId, item }, host) => {
       const k = key(host, agentId);
       this.#timelines.get(k)?.upsert(item);
       this.#settleItem(k, item);
+      this.#noteImages(k, item);
     });
     c.on('agent.delta', ({ agentId, itemId, text }, host) => {
       this.#timelines.get(key(host, agentId))?.delta(itemId, text);

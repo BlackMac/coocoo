@@ -3,9 +3,11 @@
   let changesMod: Promise<typeof import('../panels/ChangesPanel.svelte')> | undefined;
   let browserMod: Promise<typeof import('../panels/BrowserPanel.svelte')> | undefined;
   let terminalMod: Promise<typeof import('../panels/TerminalPanel.svelte')> | undefined;
+  let imagesMod: Promise<typeof import('../panels/ImagesPanel.svelte')> | undefined;
 </script>
 
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { fleet, key } from '../lib/fleet.svelte';
   import { cost, modelName } from '../lib/format';
   import { router } from '../lib/router.svelte';
@@ -13,7 +15,7 @@
   import { ui, type PanelTab } from '../lib/ui.svelte';
   import { track } from '../lib/track';
   import { errorInTimeline, parseError } from '../lib/providerError';
-  import { Ellipsis, FileDiff, Globe, Info, ListChecks, PanelRight, SquareKanban, Terminal, MessageSquareText } from '../lib/icons';
+  import { Ellipsis, FileDiff, Globe, Image, Info, ListChecks, PanelRight, SquareKanban, Terminal, MessageSquareText } from '../lib/icons';
   import StatusDot from '../components/StatusDot.svelte';
   import InlineEdit from '../components/InlineEdit.svelte';
   import Menu from '../components/Menu.svelte';
@@ -73,6 +75,7 @@
     { id: 'changes', label: 'Changes', icon: FileDiff },
     { id: 'browser', label: 'Browser', icon: Globe },
     { id: 'terminal', label: 'Terminal', icon: Terminal },
+    { id: 'images', label: 'Images', icon: Image },
     { id: 'board', label: 'Board', icon: SquareKanban },
     { id: 'plan', label: 'Plan', icon: ListChecks },
     { id: 'info', label: 'Info', icon: Info },
@@ -83,12 +86,33 @@
   const loadChanges = () => (changesMod ??= import('../panels/ChangesPanel.svelte'));
   const loadBrowser = () => (browserMod ??= import('../panels/BrowserPanel.svelte'));
   const loadTerminal = () => (terminalMod ??= import('../panels/TerminalPanel.svelte'));
+  const loadImages = () => (imagesMod ??= import('../panels/ImagesPanel.svelte'));
   const by = $derived({ agentId: id, projectId: a?.projectId ?? undefined });
 
   function togglePanel() {
     ui.panel.open = !ui.panel.open;
     if (ui.panel.open) track('panel', { ...by, meta: { panel: ui.panel.tab } });
   }
+
+  // A picture the agent produces (a screenshot, an image it looks at, refinement mocks) is shown
+  // in the Images tab right away, unless the user is typing in the side panel (a terminal).
+  // Phones keep the pane they show.
+  let panelEl = $state<HTMLElement>();
+  let arrived = fleet.imageArrived?.n ?? 0;
+  $effect(() => {
+    const x = fleet.imageArrived;
+    if (!x || x.n <= arrived) return;
+    arrived = x.n;
+    if (x.key !== k) return;
+    untrack(() => {
+      ui.imageFocus = { agent: k, name: x.name, n: x.n };
+      if (matchMedia('(max-width: 860px)').matches) return;
+      const el = document.activeElement;
+      if (el instanceof HTMLElement && panelEl?.contains(el) && (el.isContentEditable || el.matches('input, textarea, select'))) return;
+      ui.panel.tab = 'images';
+      ui.panel.open = true;
+    });
+  });
 
   // ─── Resizable panel ───────────────────────────────────────────────────────────────────────
   let dragging = $state(false);
@@ -157,11 +181,11 @@
     {#if ui.panel.open}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div class="resizer" onpointerdown={startResize} title="Drag to resize"></div>
-      <aside class="panel">
-        <div class="tabs" role="tablist">
+      <aside class="panel" bind:this={panelEl}>
+        <div class="tabs" class:narrow={ui.panel.width < 620} role="tablist">
           {#each tabs as t (t.id)}
-            <button role="tab" class:on={ui.panel.tab === t.id} aria-selected={ui.panel.tab === t.id} onclick={() => ui.showPanel(t.id, by)}>
-              <t.icon size={14} />{t.label}
+            <button role="tab" class:on={ui.panel.tab === t.id} aria-selected={ui.panel.tab === t.id} title={t.label} onclick={() => ui.showPanel(t.id, by)}>
+              <t.icon size={14} /><span class="lbl">{t.label}</span>
               {#if t.id === 'changes' && a.diff?.files}<span class="cnt num">{a.diff.files}</span>{/if}
               {#if t.id === 'plan' && a.todos?.total}<span class="cnt num">{a.todos.done}/{a.todos.total}</span>{/if}
               {#if t.id === 'board' && todoCount}<span class="cnt num">{todoCount}</span>{/if}
@@ -175,6 +199,8 @@
             {#await loadBrowser() then m}<m.default agent={a} {project} />{/await}
           {:else if ui.panel.tab === 'terminal'}
             {#await loadTerminal() then m}<m.default {host} cwd={a.cwd} browserProfile={a.projectId ?? 'default'} />{/await}
+          {:else if ui.panel.tab === 'images'}
+            {#await loadImages() then m}<m.default agent={a} />{/await}
           {:else if ui.panel.tab === 'board' && a.projectId}
             <BoardPanel {host} projectId={a.projectId} agent={a} />
           {:else if ui.panel.tab === 'plan'}
@@ -343,6 +369,12 @@
     padding: 0 8px;
     border-bottom: 1px solid var(--border);
     flex: none;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  /* Too narrow for every label: the other tabs show their icon only. */
+  .tabs.narrow button:not(.on) .lbl {
+    display: none;
   }
   .tabs button,
   .mtabs button {

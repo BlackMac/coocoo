@@ -7,7 +7,8 @@
 //! - Each live process has one dedicated thread that maps its events to timeline items and
 //!   status changes ([`mapper`]); nothing polls while agents are idle.
 //! - State survives daemon restarts: `<data_dir>/agents/<id>/meta.json` + `timeline.jsonl`,
-//!   plus the images of user messages in `images/` (`<seq>-<index>.<ext>`, `agents.image`).
+//!   plus the images of user messages and tool results in `images/` (`<seq>-<index>.<ext>`,
+//!   `agents.image`; `agents.images` lists the items that have any).
 //!   A restarting daemon lets running agents pause first and tells them when it is back
 //!   ([`restart`]).
 

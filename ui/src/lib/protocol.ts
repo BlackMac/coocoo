@@ -380,7 +380,8 @@ export interface TimelineItem {
   text?: string;
   tool?: ToolCall;
   partial?: boolean;
-  /** Images of a user message, as the agent got them (fetch with `agents.image`). */
+  /** Images of a user message or a tool result (screenshots, viewed image files), as the agent
+   *  got them (fetch with `agents.image`). */
   images?: TimelineImage[];
 }
 
@@ -1275,6 +1276,8 @@ export interface Methods {
   'agents.usage': [{ provider: string; model?: string }, ProviderUsage];
   'agents.subagentTimeline': [{ id: string; sessionFile: string; live?: boolean }, TimelinePage];
   'agents.image': [{ id: string; name: string }, { mime: string; data: string }];
+  /** Every item with `images`, oldest first; tool items without `args`/`output`/`subagents`. */
+  'agents.images': [{ id: string }, TimelineItem[]];
   'boards.get': [{ projectId: string }, Board];
   'boards.cardAdd': [{ projectId: string; title: string; body?: string; column?: CardColumn; top?: boolean; startUrl?: string; doneUrl?: string; images?: ImageUpload[] }, Card];
   'boards.cardUpdate': [{ projectId: string; cardId: string; title?: string; body?: string; column?: CardColumn; index?: number; startUrl?: string; doneUrl?: string; addImages?: ImageUpload[]; removeImages?: string[] }, Card];
