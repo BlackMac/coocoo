@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { fleet, key } from '../lib/fleet.svelte';
-  import { href, router } from '../lib/router.svelte';
+   import { fleet, key } from '../lib/fleet.svelte';
+  import { desktopUpdate } from '../lib/desktop-update.svelte';
+   import { href, router } from '../lib/router.svelte';
   import { agentState, STATE_RANK, type AgentState } from '../lib/status';
   import { ui } from '../lib/ui.svelte';
   import type { AgentSummary, Project } from '../lib/protocol';
@@ -125,11 +126,16 @@
       <svg viewBox="0 0 32 32" width="22" height="22"><rect width="32" height="32" rx="8" fill="var(--accent)" /><circle cx="12.5" cy="16" r="5" fill="none" stroke="#fff" stroke-width="2.6" /><circle cx="20.5" cy="16" r="5" fill="none" stroke="#fff" stroke-width="2.6" opacity=".85" /></svg>
     </span>
     <span class="name">Coocoo</span>
-    {#if !fleet.native}
-      <a class="btn ghost icon sm dl" href={DESKTOP_DOWNLOAD_URL} target="_blank" rel="noopener noreferrer" title="Download the desktop app" aria-label="Download the desktop app">
+     {#if !fleet.native}
+       <a class="btn ghost icon sm dl" href={DESKTOP_DOWNLOAD_URL} target="_blank" rel="noopener noreferrer" title="Download the desktop app" aria-label="Download the desktop app">
+         <Download size={14} />
+       </a>
+    {:else if desktopUpdate.availableVersion}
+      <a class="btn ghost icon sm update-badge" href="#/settings" title={`Desktop update to v${desktopUpdate.availableVersion} available`} aria-label="Desktop update available">
         <Download size={14} />
+        <span class="dot"></span>
       </a>
-    {/if}
+     {/if}
     <span class="conn" data-state={fleet.conn} title={`Daemon: ${fleet.conn}`}></span>
   </div>
 
@@ -220,10 +226,13 @@
   </div>
 
   <div class="foot">
-    <a class="row" class:active={route.name === 'settings'} href="#/settings">
-      <Server size={15} />
-      <span>Hosts &amp; Settings</span>
-    </a>
+     <a class="row" class:active={route.name === 'settings'} href="#/settings">
+       <Server size={15} />
+       <span>Hosts &amp; Settings</span>
+      {#if fleet.native && desktopUpdate.availableVersion}
+        <span class="badge update-badge-text">v{desktopUpdate.availableVersion}</span>
+      {/if}
+     </a>
     <button class="btn ghost icon" title="Toggle theme" aria-label="Toggle theme" onclick={() => ui.toggleTheme()}>
       {#if ui.theme === 'dark'}<Sun size={15} />{:else}<Moon size={15} />{/if}
     </button>
@@ -258,6 +267,25 @@
   }
   .dl {
     margin-left: -4px;
+  }
+  .update-badge {
+    position: relative;
+    margin-left: -4px;
+    color: var(--accent);
+  }
+  .update-badge .dot {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+  .update-badge-text {
+    background: var(--accent-subtle);
+    color: var(--accent);
+    font-weight: 600;
   }
   .conn {
     width: 6px;

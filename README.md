@@ -235,6 +235,10 @@ macOS signing needs these repository secrets; the macOS jobs fail without them:
 - `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`: the Apple account email, an app-specific password
   (account.apple.com → Sign-In and Security) and the team ID (developer.apple.com → Membership) for
   notarization.
+- `TAURI_SIGNING_PRIVATE_KEY`: the private key for signing updater artifacts (`latest.json`, `.app.tar.gz`,
+  `.deb`, `.AppImage`, `-setup.exe`), generated via `npm run tauri signer generate`. The public key is
+  configured in `src-tauri/tauri.conf.json`. Local builds build without signing keys; release builds enable
+  updater artifact generation via `--config tauri.release.conf.json`.
 
 ## Status and known limitations
 
