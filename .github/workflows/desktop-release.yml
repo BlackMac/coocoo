@@ -3,6 +3,9 @@
 # The web UI's download icon links to /releases/latest, so every pushed `v*` tag ships installers;
 # install.sh downloads the CLI archives (coocoo-<target>.tar.gz) from the same release.
 # Run by hand with `cli_tag` set to only add the CLI archives to an existing release.
+# macOS app and CLI are signed with the Developer ID certificate and notarized; required secrets:
+# APPLE_CERTIFICATE (base64 .p12), APPLE_CERTIFICATE_PASSWORD, APPLE_ID, APPLE_PASSWORD
+# (app-specific password), APPLE_TEAM_ID. Setup: README.md → Releases.
 name: Desktop release
 
 on:
@@ -32,8 +35,23 @@ jobs:
           - platform: windows-latest
             args: ''
     runs-on: ${{ matrix.platform }}
+    env:
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     steps:
       - uses: actions/checkout@v4
+
+      # Tauri only warns and ships an unnotarized app when credentials are missing: fail instead.
+      - name: Apple signing secrets
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            [ -n "${!v}" ] || { echo "::error::secret $v is not set"; exit 1; }
+          done
 
       - name: Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
@@ -60,14 +78,19 @@ jobs:
           npm ci --prefix ui
           npm ci --prefix src-tauri
 
+      # On macOS Tauri imports APPLE_CERTIFICATE into a temporary keychain, signs the app with
+      # the hardened runtime, notarizes it with APPLE_ID/APPLE_PASSWORD/APPLE_TEAM_ID and staples
+      # the ticket. The identity overrides the config's ad-hoc "-" (kept for local builds) and is
+      # matched as a substring of the certificate's name.
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_SIGNING_IDENTITY: Developer ID Application
         with:
           projectPath: src-tauri
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'v__VERSION__' }}
           releaseName: Coocoo ${{ github.ref_type == 'tag' && github.ref_name || 'v__VERSION__' }}
-          releaseBody: 'Desktop app installers. Linux: .deb / .AppImage, macOS: .dmg (universal, ad-hoc signed, not notarized: after the first blocked launch allow it under System Settings → Privacy & Security → Open Anyway, again after each update), Windows: -setup.exe.'
+          releaseBody: 'Desktop app installers. Linux: .deb / .AppImage, macOS: .dmg (universal, signed and notarized), Windows: -setup.exe.'
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
@@ -87,6 +110,12 @@ jobs:
             name: macos-universal
             targets: aarch64-apple-darwin,x86_64-apple-darwin
     runs-on: ${{ matrix.platform }}
+    env:
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -114,6 +143,26 @@ jobs:
       - name: Web UI
         run: npm ci --prefix ui && npm run build --prefix ui
 
+      - name: Signing keychain
+        if: runner.os == 'macOS'
+        run: |
+          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            [ -n "${!v}" ] || { echo "::error::secret $v is not set"; exit 1; }
+          done
+          kc="$RUNNER_TEMP/signing.keychain-db"
+          kc_pass=$(openssl rand -hex 24)
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$kc_pass" "$kc"
+          security set-keychain-settings -lut 3600 "$kc"
+          security unlock-keychain -p "$kc_pass" "$kc"
+          security import "$RUNNER_TEMP/cert.p12" -k "$kc" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kc_pass" "$kc"
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+          identity=$(security find-identity -v -p codesigning "$kc" | awk -F'"' '/Developer ID Application/ { print $2; exit }')
+          [ -n "$identity" ] || { echo "::error::no Developer ID Application identity in APPLE_CERTIFICATE"; exit 1; }
+          echo "SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+
       - name: Build
         shell: bash
         run: |
@@ -125,7 +174,17 @@ jobs:
           mkdir -p dist
           if [ "$RUNNER_OS" = macOS ]; then
             lipo -create -output dist/coocoo target/aarch64-apple-darwin/release/coocoo target/x86_64-apple-darwin/release/coocoo
-            codesign --force --sign - dist/coocoo
+            codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" dist/coocoo
+            # A bare binary cannot be stapled: Gatekeeper looks the ticket up online.
+            ditto -c -k dist/coocoo "$RUNNER_TEMP/coocoo-notarize.zip"
+            result=$(xcrun notarytool submit "$RUNNER_TEMP/coocoo-notarize.zip" --wait --output-format json \
+              --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID")
+            echo "$result"
+            if [ "$(echo "$result" | jq -r .status)" != Accepted ]; then
+              xcrun notarytool log "$(echo "$result" | jq -r .id)" \
+                --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID"
+              exit 1
+            fi
           else
             cp "target/$TARGETS/release/coocoo" dist/coocoo
           fi

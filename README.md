@@ -218,14 +218,23 @@ cd src-tauri && npm install && npm run build   # deb / AppImage / dmg / nsis bun
 ```
 
 Releases: pushing a `v*` tag (or running *Desktop release* manually) makes
-`.github/workflows/desktop-release.yml` build the Linux, macOS (universal, ad-hoc signed) and Windows
-installers plus the `coocoo` CLI archives (`coocoo-linux-x86_64.tar.gz`, `coocoo-linux-aarch64.tar.gz`,
-static musl; `coocoo-macos-universal.tar.gz`) that `install.sh` downloads, and publish them as a
-GitHub release. Running it manually with *cli_tag* (e.g. `v0.4.0`) only adds the CLI archives to that
-existing release. The ad-hoc signature avoids macOS calling the app
-"damaged" on Apple Silicon; it is not notarized, so macOS blocks the first launch: open it once, then
-allow it under System Settings → Privacy & Security → "Open Anyway" (again after every update, since
-each build has a new signature).
+`.github/workflows/desktop-release.yml` build the Linux, macOS (universal, signed and notarized) and
+Windows installers plus the `coocoo` CLI archives (`coocoo-linux-x86_64.tar.gz`,
+`coocoo-linux-aarch64.tar.gz`, static musl; `coocoo-macos-universal.tar.gz`, signed and notarized)
+that `install.sh` downloads, and publish them as a GitHub release. Running it manually with
+*cli_tag* (e.g. `v0.4.0`) only adds the CLI archives to that existing release. Local `npm run build`
+on a Mac stays ad-hoc signed (`signingIdentity: "-"` in `src-tauri/tauri.conf.json`).
+
+macOS signing needs these repository secrets; the macOS jobs fail without them:
+
+- `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`: a *Developer ID Application* certificate
+  (developer.apple.com → Certificates, or Xcode → Settings → Accounts → Manage Certificates),
+  exported with its private key from Keychain Access as `.p12`, then
+  `base64 -i cert.p12 | gh secret set APPLE_CERTIFICATE` and
+  `gh secret set APPLE_CERTIFICATE_PASSWORD`.
+- `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`: the Apple account email, an app-specific password
+  (account.apple.com → Sign-In and Security) and the team ID (developer.apple.com → Membership) for
+  notarization.
 
 ## Status and known limitations
 
