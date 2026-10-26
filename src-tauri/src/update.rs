@@ -152,7 +152,7 @@ impl UpdateManager {
 
         // Check if updater is supported in this build/packaging.
         #[cfg(all(not(target_os = "macos"), not(windows), not(debug_assertions)))]
-        if tauri_utils::platform::bundle_type().is_none() {
+        if tauri::utils::platform::bundle_type().is_none() {
             let st = UpdateStatus::Unsupported {
                 current_version,
                 reason: "Auto-update is available for AppImage, deb, macOS, and Windows installs.".into(),
