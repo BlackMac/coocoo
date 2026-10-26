@@ -7,6 +7,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod backend;
+mod update;
 mod watch;
 
 use std::sync::Arc;
@@ -29,14 +30,14 @@ const MAIN_WINDOW: &str = "main";
 /// Upper bound for a graceful daemon stop on quit; agents stay resumable either way.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 
-/// App-wide state shared by window, tray and run-loop handlers.
-struct Shell {
+ /// App-wide state shared by window, tray and run-loop handlers.
+pub(crate) struct Shell {
     /// The in-process daemon (`None` when attached to an external one).
-    daemon: Option<Arc<Daemon>>,
+    pub(crate) daemon: Option<Arc<Daemon>>,
     /// Set once the daemon shutdown on quit has started.
-    quitting: AtomicBool,
+    pub(crate) quitting: AtomicBool,
     /// Whether the main window has keyboard focus (notifications are skipped while it has).
-    focused: Arc<AtomicBool>,
+    pub(crate) focused: Arc<AtomicBool>,
 }
 
 fn main() {
@@ -44,7 +45,8 @@ fn main() {
     let app = tauri::Builder::default()
         // Must be first: a second launch hands over to the running instance and exits.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| show_main_window(app)))
-        .plugin(
+        .plugin(tauri_plugin_updater::Builder::new().build())
+         .plugin(
             tauri_plugin_window_state::Builder::default()
                 // Visibility is not restored: quitting from the tray leaves the window hidden.
                 .with_state_flags(StateFlags::all() - StateFlags::VISIBLE)
@@ -54,8 +56,13 @@ fn main() {
         // Without the plugin's injected click handler: it would turn target=_blank clicks into
         // `plugin:opener|open_url` IPC calls, which the webview's capability does not grant, so
         // links did nothing. They reach `on_new_window` below instead.
-        .plugin(tauri_plugin_opener::Builder::new().open_js_links_on_click(false).build())
-        .setup(setup)
+         .plugin(tauri_plugin_opener::Builder::new().open_js_links_on_click(false).build())
+        .invoke_handler(tauri::generate_handler![
+            update::update_status,
+            update::update_check,
+            update::update_install,
+        ])
+         .setup(setup)
         .on_window_event(on_window_event)
         .build(tauri::generate_context!())
         .expect("failed to initialize the Coocoo desktop app");
@@ -71,11 +78,14 @@ fn init_tracing() {
 fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     let backend = tauri::async_runtime::block_on(Backend::connect(Paths::from_env()))?;
     let focused = Arc::new(AtomicBool::new(false));
-    app.manage(Shell { daemon: backend.daemon.clone(), quitting: AtomicBool::new(false), focused: focused.clone() });
-
-    create_main_window(app.handle(), &backend)?;
-    let status_item = create_tray(app.handle())?;
-    watch::spawn(app.handle().clone(), &backend, status_item, focused);
+     app.manage(Shell { daemon: backend.daemon.clone(), quitting: AtomicBool::new(false), focused: focused.clone() });
+    let update_manager = Arc::new(update::UpdateManager::new(app.handle().clone()));
+    app.manage(update_manager.clone());
+ 
+     create_main_window(app.handle(), &backend)?;
+    let status_item = create_tray(app.handle(), &update_manager)?;
+     watch::spawn(app.handle().clone(), &backend, status_item, focused);
+    update::spawn_background_checker(update_manager.clone());
     // Clicking a notification brings the app forward.
     let handle = app.handle().clone();
     app.notification().on_action(move |_| show_main_window(&handle))?;
@@ -123,18 +133,29 @@ fn create_main_window(app: &AppHandle, backend: &Backend) -> tauri::Result<()> {
 }
 
 /// Tray icon with "Show", a live agent summary line and "Quit". Returns the summary item.
-fn create_tray(app: &AppHandle) -> tauri::Result<MenuItem<tauri::Wry>> {
-    let show = MenuItem::with_id(app, "show", "Show Coocoo", true, None::<&str>)?;
-    let status = MenuItem::with_id(app, "status", watch::IDLE_LABEL, false, None::<&str>)?;
+fn create_tray(app: &AppHandle, update_manager: &Arc<update::UpdateManager>) -> tauri::Result<MenuItem<tauri::Wry>> {
+     let show = MenuItem::with_id(app, "show", "Show Coocoo", true, None::<&str>)?;
+     let status = MenuItem::with_id(app, "status", watch::IDLE_LABEL, false, None::<&str>)?;
+    let update_item = MenuItem::with_id(app, "update", "Update available…", false, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Coocoo", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &status, &PredefinedMenuItem::separator(app)?, &quit])?;
-    let mut tray = TrayIconBuilder::with_id(watch::TRAY_ID)
-        .tooltip("Coocoo")
-        .menu(&menu)
-        .show_menu_on_left_click(false)
-        .on_menu_event(|app, event| match event.id().as_ref() {
-            "show" => show_main_window(app),
-            "quit" => app.exit(0),
+    let menu = Menu::with_items(app, &[&show, &status, &update_item, &PredefinedMenuItem::separator(app)?, &quit])?;
+    update_manager.set_tray(menu.clone(), update_item.clone());
+    let update_mgr = update_manager.clone();
+     let mut tray = TrayIconBuilder::with_id(watch::TRAY_ID)
+         .tooltip("Coocoo")
+         .menu(&menu)
+         .show_menu_on_left_click(false)
+        .on_menu_event(move |app, event| match event.id().as_ref() {
+             "show" => show_main_window(app),
+            "update" => {
+                let mgr = update_mgr.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(err) = mgr.install_and_restart().await {
+                        tracing::error!("tray update failed: {err}");
+                    }
+                });
+            }
+             "quit" => app.exit(0),
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {

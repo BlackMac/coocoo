@@ -5,7 +5,8 @@
   import { notificationsEnabled, notificationsSupported, setNotifications } from '../lib/notify';
   import { ui, type ThemePref } from '../lib/ui.svelte';
   import type { HostInfo, InsightsSettings } from '../lib/protocol';
-  import { Copy, Laptop, Monitor, Moon, Plus, Server, Sun, Trash2, Cloud, Bell } from '../lib/icons';
+  import { Copy, Laptop, Monitor, Moon, Plus, Server, Sun, Trash2, Cloud, Bell, Check, CircleAlert, Download, RefreshCw, RotateCcw } from '../lib/icons';
+  import { desktopUpdate } from '../lib/desktop-update.svelte';
   import HostDot from '../components/HostDot.svelte';
   import InlineEdit from '../components/InlineEdit.svelte';
 
@@ -182,6 +183,81 @@
         <div class="card pad row">
           <span class="lbl"><Bell size={14} /> Notify when an agent needs input or finishes while this tab is in the background</span>
           <label class="switch"><input type="checkbox" checked={notify} onchange={(e) => toggleNotify(e.currentTarget.checked)} /></label>
+        </div>
+      </section>
+     {/if}
+
+    {#if fleet.native}
+      <section>
+        <h2 class="section-title">Desktop app</h2>
+        <div class="card pad update-card">
+          <div class="update-row">
+            <div class="update-info">
+              <span class="update-title">Coocoo Desktop</span>
+              <span class="faint mono">v{desktopUpdate.currentVersion ?? __APP_VERSION__}</span>
+            </div>
+            <div class="update-actions">
+              {#if desktopUpdate.isAvailable}
+                <button
+                  class="btn sm primary"
+                  onclick={() => {
+                    ui.dialog = {
+                      kind: 'confirm',
+                      title: `Update to v${desktopUpdate.availableVersion}`,
+                      message: 'The app will download the update, pause any active agents, restart, and resume them. Proceed?',
+                      action: 'Install and restart',
+                      run: () => desktopUpdate.install(),
+                    };
+                  }}
+                >
+                  <Download size={13} /> Install v{desktopUpdate.availableVersion} and restart
+                </button>
+              {:else if desktopUpdate.isDownloading}
+                <button class="btn sm primary" disabled>
+                  <span class="spin"><RefreshCw size={13} /></span>
+                  {desktopUpdate.status && desktopUpdate.status.status === 'downloading' && desktopUpdate.status.percent != null
+                    ? `Downloading ${desktopUpdate.status.percent}%…`
+                    : 'Downloading…'}
+                </button>
+              {:else if desktopUpdate.isReady}
+                <button class="btn sm primary" onclick={() => desktopUpdate.install()}>
+                  <RotateCcw size={13} /> Restart now to update
+                </button>
+              {:else}
+                <button
+                  class="btn sm"
+                  disabled={desktopUpdate.isChecking}
+                  onclick={() => desktopUpdate.check()}
+                >
+                  <span class={desktopUpdate.isChecking ? 'spin' : ''}><RefreshCw size={13} /></span>
+                  {desktopUpdate.isChecking ? 'Checking…' : 'Check for updates'}
+                </button>
+              {/if}
+            </div>
+          </div>
+
+          {#if desktopUpdate.status?.status === 'available'}
+            <div class="update-banner">
+              <div class="update-badge-label">
+                <Check size={14} /> Version {desktopUpdate.status.version} is available!
+              </div>
+              {#if desktopUpdate.status.body}
+                <div class="update-notes faint">{desktopUpdate.status.body}</div>
+              {/if}
+            </div>
+          {:else if desktopUpdate.status?.status === 'upToDate'}
+            <div class="update-meta faint">
+              Coocoo is up to date (checked {new Date(desktopUpdate.status.checkedAt).toLocaleTimeString()}).
+            </div>
+          {:else if desktopUpdate.status?.status === 'error'}
+            <div class="update-error">
+              <CircleAlert size={14} /> {desktopUpdate.status.message}
+            </div>
+          {:else if desktopUpdate.status?.status === 'unsupported'}
+            <div class="update-meta faint">
+              {desktopUpdate.status.reason}
+            </div>
+          {/if}
         </div>
       </section>
     {/if}
@@ -452,5 +528,66 @@
     .pair code {
       flex-basis: 100%;
     }
+  }
+  .update-card {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .update-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  .update-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .update-title {
+    font-weight: 500;
+  }
+  .update-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .update-banner {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+    background: var(--accent-subtle);
+    border: 1px solid var(--accent);
+  }
+  .update-badge-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 500;
+    color: var(--accent);
+  }
+  .update-notes {
+    font-size: var(--fs-xs);
+    white-space: pre-wrap;
+    max-height: 120px;
+    overflow-y: auto;
+  }
+  .update-meta {
+    font-size: var(--fs-xs);
+  }
+  .update-error {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--fs-xs);
+    color: var(--red);
+  }
+  .spin {
+    display: inline-flex;
+    animation: spin 0.8s linear infinite;
   }
 </style>

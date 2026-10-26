@@ -20,8 +20,8 @@
   import ProjectView from './views/ProjectView.svelte';
   import AgentView from './views/AgentView.svelte';
   import SettingsView from './views/SettingsView.svelte';
-  import { track } from './lib/track';
-
+   import { track } from './lib/track';
+  import { desktopUpdate } from './lib/desktop-update.svelte';
   // Heavy and rarely opened: loaded on first visit.
   const StatsView = () => import('./views/StatsView.svelte');
   const WorkflowsView = () => import('./views/WorkflowsView.svelte');
@@ -29,9 +29,10 @@
   const endpoint = resolveEndpoint();
   let token = $state(endpoint.token);
 
-  $effect(() => {
-    if (token && !fleet.client) fleet.start(endpoint.wsUrl, token, endpoint.native);
-  });
+   $effect(() => {
+     if (token && !fleet.client) fleet.start(endpoint.wsUrl, token, endpoint.native);
+    if (endpoint.native) desktopUpdate.start();
+   });
 
   const route = $derived(router.route);
 
