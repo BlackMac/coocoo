@@ -127,24 +127,31 @@ impl Workspace {
 
 /// Read and validate `<project>/.coocoo/actions.toml`; no file = no actions, no errors.
 pub(crate) async fn load(project: &Path) -> Loaded {
-    let file = project.join(DIR).join(FILE);
+    match read_config(project, FILE).await {
+        Ok(Some(src)) => parse(&src),
+        Ok(None) => Loaded::default(),
+        Err(message) => Loaded::error(message),
+    }
+}
+
+/// `<project>/.coocoo/<name>` as text; `None` when there is no such file, `Err` with a message
+/// for the UI when it cannot be read or is too large.
+pub(crate) async fn read_config(project: &Path, name: &str) -> Result<Option<String>, String> {
+    let file = project.join(DIR).join(name);
     let meta = match tokio::fs::metadata(&file).await {
         Ok(meta) => meta,
         Err(err) if matches!(err.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => {
-            return Loaded::default();
+            return Ok(None);
         }
-        Err(err) => return Loaded::error(format!("{FILE}: {err}")),
+        Err(err) => return Err(format!("{name}: {err}")),
     };
     if !meta.is_file() {
-        return Loaded::error(format!("{FILE}: not a file"));
+        return Err(format!("{name}: not a file"));
     }
     if meta.len() > MAX_SIZE {
-        return Loaded::error(format!("{FILE}: larger than {} KiB", MAX_SIZE / 1024));
+        return Err(format!("{name}: larger than {} KiB", MAX_SIZE / 1024));
     }
-    match tokio::fs::read_to_string(&file).await {
-        Ok(src) => parse(&src),
-        Err(err) => Loaded::error(format!("{FILE}: {err}")),
-    }
+    tokio::fs::read_to_string(&file).await.map(Some).map_err(|err| format!("{name}: {err}"))
 }
 
 #[derive(Deserialize)]
@@ -290,14 +297,14 @@ fn slug(name: &str) -> Option<String> {
 }
 
 /// `:LINE:COL` (1-based) of a byte offset.
-fn position(src: &str, offset: usize) -> String {
+pub(crate) fn position(src: &str, offset: usize) -> String {
     let before = &src[..offset.min(src.len())];
     let line = before.matches('\n').count() + 1;
     let col = before.rsplit('\n').next().map_or(0, |l| l.chars().count()) + 1;
     format!(":{line}:{col}")
 }
 
-fn first_line(message: &str) -> &str {
+pub(crate) fn first_line(message: &str) -> &str {
     message.lines().next().unwrap_or(message).trim()
 }
 

@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use coocoo_proto::util::now_ms;
 use coocoo_proto::{AgentDetail, AgentStatus, AgentSummary, SlashCommand, TodoPhase, TodoSummary, UiRequest};
@@ -207,6 +207,19 @@ impl State {
 
     pub fn is_live(&self) -> bool {
         self.life == Life::Live
+    }
+
+    /// The idle sweep may stop this agent's process: live, idle for `after` with nothing
+    /// pending, and not in the project directory of a project in `keep_awake` (ids of projects
+    /// whose persona sets `keepAwake`; agents in their worktrees are not kept awake).
+    pub fn hibernatable(&self, after: Duration, keep_awake: &HashSet<String>) -> bool {
+        let kept = self.summary.worktree.is_none() && self.summary.project_id.as_ref().is_some_and(|p| keep_awake.contains(p));
+        self.is_live()
+            && !self.busy()
+            && self.requests.is_empty()
+            && self.subagents.is_empty()
+            && self.idle_since.elapsed() >= after
+            && !kept
     }
 
     fn derive(&self) -> AgentStatus {
@@ -530,6 +543,29 @@ mod tests {
             assert_eq!(st.summary.status, after);
             assert_eq!(st.summary.pending_requests, 0);
         }
+    }
+
+    #[test]
+    fn keep_awake_projects_are_never_hibernated() {
+        let idle_in = |project: Option<&str>, worktree: bool| {
+            let mut s = summary(AgentStatus::Idle);
+            s.project_id = project.map(str::to_owned);
+            s.worktree = worktree.then(|| coocoo_proto::WorktreeRef { path: "/wt".into(), branch: "b".into(), base: "main".into() });
+            State::new(s, Life::Live)
+        };
+        let keep: HashSet<String> = ["orlando".to_owned()].into();
+        let none = HashSet::new();
+        assert!(idle_in(Some("orlando"), false).hibernatable(Duration::ZERO, &none));
+        assert!(!idle_in(Some("orlando"), false).hibernatable(Duration::ZERO, &keep));
+        // Other projects, loose agents and the project's worktrees still sleep.
+        assert!(idle_in(Some("other"), false).hibernatable(Duration::ZERO, &keep));
+        assert!(idle_in(None, false).hibernatable(Duration::ZERO, &keep));
+        assert!(idle_in(Some("orlando"), true).hibernatable(Duration::ZERO, &keep));
+        // Not idle long enough, or not live: never, with or without keepAwake.
+        assert!(!idle_in(Some("other"), false).hibernatable(Duration::from_secs(3600), &keep));
+        let mut busy = idle_in(Some("other"), false);
+        busy.begin_prompt();
+        assert!(!busy.hibernatable(Duration::ZERO, &none));
     }
 
     #[test]

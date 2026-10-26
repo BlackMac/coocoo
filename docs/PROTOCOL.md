@@ -71,8 +71,9 @@ Push delivery: each daemon pushes only its own agents' events (`agent.request` �
 | `projects.add` | `{ path, name?, create?: bool, cloneUrl? }` | `Project` (directory must exist; git optional). `create`: make `path` as a new directory first (`conflict` if it exists). `cloneUrl`: `git clone` it into `path` first (`path` must not exist or be empty; up to 600 s). Both create missing parents |
 | `projects.update` | `{ id, name?, devUrls? }` | `Project` |
 | `projects.remove` | `{ id }` | `{}` (never touches files) |
-| `projects.refresh` | `{ id }` | `Project` (recomputes `git`, `icon` and `actions`) |
+| `projects.refresh` | `{ id }` | `Project` (recomputes `git`, `icon`, `actions` and `persona`) |
 | `projects.icon` | `{ id }` | `{ mime, data: base64 }` — the file named by `Project.icon` (`not_found` without one). `icon` is picked from the project's favicon/app icon/logo at the usual places (root, `public/`, `public/icons/`, `static/`, `static/icons/`, `app/`, `src/app/`, `assets/`, `assets/icons/`, `src/assets/`, `src/assets/icons/`, `src/`, `web/`, `web/icons/`, `src-tauri/icons/`, Android `[app/]src/main/res/mipmap-xxxhdpi/` (`ic_launcher`), `resources/`, `build/`, `.github/`, `docs/`), below the root and, ranked after it, below each top-level directory (monorepos; hidden ones, `node_modules`, `target`, `vendor`, `dist`, `build`, `Pods`, `DerivedData` skipped): icons before logos, SVG before PNG before WebP before ICO, ≤ 512 KiB; re-detected on every git refresh |
+| `projects.personaAvatar` | `{ id }` | `{ mime, data: base64 }` — the image named by the persona's `avatar` (`image/png`, `image/jpeg` or `image/webp`, ≤ 1 MiB); `not_found` without `Project.persona.hasAvatar` |
 
 `Project.git` (`GitInfo`) describes the main checkout (`branch`, `head`, `upstream`, `ahead`/`behind`
 against it, `changed`, `lastCommit`) plus `fetchedAt` (newest `FETCH_HEAD` mtime over all
@@ -158,6 +159,30 @@ Clients carry out `prompt` and `url` actions themselves (`agents.prompt`/`agents
 |---|---|---|
 | `actions.run` | `{ projectId, actionId, cwd, cols?, rows? }` | `TerminalInfo` — starts the `run` action's command in a new terminal in `cwd` (the project directory, or an agent's directory inside it or one of its worktrees; else `invalid_params`) joined with the action's `cwd` (must exist there and stay inside). Env: `COOCOO_PROJECT_DIR` (main checkout), `COOCOO_WORKDIR` (`cwd`), `COOCOO_ACTION` (id). An earlier run of the same action for the same `cwd` is stopped first (SIGHUP, SIGKILL after 5 s) and removed; other directories run alongside. `TerminalInfo.action.base` is `cwd` as given |
 
+### personas — `coocoo-workspace`
+A project can be the home of an assistant: `.coocoo/persona.toml` in its directory (format in the
+README) names it. Coocoo treats it as metadata — it shows the persona in the project and agent
+lists and honors `keepAwake`, nothing else. The file is read and watched exactly like
+`actions.toml` (same name-filtered watch on `.coocoo/`) and published as runtime state, not stored
+in `projects.json`:
+
+- `Project.persona?: Persona` — `{ name, color?, voice?, wakeWord?, keepAwake, hasAvatar, extra? }`.
+  `name` is required (trimmed, ≤ 80 characters; without a valid one there is no persona). `color`
+  is `#RRGGBB`; `voice` is passed through verbatim; `wakeWord` is trimmed; `keepAwake` defaults to
+  `false`. `hasAvatar` is `true` when `avatar` (a `.png`, `.jpg`/`.jpeg` or `.webp` path relative to
+  `.coocoo/`, never leaving it, symlinks included) names a non-empty file of at most 1 MiB; fetch
+  it with `projects.personaAvatar`. Every other top-level key lands in `extra` as JSON (tables
+  become objects, dates strings).
+- `Project.personaErrors: String[]` (absent when empty) — `persona.toml:LINE:COL – …`. A key
+  with a wrong type or value is dropped and reported, the rest stays; a syntax error or missing
+  `name` leaves no persona.
+
+`keepAwake = true`: the idle sweep (`agents.hibernateAfterSecs`) never hibernates agents of the
+project that work in its directory (`AgentSummary.projectId` is the project and the agent has no
+`worktree`); agents in its worktrees hibernate as usual. `agents.hibernate` still works. While some
+agent is due for hibernation, the sweep reads the projects (`projects.list`) every 30 s; if that
+fails, nothing hibernates in that round.
+
 ### agents — `coocoo-agents` (omp only)
 | Method | Params | Result |
 |---|---|---|
@@ -179,7 +204,7 @@ Clients carry out `prompt` and `url` actions themselves (`agents.prompt`/`agents
 | `agents.subagentTimeline` | `{ id, sessionFile, live? }` | `TimelinePage` — read-only transcript of one of the agent's subagents, read from its omp session file (`Subagent.sessionFile`; only files below the agent's own session directory, else `forbidden`); newest 500 items. `live`: the subagent still runs, so unanswered tool calls show as running instead of interrupted |
 | `agents.image` | `{ id, name }` | `{ mime, data }` (base64) — one image of a user message or tool result (`TimelineImage.name`, `<seq>-<index>.<png\|jpg\|gif\|webp>`; any other name is `invalid_params`), stored in the agent's data directory and deleted with the agent |
 | `agents.images` | `{ id }` | `TimelineItem[]` — every item of the agent's timeline that has `images` (user messages and tool calls), oldest first, independent of timeline paging; tool items come without `args`, `output` and `subagents`. The side panel's Images tab |
-| `agents.hibernate` | `{ id }` | `AgentSummary` |
+| `agents.hibernate` | `{ id }` | `AgentSummary` — also for agents a persona keeps awake |
 | `agents.archive` | `{ id }` | `AgentSummary` (status `stopped`, process gone, read-only) |
 | `agents.delete` | `{ id, removeWorktree?: bool, deleteBranch?: bool }` | `{}` — `deleteBranch` (with `removeWorktree`) also deletes the worktree's branch |
 

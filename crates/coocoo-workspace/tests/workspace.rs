@@ -708,6 +708,35 @@ async fn actions_file_is_watched_and_runs_in_worktrees() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn persona_file_is_watched_and_serves_its_avatar() {
+    let e = env();
+    let repo = e.root.join("orlando");
+    std::fs::create_dir_all(repo.join(".coocoo")).unwrap();
+    std::fs::write(repo.join(".coocoo/face.png"), b"\x89PNG").unwrap();
+    let project: Project = call(&e.ws, "projects.add", json!({ "path": repo })).await;
+    assert!(project.persona.is_none() && project.persona_errors.is_empty());
+    let err = e.ws.dispatch("projects.personaAvatar", json!({ "id": project.id })).await.unwrap_err();
+    assert_eq!(err.code, "not_found");
+    let mut rx = e.emitter.subscribe();
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    while rx.try_recv().is_ok() {}
+
+    std::fs::write(repo.join(".coocoo/persona.toml"), "name = \"Orlando\"\navatar = \"face.png\"\nkeepAwake = true\n").unwrap();
+    let p: Project = next_event(&mut rx, "project.updated", |p: &Project| p.id == project.id && p.persona.is_some()).await;
+    let persona = p.persona.unwrap();
+    assert_eq!((persona.name.as_str(), persona.keep_awake, persona.has_avatar), ("Orlando", true, true));
+    let avatar: Value = call(&e.ws, "projects.personaAvatar", json!({ "id": project.id })).await;
+    assert_eq!(avatar, json!({ "mime": "image/png", "data": "iVBORw==" }));
+
+    // A broken edit drops the persona and reports where; runtime state is never persisted.
+    std::fs::write(repo.join(".coocoo/persona.toml"), "color = \"#123456\"\n").unwrap();
+    let p: Project = next_event(&mut rx, "project.updated", |p: &Project| p.id == project.id && p.persona.is_none()).await;
+    assert_eq!(p.persona_errors, ["persona.toml:1:1 – `name` is required"]);
+    let stored = std::fs::read_to_string(e.root.join("home/data/projects.json")).unwrap();
+    assert!(stored.contains("orlando") && !stored.contains("persona"), "{stored}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn stats_sample_and_watch() {
     let emitter = Emitter::new("host-s", 64);
     let child = Command::new("sleep").arg("5").spawn().unwrap();

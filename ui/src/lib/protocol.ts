@@ -134,6 +134,25 @@ export interface Project {
   actions?: ProjectAction[];
   /** Problems in that file (`actions.toml:LINE:COL – …`). */
   actionErrors?: string[];
+  /** From `.coocoo/persona.toml`: the assistant this project is the home of. */
+  persona?: Persona;
+  /** Problems in that file (`persona.toml:LINE:COL – …`). */
+  personaErrors?: string[];
+}
+
+export interface Persona {
+  name: string;
+  /** `#RRGGBB`. */
+  color?: string;
+  /** Uninterpreted. */
+  voice?: string;
+  wakeWord?: string;
+  /** The idle hibernation never stops the project's agents (worktrees excepted). */
+  keepAwake: boolean;
+  /** Fetch it with `projects.personaAvatar`. */
+  hasAvatar: boolean;
+  /** Keys Coocoo does not know. */
+  extra?: Record<string, unknown>;
 }
 
 export interface GitInfo {
@@ -1256,6 +1275,7 @@ export interface Methods {
   'projects.remove': [{ id: string }, Ok];
   'projects.refresh': [{ id: string }, Project];
   'projects.icon': [{ id: string }, { mime: string; data: string }];
+  'projects.personaAvatar': [{ id: string }, { mime: string; data: string }];
   'git.diff': [{ cwd: string; base?: string }, DiffResult];
   'git.diffStat': [{ cwd: string; base?: string }, DiffStat];
   'git.log': [{ cwd: string; limit?: number }, CommitInfo[]];

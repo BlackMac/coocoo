@@ -10,6 +10,7 @@
   import StatusDot from './StatusDot.svelte';
   import HostDot from './HostDot.svelte';
   import Menu from './Menu.svelte';
+  import PersonaAvatar from './PersonaAvatar.svelte';
 
   /** Desktop installers (deb, AppImage, dmg, nsis) built by .github/workflows/desktop-release.yml. */
   const DESKTOP_DOWNLOAD_URL = 'https://github.com/BlackMac/coocoo/releases/latest';
@@ -183,19 +184,19 @@
         {@const k = key(p.hostId, p.id)}
         {@const open = !collapsed[k]}
         {@const sum = summaryState(agents)}
-        {@const icon = fleet.projectIcon(p)}
+        {@const icon = p.persona ? undefined : fleet.projectIcon(p)}
         <div class="project">
           <div class="row prow" class:active={activeProject === k}>
             <button class="caret" class:open aria-label={open ? 'Collapse' : 'Expand'} aria-expanded={open} onclick={() => toggle(k)}>
               <ChevronRight size={13} />
             </button>
             {#if renaming === `p:${k}`}
-              {#if icon}<img class="picon" src={icon} alt="" />{:else}<FolderGit2 size={14} />{/if}
+              {#if p.persona}<PersonaAvatar project={p} />{:else if icon}<img class="picon" src={icon} alt="" />{:else}<FolderGit2 size={14} />{/if}
               {@render renameInput(p.name, 'Project name', (name) => renameProject(p, name))}
             {:else}
-              <a class="plink" href={href({ name: 'project', host: p.hostId, id: p.id })}>
-                {#if icon}<img class="picon" src={icon} alt="" />{:else}<FolderGit2 size={14} />{/if}
-                <span class="ellipsis">{p.name}</span>
+              <a class="plink" href={href({ name: 'project', host: p.hostId, id: p.id })} title={p.persona ? `${p.persona.name} · project ${p.name}` : undefined}>
+                {#if p.persona}<PersonaAvatar project={p} />{:else if icon}<img class="picon" src={icon} alt="" />{:else}<FolderGit2 size={14} />{/if}
+                <span class="ellipsis">{p.persona?.name ?? p.name}</span>
               </a>
               {#if !open && sum}<StatusDot state={sum} size={6} />{/if}
               {#if agents.length}<span class="cnt num">{agents.length}</span>{/if}

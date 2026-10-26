@@ -2,8 +2,8 @@
 //!
 //! Watched per project: git metadata (HEAD, index, refs, worktree registry) for the git refresh,
 //! and — non-recursively, filtered by name — the project directory and its `.coocoo/` for the
-//! actions file. Never the working tree as a whole, so idle repositories cost nothing and large
-//! checkouts don't exhaust inotify watches.
+//! actions and persona files. Never the working tree as a whole, so idle repositories cost
+//! nothing and large checkouts don't exhaust inotify watches.
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -22,23 +22,23 @@ const DEBOUNCE: Duration = Duration::from_millis(400);
 /// What a watch is for, and so which refresh an event under it schedules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Kind {
-    /// Git metadata → `projects.rs` refresh (git info, icon, actions).
+    /// Git metadata → `projects.rs` refresh (git info, icon, actions, persona).
     Git,
-    /// `.coocoo/actions.toml` → reload of the actions only.
-    Actions,
+    /// `.coocoo/actions.toml` or `persona.toml` → reload of the actions and persona only.
+    Config,
 }
 
 /// A path to watch. With `only`, an event counts only for the watched path itself or its
-/// direct child of that name (a non-recursive directory watch filtered to one entry).
+/// direct children of those names (a non-recursive directory watch filtered to some entries).
 pub(crate) struct Target {
     pub path: PathBuf,
     pub mode: RecursiveMode,
-    pub only: Option<&'static str>,
+    pub only: Option<&'static [&'static str]>,
 }
 
 struct Route {
     root: PathBuf,
-    only: Option<&'static str>,
+    only: Option<&'static [&'static str]>,
     id: String,
     kind: Kind,
 }
@@ -47,7 +47,11 @@ impl Route {
     fn matches(&self, path: &Path) -> bool {
         match self.only {
             None => path.starts_with(&self.root),
-            Some(name) => path == self.root || (path.parent() == Some(&self.root) && path.file_name() == Some(OsStr::new(name))),
+            Some(names) => {
+                path == self.root
+                    || (path.parent() == Some(&self.root)
+                        && path.file_name().is_some_and(|f| names.iter().any(|n| f == OsStr::new(n))))
+            }
         }
     }
 }
@@ -251,13 +255,15 @@ pub(crate) fn targets(git_dir: &Path, common_dir: &Path) -> Vec<Target> {
     out
 }
 
-/// Paths to watch for `<project>/.coocoo/actions.toml`: the project directory (to see `.coocoo`
-/// appear) and `.coocoo` itself once it exists, each filtered to that one entry.
-pub(crate) fn action_targets(project: &Path) -> Vec<Target> {
-    let mut out = vec![Target { path: project.to_path_buf(), mode: RecursiveMode::NonRecursive, only: Some(crate::actions::DIR) }];
+/// Paths to watch for `<project>/.coocoo/{actions,persona}.toml`: the project directory (to see
+/// `.coocoo` appear) and `.coocoo` itself once it exists, each filtered to those entries.
+pub(crate) fn config_targets(project: &Path) -> Vec<Target> {
+    const DIR: &[&str] = &[crate::actions::DIR];
+    const FILES: &[&str] = &[crate::actions::FILE, crate::persona::FILE];
+    let mut out = vec![Target { path: project.to_path_buf(), mode: RecursiveMode::NonRecursive, only: Some(DIR) }];
     let dir = project.join(crate::actions::DIR);
     if dir.is_dir() {
-        out.push(Target { path: dir, mode: RecursiveMode::NonRecursive, only: Some(crate::actions::FILE) });
+        out.push(Target { path: dir, mode: RecursiveMode::NonRecursive, only: Some(FILES) });
     }
     out
 }
@@ -268,11 +274,14 @@ mod tests {
 
     #[test]
     fn filtered_routes_match_only_their_entry() {
-        let route = Route { root: PathBuf::from("/p"), only: Some(".coocoo"), id: "x".into(), kind: Kind::Actions };
+        let route = Route { root: PathBuf::from("/p"), only: Some(&[".coocoo"]), id: "x".into(), kind: Kind::Config };
         assert!(route.matches(Path::new("/p/.coocoo")));
         assert!(route.matches(Path::new("/p")));
         assert!(!route.matches(Path::new("/p/Cargo.toml")));
         assert!(!route.matches(Path::new("/p/.coocoo/other")));
+        let files = Route { root: PathBuf::from("/p/.coocoo"), only: Some(&["actions.toml", "persona.toml"]), id: "x".into(), kind: Kind::Config };
+        assert!(files.matches(Path::new("/p/.coocoo/persona.toml")) && files.matches(Path::new("/p/.coocoo/actions.toml")));
+        assert!(!files.matches(Path::new("/p/.coocoo/avatar.png")));
         let git = Route { root: PathBuf::from("/p/.git/refs"), only: None, id: "x".into(), kind: Kind::Git };
         assert!(git.matches(Path::new("/p/.git/refs/heads/main")));
     }
