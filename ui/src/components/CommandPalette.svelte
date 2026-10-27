@@ -7,7 +7,7 @@
   import { track } from '../lib/track';
   import { actionDisabled, actionIcon, actionRun, actionsFor, type ActionContext, showRun, startAction } from '../lib/actions';
   import { worktreeOf } from '../lib/git.svelte';
-  import { Bot, CornerDownLeft, FolderGit2, LayoutDashboard, Moon, Plus, Search, Server, Settings } from '../lib/icons';
+  import { Bot, CornerDownLeft, FolderGit2, Gamepad2, LayoutDashboard, Moon, Plus, Search, Server, Settings } from '../lib/icons';
   import StatusDot from './StatusDot.svelte';
 
   let { onnew }: { onnew: () => void } = $props();
@@ -32,6 +32,7 @@
     const out: Entry[] = [
       { id: 'a:new', group: 'Actions', label: 'New agent', hint: 'N', icon: Plus, run: onnew },
       { id: 'a:ov', group: 'Actions', label: 'Go to overview', hint: 'G O', icon: LayoutDashboard, run: () => router.go({ name: 'overview' }) },
+      { id: 'a:vibe', group: 'Actions', label: 'Vibe controller', hint: 'G V', icon: Gamepad2, run: () => router.go({ name: 'vibe' }) },
       { id: 'a:set', group: 'Actions', label: 'Hosts & settings', hint: 'G S', icon: Settings, run: () => router.go({ name: 'settings' }) },
       { id: 'a:proj', group: 'Actions', label: 'Add project…', icon: FolderGit2, run: () => (ui.dialog = { kind: 'addProject' }) },
       { id: 'a:host', group: 'Actions', label: 'Add host…', icon: Server, run: () => (ui.dialog = { kind: 'addHost' }) },
