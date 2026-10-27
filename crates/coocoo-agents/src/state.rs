@@ -35,6 +35,8 @@ pub(crate) enum Life {
 pub(crate) struct Proc {
     pub client: Arc<Client>,
     pub pid: u32,
+    /// Its workload cgroup; dropped after `client`, so it is removed once the process is gone.
+    pub _cgroup: Option<coocoo_proto::cgroup::Leaf>,
 }
 
 /// A prompt accepted before the process was ready.
@@ -100,6 +102,15 @@ pub(crate) struct Meta {
     pub restart: Option<RestartMark>,
 }
 
+/// Error of an agent whose process died with the daemon in the middle of a turn.
+pub(crate) const CUT_OFF: &str = "Coocoo stopped unexpectedly (e.g. killed for lack of memory) and cut off this turn";
+
+/// A clean shutdown persists every live agent as `hibernated`; one of these statuses in
+/// `meta.json` means the daemon died while the agent was in a turn or dialog.
+pub(crate) fn cut_off(status: AgentStatus) -> bool {
+    matches!(status, AgentStatus::Running | AgentStatus::Starting | AgentStatus::Waiting)
+}
+
 pub(crate) struct State {
     pub summary: AgentSummary,
     pub last_output: Option<String>,
@@ -162,11 +173,15 @@ impl State {
         state
     }
 
-    /// Restore from `meta.json`: anything that had a process comes back hibernated.
+    /// Restore from `meta.json`: anything that had a process comes back hibernated, except an
+    /// agent whose turn or dialog a daemon crash cut off ([`cut_off`]): it comes back as
+    /// crashed, so it does not look finished.
     pub fn from_meta(meta: Meta) -> Self {
+        let cut = cut_off(meta.summary.status);
         let life = match meta.summary.status {
             AgentStatus::Stopped => Life::Stopped,
             AgentStatus::Error => Life::Crashed,
+            _ if cut => Life::Crashed,
             _ => Life::Hibernated,
         };
         let mut state = Self::new(meta.summary, life);
@@ -175,6 +190,10 @@ impl State {
         state.context_window = meta.context_window;
         state.commands = meta.commands;
         state.restart = meta.restart;
+        if cut {
+            state.summary.error = Some(CUT_OFF.to_owned());
+            state.summary.unread = true;
+        }
         state.sync();
         state
     }
@@ -528,19 +547,24 @@ mod tests {
     }
 
     #[test]
-    fn restored_agents_come_back_hibernated() {
-        for (before, after) in [
-            (AgentStatus::Running, AgentStatus::Hibernated),
-            (AgentStatus::Waiting, AgentStatus::Hibernated),
-            (AgentStatus::Idle, AgentStatus::Hibernated),
-            (AgentStatus::Starting, AgentStatus::Hibernated),
-            (AgentStatus::Error, AgentStatus::Error),
-            (AgentStatus::Stopped, AgentStatus::Stopped),
+    fn restored_agents_come_back_hibernated_unless_cut_off() {
+        // A clean shutdown persists `hibernated`; a turn or dialog in `meta.json` means the
+        // daemon died during it.
+        for (before, after, error) in [
+            (AgentStatus::Running, AgentStatus::Error, Some(CUT_OFF)),
+            (AgentStatus::Waiting, AgentStatus::Error, Some(CUT_OFF)),
+            (AgentStatus::Starting, AgentStatus::Error, Some(CUT_OFF)),
+            (AgentStatus::Idle, AgentStatus::Hibernated, None),
+            (AgentStatus::Hibernated, AgentStatus::Hibernated, None),
+            (AgentStatus::Error, AgentStatus::Error, None),
+            (AgentStatus::Stopped, AgentStatus::Stopped, None),
         ] {
             let mut s = summary(before);
             s.pending_requests = 2;
             let st = State::from_meta(Meta { summary: s, last_output: None, todos: Vec::new(), context_window: None, commands: None, restart: None });
-            assert_eq!(st.summary.status, after);
+            assert_eq!(st.summary.status, after, "{before:?}");
+            assert_eq!(st.summary.error.as_deref(), error, "{before:?}");
+            assert_eq!(st.summary.unread, error.is_some(), "{before:?}");
             assert_eq!(st.summary.pending_requests, 0);
         }
     }

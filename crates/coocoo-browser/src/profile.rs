@@ -272,8 +272,10 @@ impl Profile {
         let (kill_tx, kill_rx) = oneshot::channel();
         let (exit_tx, exit_rx) = watch::channel(false);
         let weak = Arc::downgrade(self);
+        let cgroup = launched.cgroup;
         tokio::spawn(async move {
             let status = chrome::supervise(launched.child, pid, kill_rx).await;
+            drop(cgroup);
             let _ = exit_tx.send(true);
             if let Some(p) = weak.upgrade() {
                 p.on_exit(generation, status);

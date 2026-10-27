@@ -124,8 +124,9 @@ pub struct Agents {
 
 impl Agents {
     /// Loads persisted agents from `<data_dir>/agents/`; previously live agents come back as
-    /// `hibernated` (no process is spawned until they are prompted). Boards of earlier versions,
-    /// kept per agent, move to their projects here.
+    /// `hibernated` (no process is spawned until they are prompted), those whose turn a daemon
+    /// crash cut off as `error`. Boards of earlier versions, kept per agent, move to their
+    /// projects here.
     pub fn new(emitter: Emitter, paths: &Paths, config: AgentsConfig) -> Arc<Self> {
         let root = paths.data_dir.join("agents");
         let agents = load_agents(&root);
@@ -520,9 +521,29 @@ fn load_agents(root: &Path) -> HashMap<String, Arc<Agent>> {
         let rewrite = state.summary.status != before;
         let agent = Arc::new(Agent::new(dir, state));
         if rewrite {
+            // The previous daemon died with this agent's process: nothing finished its items.
+            settle_after_crash(&agent, state::cut_off(before));
             write_meta(&agent);
         }
         agents.insert(agent.id.clone(), agent);
     }
     agents
+}
+
+/// Persist the items the dead process left streaming as finished and, when the crash cut off a
+/// turn, say so in the timeline (startup, blocking).
+fn settle_after_crash(agent: &Agent, cut_off: bool) {
+    let mut tl = agent.timeline.lock();
+    if let Err(err) = tl.settle_leftovers() {
+        tracing::warn!(agent = %agent.id, %err, "cannot settle the timeline");
+    }
+    if cut_off {
+        let seq = tl.alloc();
+        let text = format!("{}. Send a message to resume the session.", state::CUT_OFF);
+        let item = TimelineItem { seq, id: seq.to_string(), ts: now_ms(), kind: ItemKind::Error, text: Some(text), tool: None, partial: false, images: Vec::new() };
+        if let Err(err) = tl.upsert(&item) {
+            tracing::warn!(agent = %agent.id, %err, "timeline write failed");
+        }
+    }
+    tl.close();
 }

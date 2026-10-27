@@ -44,6 +44,13 @@ The daemon does not crash. The whole systemd user manager is SIGKILLed, and the 
 |---|---|---|---|
 | 2026-10-24 22:20:43 | 75.58% | 3.5G | 10.4G |
 | 2026-10-25 00:20:23 | 71.95% (coocoo.service Avg10 73.02) | 8.4G | 9.2G |
+| 2026-10-27, 5× (09:26, 11:24 ×2, 12:17, 12:42) | 68% at 12:42 | 7.0G at 12:42 | – |
+
+On 2026-10-27 the user manager survived (the `init.scope` mitigation works), but `coocoo.service`
+went down every time. At 12:42 the VoltPlan agent had just started two `next build`s, a test run
+and a review subagent in parallel. At 12:17 and 12:42 the daemon's main process exited only 90 s
+after the kill, with SIGKILL: `OOMPolicy=stop` (the default) had told systemd to stop the unit,
+and `TimeoutStopSec` ran out.
 
 At both kills every other user cgroup was under ~250M. The coocoo daemon process itself is
 small: about 12–30M right after a restart. The gigabytes come from its child processes.
@@ -126,7 +133,19 @@ omitted cgroups from the candidate list (`oomd_sort_cgroup_contexts()`). The use
 survives a pressure kill, so `Restart=always` brings coocoo back after 3 s.
 
 This does not stop the cascade: oomd still SIGKILLs every multi-threaded candidate in the list
-(coocoo, hermes, pipewire, …). Fixes that need root:
+(coocoo, hermes, pipewire, …).
+
+Also set in `coocoo.service` (and in the unit Coocoo installs over SSH):
+
+- `OOMPolicy=continue`: when a kill takes only some processes of the unit (one agent's build),
+  systemd no longer stops the daemon and every other agent along with them.
+- `Delegate=yes`: the daemon runs in `coocoo.service/daemon` (`user.oomd_omit=1`) and starts
+  every agent, terminal and Chromium in its own leaf (`agent-<id>`, `terminal-<id>`,
+  `browser-<profile>`; see ARCHITECTURE.md). oomd ranks leaves, so it now kills the agent whose
+  build eats the memory; the daemon stays up and shows that agent as crashed. The cascade still
+  takes other user units (hermes, pipewire, …) down to the first single-threaded one.
+
+Fixes that need root:
 
 - Stop oomd from acting on user sessions:
   `/etc/systemd/system/user@.service.d/99-oomd.conf` with `[Service]` `ManagedOOMMemoryPressure=auto`.

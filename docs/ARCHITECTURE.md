@@ -83,6 +83,22 @@ driven by the official Rust client (vendored in `crates/omp-rpc`):
   the next start prompts them that the restart is done so they continue. Under systemd this needs
   `KillMode=mixed` (the unit Coocoo installs over SSH sets it); with the default, systemd sends
   SIGTERM to the omp processes too. The desktop app's Quit stops without draining.
+- **Daemon crashes:** a SIGKILLed daemon (e.g. systemd-oomd, see `OOM-KILLS.md`) takes its omp
+  processes along without draining. On the next start, an agent whose `meta.json` still says
+  `running`/`waiting`/`starting` comes back as `error` with a timeline note instead of
+  `hibernated`, so it does not look finished; it is not resumed automatically (that could
+  re-run the workload that caused the kill). Items the dead process left streaming (text, tool
+  calls, async subagents) are persisted as finished, so a resumed session does not show them
+  running.
+- **Workload cgroups (Linux, systemd):** when the unit delegates its cgroup (`Delegate=yes`; the
+  unit Coocoo installs over SSH sets it), the daemon moves itself into `<unit>/daemon` at start,
+  marked `user.oomd_omit` so systemd-oomd skips it, and starts every omp process
+  (`agent-<id>`), terminal (`terminal-<id>`) and Chromium (`browser-<profile>`) in its own leaf
+  (`coocoo_proto::cgroup`). Under memory pressure oomd then kills the workload that eats the
+  memory, and its agent shows as crashed, instead of the daemon with every agent. The leaves stay
+  inside the unit, so stopping the unit still stops everything. `git`, `gh` and board commands
+  stay with the daemon. Without delegation (no systemd, macOS, the desktop app) all processes
+  share the daemon's cgroup as before.
 
 ## Resource discipline
 

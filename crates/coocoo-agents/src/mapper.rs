@@ -17,6 +17,8 @@ use omp_rpc::{
 };
 use serde_json::{Map, Value};
 
+use crate::timeline::has_running;
+
 /// Coalescing window for streaming text.
 pub(crate) const DELTA_WINDOW: Duration = Duration::from_millis(50);
 /// Subagents report progress on every tool step; clients see at most one update per window.
@@ -26,10 +28,6 @@ pub(crate) const MAX_OUTPUT: usize = 8 * 1024;
 const MAX_ACTIVITY: usize = 160;
 /// Finished tool calls kept for subagent frames that arrive after the call returned.
 const RECENT_TOOLS: usize = 16;
-
-fn has_running(item: &TimelineItem) -> bool {
-    item.tool.as_ref().is_some_and(|t| t.subagents.iter().any(|s| s.status == "running"))
-}
 
 /// omp's catalog in Coocoo's wire shape.
 pub(crate) fn slash_commands(commands: Vec<AvailableSlashCommand>) -> Vec<SlashCommand> {

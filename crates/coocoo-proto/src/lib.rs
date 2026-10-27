@@ -7,11 +7,13 @@
 //! - [`Orchestrator`]: routed calls back into the daemon (local or peer host).
 //! - [`insights`]: the usage log contract (events, agent ledger, who caused a request).
 //! - [`paths`], [`util`]: storage locations, atomic JSON persistence, ids, clocks.
+//! - [`cgroup`]: workload cgroups, so systemd-oomd can kill one workload instead of the daemon.
 //!
 //! Subsystem crates (`coocoo-agents`, `coocoo-browser`, `coocoo-workspace`) depend only on this
 //! crate; `coocoo-core` wires them together.
 
 pub mod bus;
+pub mod cgroup;
 pub mod error;
 pub mod insights;
 pub mod orchestrator;

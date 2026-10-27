@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
 
+use coocoo_proto::cgroup::Leaf;
 use coocoo_proto::{ApiError, ApiResult};
 use tokio::process::{Child, Command};
 use tokio::sync::oneshot;
@@ -190,6 +191,8 @@ pub(crate) struct Launched {
     pub port: u16,
     /// Browser-level DevTools WebSocket URL.
     pub ws_url: String,
+    /// Its workload cgroup; keep it until the process exited.
+    pub cgroup: Option<Leaf>,
 }
 
 const PORT_FILE: &str = "DevToolsActivePort";
@@ -214,6 +217,14 @@ pub(crate) async fn launch(exe: &Path, user_data_dir: &Path, headless: bool) -> 
         .kill_on_drop(true);
     #[cfg(unix)]
     cmd.process_group(0);
+    // Own cgroup: oomd can kill a bloated Chromium without the daemon.
+    let name = user_data_dir.file_name().map_or_else(|| "default".into(), |n| n.to_string_lossy());
+    let cgroup = coocoo_proto::cgroup::leaf(&format!("browser-{name}"));
+    #[cfg(unix)]
+    if let Some(leaf) = &cgroup {
+        // SAFETY: the hook only makes async-signal-safe syscalls.
+        unsafe { cmd.pre_exec(leaf.joiner()) };
+    }
     let mut child = cmd
         .spawn()
         .map_err(|e| ApiError::unavailable(format!("failed to start {}: {e}", exe.display())))?;
@@ -224,7 +235,7 @@ pub(crate) async fn launch(exe: &Path, user_data_dir: &Path, headless: bool) -> 
         if let Ok(text) = std::fs::read_to_string(&port_file)
             && let Some((port, path)) = parse_port_file(&text)
         {
-            return Ok(Launched { child, pid, port, ws_url: format!("ws://127.0.0.1:{port}{path}") });
+            return Ok(Launched { child, pid, port, ws_url: format!("ws://127.0.0.1:{port}{path}"), cgroup });
         }
         if let Ok(Some(status)) = child.try_wait() {
             return Err(ApiError::unavailable(format!("{} exited during startup ({status})", exe.display())));

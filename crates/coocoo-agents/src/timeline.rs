@@ -33,13 +33,33 @@ impl Timeline {
     }
 
     fn ensure_loaded(&mut self) {
-        if self.next_seq.is_some() {
-            return;
+        if self.next_seq.is_none() {
+            let items = read_all(&self.path);
+            self.adopt(items);
         }
-        let items = read_all(&self.path);
+    }
+
+    fn adopt(&mut self, items: BTreeMap<u64, TimelineItem>) {
         self.next_seq = Some(items.keys().next_back().map_or(1, |seq| seq + 1));
         let skip = items.len().saturating_sub(TAIL_LEN);
         self.tail = items.into_values().skip(skip).collect();
+    }
+
+    /// The daemon died with the process (no [`crate::mapper::Mapper::finish`] ran): persist every
+    /// item it left streaming as finished, so a resumed session does not show them running
+    /// forever. Returns how many items were settled.
+    pub fn settle_leftovers(&mut self) -> io::Result<usize> {
+        let mut items = read_all(&self.path);
+        let mut stale = Vec::new();
+        for item in items.values_mut().filter(|i| i.partial || has_running(i)) {
+            settle(item);
+            stale.push(item.clone());
+        }
+        self.adopt(items);
+        for item in &stale {
+            self.upsert(item)?;
+        }
+        Ok(stale.len())
     }
 
     /// Allocate the next `seq` (monotonic per agent, persisted implicitly by the items).
@@ -197,6 +217,11 @@ pub(crate) fn with_images(path: &Path, tail: Vec<TimelineItem>) -> Vec<TimelineI
         .collect()
 }
 
+/// A tool item with subagents that still run.
+pub(crate) fn has_running(item: &TimelineItem) -> bool {
+    item.tool.as_ref().is_some_and(|t| t.subagents.iter().any(|s| s.status == "running"))
+}
+
 /// Mark a streaming item as finished because its process is gone; its subagents went with it.
 pub(crate) fn settle(item: &mut TimelineItem) {
     if let Some(tool) = &mut item.tool {
@@ -310,6 +335,60 @@ mod tests {
         let tool = offline.items[1].tool.as_ref().unwrap();
         assert_eq!(tool.status, ToolStatus::Error);
         assert_eq!(tool.output.as_deref(), Some("interrupted"));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn leftovers_of_a_dead_process_are_settled_on_disk() {
+        let path = temp_path("leftovers");
+        let mut tl = Timeline::new(path.clone());
+        // A finished task call whose async subagent still ran when the daemon died, far enough
+        // back to have left the in-memory tail.
+        let task_seq = tl.alloc();
+        let mut task = item(task_seq, ItemKind::Tool, "", false);
+        task.tool = Some(ToolCall {
+            name: "task".into(),
+            intent: None,
+            args: "{}".into(),
+            status: ToolStatus::Ok,
+            output: None,
+            duration_ms: Some(1),
+            subagents: vec![coocoo_proto::Subagent {
+                id: "Sub".into(),
+                agent: "task".into(),
+                description: None,
+                status: "running".into(),
+                started_at: 1,
+                ended_at: None,
+                activity: Some("bash".into()),
+                tool_count: None,
+                cost_usd: None,
+                model: None,
+                session_file: None,
+            }],
+        });
+        tl.upsert(&task).unwrap();
+        for n in 0..TAIL_LEN {
+            let seq = tl.alloc();
+            tl.upsert(&item(seq, ItemKind::Notice, &format!("n{n}"), false)).unwrap();
+        }
+        let text_seq = tl.alloc();
+        tl.upsert(&item(text_seq, ItemKind::Assistant, "Building:", true)).unwrap();
+        drop(tl);
+
+        let mut restarted = Timeline::new(path.clone());
+        assert_eq!(restarted.settle_leftovers().unwrap(), 2);
+        assert_eq!(restarted.alloc(), text_seq + 1, "the sequence continues");
+        restarted.close();
+
+        // A resumed (live) session reads them finished: nothing spins forever.
+        let all = page(&path, Vec::new(), None, 500, true);
+        let task = all.items.iter().find(|i| i.seq == task_seq).unwrap();
+        let sub = &task.tool.as_ref().unwrap().subagents[0];
+        assert_eq!((sub.status.as_str(), sub.activity.as_deref()), ("aborted", None));
+        let text = all.items.iter().find(|i| i.seq == text_seq).unwrap();
+        assert_eq!((text.text.as_deref(), text.partial), (Some("Building:"), false));
+        assert_eq!(Timeline::new(path.clone()).settle_leftovers().unwrap(), 0, "nothing left to settle");
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 

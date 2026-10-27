@@ -9,6 +9,7 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::Instant;
 
+use coocoo_proto::cgroup::Leaf;
 use coocoo_proto::util::{now_ms, preview};
 use coocoo_proto::{
     ApiError, ApiResult, CommandsEvent, DiffStat, ItemKind, Orchestrator, TimelineDelta, TimelineItem, TodoPhase, TodoTask,
@@ -139,6 +140,7 @@ struct Spawned {
     state: Option<SessionState>,
     /// The recorded session file was gone, so a fresh session was started.
     lost_session: Option<String>,
+    cgroup: Option<Leaf>,
 }
 
 const STDERR_LOG: &str = "omp-stderr.log";
@@ -201,6 +203,14 @@ fn spawn_omp(spec: SpawnSpec) -> Result<Spawned, String> {
         process.arg("--thinking").arg(thinking);
     }
     process.args(&spec.extra_args);
+    // Its own cgroup: under memory pressure oomd kills this agent and what it started, not the
+    // daemon with every other agent.
+    let cgroup = coocoo_proto::cgroup::leaf(&format!("agent-{}", spec.agent_id));
+    #[cfg(unix)]
+    if let Some(leaf) = &cgroup {
+        // SAFETY: the hook only makes async-signal-safe syscalls.
+        unsafe { std::os::unix::process::CommandExt::pre_exec(&mut process, leaf.joiner()) };
+    }
 
     let options = ClientOptions { tools: spec.tools, ..ClientOptions::default() };
     let (client, events) = Client::spawn(process, options).map_err(|err| {
@@ -226,7 +236,7 @@ fn spawn_omp(spec: SpawnSpec) -> Result<Spawned, String> {
         }
     }
     let state = client.call(&GetStateCommand {}).map_err(|e| tracing::debug!(%e, "get_state failed")).ok();
-    Ok(Spawned { client, events, state, lost_session })
+    Ok(Spawned { client, events, state, lost_session, cgroup })
 }
 
 /// Fold `get_state` into the agent state. Returns the previous and the new model when it changed.
@@ -358,7 +368,7 @@ impl Agents {
         let (generation, pending, model_change) = {
             let mut st = agent.state.lock();
             st.generation += 1;
-            st.proc = Some(Proc { client: client.clone(), pid: client.pid().unwrap_or(0) });
+            st.proc = Some(Proc { client: client.clone(), pid: client.pid().unwrap_or(0), _cgroup: spawned.cgroup });
             st.life = Life::Live;
             st.idle_since = Instant::now();
             if spawned.lost_session.is_some() {

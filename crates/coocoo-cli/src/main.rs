@@ -77,6 +77,12 @@ fn main() -> ExitCode {
 
 fn serve(paths: Paths, listen: Option<SocketAddr>) -> anyhow::Result<ExitCode> {
     init_tracing();
+    // Before any child process exists, so agents, terminals and Chromium get their own leaves.
+    match coocoo_proto::cgroup::init() {
+        Ok(Some(root)) => tracing::info!(cgroup = %root.display(), "workload cgroups enabled"),
+        Ok(None) => {}
+        Err(err) => tracing::warn!(%err, "cannot set up workload cgroups; everything stays in the daemon's cgroup"),
+    }
     let workers = std::thread::available_parallelism().map_or(2, |n| n.get().clamp(2, 4));
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(workers)

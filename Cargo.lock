@@ -979,6 +979,7 @@ name = "coocoo-proto"
 version = "0.7.0"
 dependencies = [
  "dirs 6.0.0",
+ "libc",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

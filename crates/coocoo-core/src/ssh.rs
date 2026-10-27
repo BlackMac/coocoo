@@ -224,6 +224,10 @@ Restart=on-failure
 RestartSec=3
 # SIGTERM to the daemon only: on a restart it lets running agents pause, then stops them itself.
 KillMode=mixed
+# An OOM kill of one agent's build must not stop the daemon and every other agent with it.
+OOMPolicy=continue
+# Own cgroups for agents, terminals and Chromium: oomd then kills the workload, not the daemon.
+Delegate=yes
 
 [Install]
 WantedBy=default.target

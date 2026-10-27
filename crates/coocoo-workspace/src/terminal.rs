@@ -427,10 +427,17 @@ mod imp {
                     Ok(())
                 });
             }
+            // Own cgroup: oomd can kill a build started here without the daemon.
+            let id = new_id();
+            let cgroup = coocoo_proto::cgroup::leaf(&format!("terminal-{id}"));
+            if let Some(leaf) = &cgroup {
+                // SAFETY: the hook only makes async-signal-safe syscalls.
+                unsafe { command.pre_exec(leaf.joiner()) };
+            }
             let mut child = command.spawn().map_err(|e| ApiError::internal(format!("cannot start {shell}: {e}")))?;
             let pid = child.id().map_or(0, |p| p as i32);
             let info = TerminalInfo {
-                id: new_id(),
+                id,
                 cwd,
                 shell,
                 cols,
@@ -458,6 +465,7 @@ mod imp {
             tokio::spawn(async move {
                 pump(&me, &term).await;
                 let code = child.wait().await.ok().and_then(|s| s.code());
+                drop(cgroup);
                 term.ended.send_replace(true);
                 let Some(terminals) = me.upgrade() else { return };
                 let info = {
