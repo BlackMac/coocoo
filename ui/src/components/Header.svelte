@@ -19,6 +19,7 @@
     if (r.name === 'stats') return [{ label: 'Overview', href: '#/' }, { label: 'Stats' }];
     if (r.name === 'workflows') return [{ label: 'Overview', href: '#/' }, { label: 'Workflows' }];
     if (r.name === 'settings') return [{ label: 'Hosts & Settings' }];
+    if (r.name === 'vibe') return [{ label: 'Vibe' }];
     const h = fleet.host(r.host);
     const hostCrumb: Crumb = { label: h?.name ?? r.host, href: '#/settings', online: h?.online ?? false };
     if (r.name === 'project') {

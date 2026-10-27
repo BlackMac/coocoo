@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { fleet, key } from '../lib/fleet.svelte';
+  import { fleet } from '../lib/fleet.svelte';
   import { ui } from '../lib/ui.svelte';
   import type { AskAnswer, AskUiPayload, UiRequest, UiResponse } from '../lib/protocol';
   import { MessageSquareText, Check, KeyRound } from '../lib/icons';
@@ -18,18 +18,13 @@
   let otherOpen = $state<Record<string, boolean>>({});
 
   /** The request is answered: take it off the list now (`agent.requestResolved` follows). */
-  function drop() {
-    const list = fleet.requests[key(host, request.agentId)];
-    const i = list?.findIndex((r) => r.id === request.id) ?? -1;
-    if (list && i >= 0) list.splice(i, 1);
-  }
+  const drop = () => fleet.dropRequest(host, request);
 
   async function respond(response: UiResponse) {
     if (busy) return;
     busy = true;
     try {
-      await fleet.call('agents.respond', { id: request.agentId, requestId: request.id, response }, host);
-      drop();
+      await fleet.respond(host, request, response);
     } catch (err) {
       ui.error('Could not send the answer', err);
     } finally {

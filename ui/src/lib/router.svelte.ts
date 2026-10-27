@@ -1,5 +1,5 @@
 // Hash routing: `#/`, `#/stats`, `#/workflows`, `#/p/<host>/<project>`, `#/a/<host>/<agent>[?at=<ms>]`,
-// `#/settings`.
+// `#/settings`, `#/vibe`.
 
 export type Route =
   | { name: 'overview' }
@@ -8,7 +8,9 @@ export type Route =
   | { name: 'project'; host: string; id: string }
   /** `at`: scroll the transcript to this moment (Unix ms), e.g. from a workflow example. */
   | { name: 'agent'; host: string; id: string; at?: number }
-  | { name: 'settings' };
+  | { name: 'settings' }
+  /** Full-screen controller view: every agent's state on one display, answers and prompts by voice. */
+  | { name: 'vibe' };
 
 function parse(hash: string): Route {
   const [path, query = ''] = hash.replace(/^#\/?/, '').split('?');
@@ -21,6 +23,7 @@ function parse(hash: string): Route {
   if (parts[0] === 'settings') return { name: 'settings' };
   if (parts[0] === 'stats') return { name: 'stats' };
   if (parts[0] === 'workflows') return { name: 'workflows' };
+  if (parts[0] === 'vibe') return { name: 'vibe' };
   return { name: 'overview' };
 }
 
@@ -34,6 +37,8 @@ export function href(route: Route): string {
       return '#/workflows';
     case 'settings':
       return '#/settings';
+    case 'vibe':
+      return '#/vibe';
     case 'project':
       return `#/p/${encodeURIComponent(route.host)}/${encodeURIComponent(route.id)}`;
     case 'agent':

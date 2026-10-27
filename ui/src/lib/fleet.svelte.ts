@@ -23,6 +23,7 @@ import type {
   TerminalInfo,
   TimelineItem,
   UiRequest,
+  UiResponse,
 } from './protocol';
 import { href } from './router.svelte';
 import { agentState } from './status';
@@ -282,6 +283,18 @@ export class Fleet {
   /** Fire-and-forget call (high-rate input forwarding); failures are ignored. */
   send<M extends Method>(method: M, params: ParamsOf<M>, host?: string): void {
     this.call(method, params, host).catch(() => {});
+  }
+
+  /** Answers a pending request and takes it off the list at once (`agent.requestResolved` follows). */
+  async respond(host: string, request: UiRequest, response: UiResponse): Promise<void> {
+    await this.call('agents.respond', { id: request.agentId, requestId: request.id, response }, host);
+    this.dropRequest(host, request);
+  }
+
+  dropRequest(host: string, request: UiRequest): void {
+    const list = this.requests[key(host, request.agentId)];
+    const i = list?.findIndex((r) => r.id === request.id) ?? -1;
+    if (list && i >= 0) list.splice(i, 1);
   }
 
   // ─── Lookups ────────────────────────────────────────────────────────────────────────────────

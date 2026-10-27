@@ -25,6 +25,7 @@
   // Heavy and rarely opened: loaded on first visit.
   const StatsView = () => import('./views/StatsView.svelte');
   const WorkflowsView = () => import('./views/WorkflowsView.svelte');
+  const VibeView = () => import('./views/VibeView.svelte');
 
   const endpoint = resolveEndpoint();
   let token = $state(endpoint.token);
@@ -83,6 +84,9 @@
       } else if (e.key === 's') {
         track('shortcut', { meta: { key: 'g s' } });
         router.go({ name: 'settings' });
+      } else if (e.key === 'v') {
+        track('shortcut', { meta: { key: 'g v' } });
+        router.go({ name: 'vibe' });
       }
       return;
     }
@@ -108,6 +112,13 @@
       token = t;
     }}
   />
+{:else if route.name === 'vibe'}
+  <!-- Full screen, without sidebar and header: meant for a second screen or a phone. -->
+  {#if fleet.ready}
+    {#await VibeView() then m}<m.default />{/await}
+  {:else}
+    <div class="loading full"><span class="spinner"></span></div>
+  {/if}
 {:else}
   <div class="shell" class:drawer={ui.drawerOpen}>
     <Sidebar />
@@ -181,6 +192,9 @@
     flex: 1;
     display: grid;
     place-items: center;
+  }
+  .loading.full {
+    height: 100%;
   }
   .banner {
     display: flex;
