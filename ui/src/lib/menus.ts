@@ -5,7 +5,7 @@ import type { Component } from 'svelte';
 import { copyText } from './clipboard';
 import { fleet, key } from './fleet.svelte';
 import { fetchProject } from './git.svelte';
-import { Archive, ArrowDownToLine, Copy, Moon, Pencil, Plus, Trash2 } from './icons';
+import { Archive, ArrowDownToLine, Copy, Moon, Pencil, Pin, PinOff, Plus, Trash2 } from './icons';
 import type { AgentSummary, Project } from './protocol';
 import { router } from './router.svelte';
 import { ui } from './ui.svelte';
@@ -55,12 +55,23 @@ export function deleteAgent(a: AgentSummary, removeWorktree: boolean, deleteBran
 /** `rename` adds a Rename entry (the pages rename in place, by clicking the title). */
 export function agentMenu(a: AgentSummary, rename?: () => void): MenuItem[] {
   return [
+    a.pinnedAt
+      ? { label: 'Unpin', icon: PinOff, run: () => pinAgent(a, false) }
+      : { label: 'Pin to top', icon: Pin, run: () => pinAgent(a, true) },
     ...(rename ? [{ label: 'Rename', icon: Pencil, run: rename }] : []),
     { label: 'Hibernate', icon: Moon, disabled: ['hibernated', 'stopped'].includes(a.status), run: () => lifecycle(a, 'agents.hibernate', 'Hibernate') },
     { label: 'Archive', icon: Archive, disabled: a.status === 'stopped', run: () => lifecycle(a, 'agents.archive', 'Archive') },
     { label: 'Delete', icon: Trash2, danger: true, run: () => deleteAgent(a, false) },
     ...(a.worktree ? [{ label: 'Delete with worktree', icon: Trash2, danger: true, run: () => deleteAgent(a, true) }] : []),
   ];
+}
+
+/** Pinned agents head the sidebar on every device (`agents.pin`). */
+export function pinAgent(a: AgentSummary, pinned: boolean) {
+  fleet
+    .call('agents.pin', { id: a.id, pinned }, a.hostId)
+    .then((s) => (fleet.agents[key(a.hostId, a.id)] = s))
+    .catch((err) => ui.error(pinned ? 'Pin failed' : 'Unpin failed', err));
 }
 
 export function renameAgent(a: AgentSummary, title: string) {

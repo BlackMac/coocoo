@@ -58,6 +58,8 @@ export { default as MousePointerClick } from '@lucide/svelte/icons/mouse-pointer
 export { default as PanelRight } from '@lucide/svelte/icons/panel-right';
 export { default as Paperclip } from '@lucide/svelte/icons/paperclip';
 export { default as Pencil } from '@lucide/svelte/icons/pencil';
+export { default as Pin } from '@lucide/svelte/icons/pin';
+export { default as PinOff } from '@lucide/svelte/icons/pin-off';
 export { default as Plus } from '@lucide/svelte/icons/plus';
 export { default as RefreshCw } from '@lucide/svelte/icons/refresh-cw';
 export { default as RotateCcw } from '@lucide/svelte/icons/rotate-ccw';

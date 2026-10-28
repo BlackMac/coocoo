@@ -333,6 +333,8 @@ export interface AgentSummary {
   sessionFile?: string;
   diff?: DiffStat;
   subagents: number;
+  /** When the user pinned it to the top of the sidebar (Unix ms; `agents.pin`). */
+  pinnedAt?: number;
 }
 
 /** An image sent with a card (`boards.cardAdd`/`cardUpdate`): PNG, JPEG, GIF or WebP, ≤ 5 MiB. */
@@ -1320,6 +1322,7 @@ export interface Methods {
   'agents.output': [{ id: string }, { status: AgentStatus; text?: string }];
   'agents.markRead': [{ id: string }, Ok];
   'agents.rename': [{ id: string; title: string }, AgentSummary];
+  'agents.pin': [{ id: string; pinned: boolean }, AgentSummary];
   'agents.setModel': [{ id: string; model: string }, AgentSummary];
   'agents.setThinking': [{ id: string; level: string }, AgentSummary];
   'agents.models': [Empty | undefined, ModelInfo[]];

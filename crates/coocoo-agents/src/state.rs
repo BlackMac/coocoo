@@ -429,6 +429,7 @@ mod tests {
 
     fn summary(status: AgentStatus) -> AgentSummary {
         AgentSummary {
+            pinned_at: None,
             id: "a1".into(),
             host_id: "h".into(),
             project_id: None,

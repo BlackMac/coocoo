@@ -599,6 +599,9 @@ pub struct AgentSummary {
     /// omp subagents (task tool) currently running inside this agent.
     #[serde(default)]
     pub subagents: u32,
+    /// When the user pinned it to the top of the sidebar (Unix ms; `agents.pin`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_at: Option<i64>,
 }
 
 /// Image attached to a prompt (`agents.prompt.images`), forwarded to omp as `ImageContent`.

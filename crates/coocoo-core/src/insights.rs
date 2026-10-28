@@ -27,6 +27,7 @@ const ACTIONS: &[&str] = &[
     "agents.setThinking",
     "agents.markRead",
     "agents.rename",
+    "agents.pin",
     "agents.hibernate",
     "agents.archive",
     "agents.delete",

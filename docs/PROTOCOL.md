@@ -196,6 +196,7 @@ fails, nothing hibernates in that round.
 | `agents.output` | `{ id }` | `{ status: AgentStatus, text: String? }` — full last assistant text |
 | `agents.markRead` | `{ id }` | `{}` |
 | `agents.rename` | `{ id, title }` | `AgentSummary` |
+| `agents.pin` | `{ id, pinned: bool }` | `AgentSummary` — `pinnedAt` (Unix ms) set when pinned, cleared when unpinned; pinning a pinned agent keeps its `pinnedAt`. Clients list pinned agents first, oldest pin on top |
 | `agents.setModel` | `{ id, model: "provider/id" }` | `AgentSummary` |
 | `agents.setThinking` | `{ id, level }` | `AgentSummary` |
 | `agents.models` | – | `ModelInfo[]` (cached per host) |

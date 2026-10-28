@@ -42,13 +42,19 @@
     loose: AgentSummary[];
   }
 
+  /** Shown in the tree: archived agents only while open. */
+  const listed = (a: AgentSummary) => a.status !== 'stopped' || key(a.hostId, a.id) === activeAgent;
+
+  /** Pinned agents, oldest pin first; they leave their project's list. */
+  const pinned = $derived(
+    fleet.agentList.filter((a) => a.pinnedAt && listed(a)).sort((a, b) => (a.pinnedAt ?? 0) - (b.pinnedAt ?? 0)),
+  );
+
   const groups = $derived.by<Group[]>(() => {
     const out: Group[] = [];
     for (const h of fleet.hostList) {
       if (fleet.hostFilter && h.id !== fleet.hostFilter) continue;
-      const agents = fleet.agentList.filter(
-        (a) => a.hostId === h.id && (a.status !== 'stopped' || key(a.hostId, a.id) === activeAgent),
-      );
+      const agents = fleet.agentList.filter((a) => a.hostId === h.id && !a.pinnedAt && listed(a));
       const projects = fleet.projectList
         .filter((p) => p.hostId === h.id)
         .map((p) => ({ p, agents: agents.filter((a) => a.projectId === p.id) }));
@@ -58,6 +64,12 @@
     }
     return out;
   });
+
+  /** Where a pinned agent belongs, shown after its title. */
+  function pinContext(a: AgentSummary): string | undefined {
+    const p = a.projectId ? fleet.projects[key(a.hostId, a.projectId)] : undefined;
+    return p ? (p.persona?.name ?? p.name) : undefined;
+  }
 
   /** Most urgent state among a project's agents, for the collapsed summary dot. */
   function summaryState(agents: AgentSummary[]): AgentState | null {
@@ -92,16 +104,17 @@
   />
 {/snippet}
 
-{#snippet agentRow(a: AgentSummary, depth: number)}
+{#snippet agentRow(a: AgentSummary, depth: number, context?: string)}
   {@const k = key(a.hostId, a.id)}
   <div class="row agent" class:active={activeAgent === k} style:--depth={depth}>
     {#if renaming === `a:${k}`}
       <StatusDot state={agentState(a)} size={7} />
       {@render renameInput(a.title, 'Agent title', (title) => renameAgent(a, title))}
     {:else}
-      <a class="alink" href={href({ name: 'agent', host: a.hostId, id: a.id })}>
+      <a class="alink" href={href({ name: 'agent', host: a.hostId, id: a.id })} title={context ? `${a.title} · ${context}` : undefined}>
         <StatusDot state={agentState(a)} size={7} />
         <span class="ellipsis" class:unread={a.unread}>{a.title}</span>
+        {#if context}<span class="ctx ellipsis">{context}</span>{/if}
         {#if a.pendingRequests}<span class="badge sm">{a.pendingRequests}</span>{/if}
       </a>
       <span class="more">
@@ -170,6 +183,12 @@
   </nav>
 
   <div class="tree">
+    {#if pinned.length}
+      <div class="tree-head"><span>Pinned</span></div>
+      {#each pinned as a (key(a.hostId, a.id))}
+        {@render agentRow(a, 0, pinContext(a))}
+      {/each}
+    {/if}
     <div class="tree-head">
       <span>Projects</span>
       <button class="btn ghost icon sm" title="Add project" aria-label="Add project" onclick={() => (ui.dialog = { kind: 'addProject', hostId: fleet.hostFilter ?? undefined })}>
@@ -525,6 +544,12 @@
   .agent .unread {
     color: var(--text);
     font-weight: 500;
+  }
+  .agent .ctx {
+    flex: 0 1 auto;
+    max-width: 45%;
+    color: var(--text-3);
+    font-size: var(--fs-xs);
   }
   .badge.sm {
     min-width: 16px;

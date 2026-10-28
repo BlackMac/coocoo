@@ -112,6 +112,13 @@ struct RenameParams {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct PinParams {
+    id: String,
+    pinned: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ModelParams {
     id: String,
     model: String,
@@ -270,6 +277,17 @@ impl Agents {
                 }
                 let agent = self.get(&id)?;
                 agent.state.lock().summary.title = title.to_owned();
+                self.changed(&agent);
+                ok(agent.summary())
+            }
+            "agents.pin" => {
+                let PinParams { id, pinned } = params(p)?;
+                let agent = self.get(&id)?;
+                {
+                    let mut st = agent.state.lock();
+                    // Re-pinning keeps the place in the pinned list.
+                    st.summary.pinned_at = if pinned { st.summary.pinned_at.or_else(|| Some(now_ms())) } else { None };
+                }
                 self.changed(&agent);
                 ok(agent.summary())
             }
@@ -442,6 +460,7 @@ impl Agents {
             session_file: None,
             diff: None,
             subagents: 0,
+            pinned_at: None,
         };
         let mut state = State::new(summary, Life::Starting);
         if prompt.is_some() || !p.images.is_empty() {
