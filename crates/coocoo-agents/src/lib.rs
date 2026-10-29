@@ -14,6 +14,7 @@
 
 mod api;
 mod board;
+mod branch;
 mod cron;
 mod image;
 mod mapper;

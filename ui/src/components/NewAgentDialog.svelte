@@ -178,7 +178,7 @@
         <div class="row2">
           <label class="field">
             <span>Branch</span>
-            <input class="input mono" bind:value={branch} placeholder="coocoo/&lt;title&gt;-&lt;id&gt;" spellcheck="false" />
+            <input class="input mono" bind:value={branch} placeholder="Named from the task when empty" spellcheck="false" />
           </label>
           <label class="field">
             <span>Base</span>

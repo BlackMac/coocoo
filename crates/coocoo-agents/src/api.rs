@@ -21,13 +21,11 @@ use serde_json::{Value, json};
 use crate::process::{call, client_error};
 use crate::state::{Agent, Life, PendingPrompt, State};
 use crate::timeline;
-use crate::{Agents, transcript, usage, write_meta};
+use crate::{Agents, branch, transcript, usage, write_meta};
 
 /// `agents.models` cache lifetime.
 const MODELS_TTL: Duration = Duration::from_secs(600);
 const TITLE_CHARS: usize = 60;
-/// Length cap of the title part of a default worktree branch.
-const BRANCH_TITLE_CHARS: usize = 40;
 const DEFAULT_PAGE: usize = 200;
 const MAX_PAGE: usize = 2000;
 
@@ -181,38 +179,6 @@ fn default_title(prompt: Option<&str>, id: &str) -> String {
         Some(line) => line.to_owned(),
         None => format!("Agent {}", &id[..id.len().min(6)]),
     }
-}
-
-/// Default worktree branch: `coocoo/<title-slug>-<first 4 id chars>`, e.g.
-/// `coocoo/git-status-push-pr-1a2b` (lowercase ASCII words, German umlauts transliterated, at most
-/// [`BRANCH_TITLE_CHARS`]); `coocoo/<id>` without a title or with nothing usable in it.
-fn worktree_branch(title: Option<&str>, id: &str) -> String {
-    let mut ascii = String::new();
-    for c in title.unwrap_or_default().chars().flat_map(char::to_lowercase) {
-        match c {
-            'ä' => ascii.push_str("ae"),
-            'ö' => ascii.push_str("oe"),
-            'ü' => ascii.push_str("ue"),
-            'ß' => ascii.push_str("ss"),
-            c if c.is_ascii_alphanumeric() => ascii.push(c),
-            _ => ascii.push(' '),
-        }
-    }
-    let mut slug = String::new();
-    for word in ascii.split_whitespace() {
-        if !slug.is_empty() {
-            if slug.len() + 1 + word.len() > BRANCH_TITLE_CHARS {
-                break;
-            }
-            slug.push('-');
-        }
-        slug.push_str(word);
-    }
-    slug.truncate(BRANCH_TITLE_CHARS);
-    if slug.is_empty() {
-        return format!("coocoo/{id}");
-    }
-    format!("coocoo/{slug}-{}", &id[..id.len().min(4)])
 }
 
 fn image_content(image: ImageInput) -> ImageContent {
@@ -402,10 +368,8 @@ impl Agents {
         }
         let id = new_id();
         let prompt = p.prompt.filter(|s| !s.trim().is_empty());
-        let title = p.title.map(|t| t.trim().to_owned()).filter(|t| !t.is_empty());
-        // A title of its own (given or the prompt's first line) names the worktree branch.
-        let named = title.is_some() || prompt.is_some();
-        let title = title.unwrap_or_else(|| default_title(prompt.as_deref(), &id));
+        let given_title = p.title.map(|t| t.trim().to_owned()).filter(|t| !t.is_empty());
+        let title = given_title.clone().unwrap_or_else(|| default_title(prompt.as_deref(), &id));
         let worktree = match p.worktree {
             None | Some(WorktreeParam::Enabled(false)) => None,
             Some(WorktreeParam::Enabled(true)) => Some((None, None)),
@@ -415,10 +379,16 @@ impl Agents {
             None => None,
             Some((branch, base)) => {
                 let project_id = project_id.clone().ok_or_else(|| ApiError::invalid("a worktree requires `projectId`"))?;
-                let branch = branch
-                    .map(|b| b.trim().to_owned())
-                    .filter(|b| !b.is_empty())
-                    .unwrap_or_else(|| worktree_branch(named.then_some(title.as_str()), &id));
+                let branch = match branch.map(|b| b.trim().to_owned()).filter(|b| !b.is_empty()) {
+                    Some(branch) => branch,
+                    None => {
+                        // Named by the smol model from the task, else from the title (given or
+                        // the prompt's first line).
+                        let words = branch::suggest(&self.omp, &self.config.extra_args, &cwd, given_title.as_deref(), prompt.as_deref()).await;
+                        let named = given_title.is_some() || prompt.is_some();
+                        branch::worktree_branch(words.as_deref().or(named.then_some(title.as_str())), &id)
+                    }
+                };
                 let mut params = json!({ "projectId": project_id, "branch": branch });
                 if let Some(base) = base.filter(|b| !b.is_empty()) {
                     params["base"] = Value::String(base);
@@ -838,19 +808,6 @@ mod tests {
         let title = default_title(Some(&long), "abcdef123456");
         assert_eq!(title.chars().count(), TITLE_CHARS);
         assert!(title.ends_with('…'));
-    }
-
-    #[test]
-    fn worktree_branches() {
-        let id = "1a2b3c4d5e6f";
-        assert_eq!(worktree_branch(Some("Git-Status: Push & PR"), id), "coocoo/git-status-push-pr-1a2b");
-        assert_eq!(worktree_branch(Some("Lesbare Branch-Namen für Größe"), id), "coocoo/lesbare-branch-namen-fuer-groesse-1a2b");
-        // Whole words up to the cap; a single overlong word is cut.
-        let long = worktree_branch(Some("Worktree branches get readable names derived from the card title"), id);
-        assert_eq!(long, "coocoo/worktree-branches-get-readable-names-1a2b");
-        assert_eq!(worktree_branch(Some(&"x".repeat(100)), id), format!("coocoo/{}-1a2b", "x".repeat(BRANCH_TITLE_CHARS)));
-        assert_eq!(worktree_branch(Some("🚀 …"), id), "coocoo/1a2b3c4d5e6f");
-        assert_eq!(worktree_branch(None, id), "coocoo/1a2b3c4d5e6f");
     }
 
     #[test]
