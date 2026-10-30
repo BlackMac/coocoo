@@ -14,7 +14,7 @@ members = [
 default-members = ["crates/coocoo-cli"]
 
 [workspace.package]
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/blackmac/coocoo"
