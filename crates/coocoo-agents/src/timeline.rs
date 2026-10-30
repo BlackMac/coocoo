@@ -199,12 +199,7 @@ pub(crate) fn page(path: &Path, tail: Vec<TimelineItem>, before: Option<u64>, li
 /// Every item with images (user messages, tool results), oldest first, without tool arguments,
 /// output and subagents (`agents.images` lists pictures, not transcripts).
 pub(crate) fn with_images(path: &Path, tail: Vec<TimelineItem>) -> Vec<TimelineItem> {
-    let mut items = read_all(path);
-    for item in tail {
-        items.insert(item.seq, item);
-    }
-    items
-        .into_values()
+    whole(path, tail)
         .filter(|item| !item.images.is_empty())
         .map(|mut item| {
             if let Some(tool) = &mut item.tool {
@@ -215,6 +210,32 @@ pub(crate) fn with_images(path: &Path, tail: Vec<TimelineItem>) -> Vec<TimelineI
             item
         })
         .collect()
+}
+
+/// Every tool item that started subagents, oldest first, without arguments and output
+/// (`agents.subagents` lists the subagents with the images they returned). Unless `live`,
+/// subagents left running show as aborted, as in [`page`].
+pub(crate) fn with_subagents(path: &Path, tail: Vec<TimelineItem>, live: bool) -> Vec<TimelineItem> {
+    whole(path, tail)
+        .filter_map(|mut item| {
+            if !live {
+                settle(&mut item);
+            }
+            let tool = item.tool.as_mut().filter(|t| !t.subagents.is_empty())?;
+            tool.args.clear();
+            tool.output = None;
+            Some(item)
+        })
+        .collect()
+}
+
+/// The stored items overlaid with the in-memory tail, oldest first.
+fn whole(path: &Path, tail: Vec<TimelineItem>) -> impl Iterator<Item = TimelineItem> {
+    let mut items = read_all(path);
+    for item in tail {
+        items.insert(item.seq, item);
+    }
+    items.into_values()
 }
 
 /// A tool item with subagents that still run.

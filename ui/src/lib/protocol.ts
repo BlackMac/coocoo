@@ -406,15 +406,21 @@ export interface TimelineItem {
   images?: TimelineImage[];
 }
 
-/** One image of a user message, stored with the agent. */
+/** One image of a user message or tool result, stored with the agent. */
 export interface TimelineImage {
-  /** `<seq>-<index>.<ext>`, the key for `agents.image`. */
+  /** `<seq>-<index>.<ext>` (`<seq>-s<index>.<ext>` for a subagent's), the key for `agents.image`. */
   name: string;
   mime: string;
   size: number;
   /** Pixel size from the image header; absent when it could not be read. */
   width?: number;
   height?: number;
+  /** A subagent's image, on the tool item that started it: the subagent's id. */
+  subagent?: string;
+  /** With `subagent`: the id of its tool call's item in `agents.subagentTimeline`. */
+  toolCall?: string;
+  /** With `subagent`: that call's intent, else the tool's name. */
+  title?: string;
 }
 
 export interface TimelineEvent {
@@ -1328,10 +1334,13 @@ export interface Methods {
   'agents.models': [Empty | undefined, ModelInfo[]];
   'agents.commands': [{ id: string }, SlashCommand[]];
   'agents.usage': [{ provider: string; model?: string }, ProviderUsage];
+  /** Tool items are keyed by their call id (`TimelineImage.toolCall`). */
   'agents.subagentTimeline': [{ id: string; sessionFile: string; live?: boolean }, TimelinePage];
   'agents.image': [{ id: string; name: string }, { mime: string; data: string }];
   /** Every item with `images`, oldest first; tool items without `args`/`output`/`subagents`. */
   'agents.images': [{ id: string }, TimelineItem[]];
+  /** Every tool item that started subagents, oldest first, without `args`/`output`. */
+  'agents.subagents': [{ id: string }, TimelineItem[]];
   'boards.get': [{ projectId: string }, Board];
   'boards.cardAdd': [{ projectId: string; title: string; body?: string; column?: CardColumn; top?: boolean; startUrl?: string; doneUrl?: string; images?: ImageUpload[] }, Card];
   'boards.cardUpdate': [{ projectId: string; cardId: string; title?: string; body?: string; column?: CardColumn; index?: number; startUrl?: string; doneUrl?: string; addImages?: ImageUpload[]; removeImages?: string[] }, Card];

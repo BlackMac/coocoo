@@ -4,7 +4,7 @@ import type { ImageInput, InspectResult } from './protocol';
 import { track, type TrackRef } from './track';
 
 export type ThemePref = 'system' | 'dark' | 'light';
-export type PanelTab = 'changes' | 'browser' | 'terminal' | 'images' | 'board' | 'plan' | 'info';
+export type PanelTab = 'changes' | 'browser' | 'terminal' | 'images' | 'subagents' | 'board' | 'plan' | 'info';
 
 export interface Toast {
   id: number;
@@ -43,7 +43,6 @@ export type Dialog =
   | { kind: 'newAgent'; hostId?: string; projectId?: string }
   | { kind: 'addHost' }
   | { kind: 'addProject'; hostId?: string }
-  | { kind: 'subagent'; hostId: string; agentId: string; subagentId: string; sessionFile: string }
   | { kind: 'confirm'; title: string; message: string; action: string; danger?: boolean; run: () => void | Promise<void> }
   /** Push the project checkout an agent works in, after listing the outgoing commits. */
   | { kind: 'push'; hostId: string; agentId: string }
@@ -99,6 +98,8 @@ class Ui {
   /** The picture an agent's Images tab should select: a stored timeline image by `name`, or the
    *  newest with `''`. `n` tells repeated requests for the same picture apart. */
   imageFocus = $state<{ agent: string; name: string; n: number } | null>(null);
+  /** The subagent each agent's (key) Subagents tab shows (`<tool item id>/<subagent id>`); none: the list. */
+  subagentOpen = $state<Record<string, string | null>>({});
   /** An agent (key) whose composer should open its model picker (an error block asked for another model). */
   modelPicker = $state<string | null>(null);
   /** Terminal font size in px (pinch on a touch screen changes it). */
@@ -209,6 +210,12 @@ class Ui {
   showImages(agent: string, name: string, by?: Pick<TrackRef, 'agentId' | 'projectId'>) {
     this.imageFocus = { agent, name, n: seq++ };
     this.showPanel('images', by);
+  }
+
+  /** Opens an agent's (key) Subagents tab at one subagent (`<tool item id>/<subagent id>`). */
+  showSubagent(agent: string, ref: string, by?: Pick<TrackRef, 'agentId' | 'projectId'>) {
+    this.subagentOpen[agent] = ref;
+    this.showPanel('subagents', by);
   }
 }
 

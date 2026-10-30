@@ -9,7 +9,7 @@ use coocoo_proto::insights::slash_name;
 use coocoo_proto::util::{new_id, now_ms};
 use coocoo_proto::{
     AgentStatus, AgentSummary, ApiError, ApiResult, ImageInput, ItemKind, ModelInfo, Project, ProviderUsage, SlashCommand,
-    WorktreeRef, events,
+    TimelineItem, WorktreeRef, events,
 };
 use omp_rpc::{
     AbortCommand, Client, ClientOptions, ExtensionUiResponse, GetAvailableCommandsCommand, GetAvailableModelsCommand,
@@ -190,11 +190,13 @@ fn image_content(image: ImageInput) -> ImageContent {
     }
 }
 
-/// MIME type of a stored timeline image name (`<seq>-<index>.<ext>`). Anything else is
-/// rejected, so a name can never point outside the agent's image directory.
+/// MIME type of a stored timeline image name (`<seq>-<index>.<ext>`, or `<seq>-s<index>.<ext>`
+/// for a subagent's). Anything else is rejected, so a name can never point outside the agent's
+/// image directory.
 fn message_image_mime(name: &str) -> Option<&'static str> {
     let (stem, ext) = name.split_once('.')?;
     let (seq, index) = stem.split_once('-')?;
+    let index = index.strip_prefix('s').unwrap_or(index);
     let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
     if !(digits(seq) && digits(index)) {
         return None;
@@ -269,12 +271,14 @@ impl Agents {
             "agents.image" => self.image(params(p)?).await,
             "agents.images" => {
                 let IdParams { id } = params(p)?;
-                let agent = self.get(&id)?;
-                let (path, tail) = {
-                    let tl = agent.timeline.lock();
-                    (tl.path().to_owned(), tl.tail())
-                };
+                let (path, tail) = self.timeline_source(&id)?;
                 ok(tokio::task::spawn_blocking(move || timeline::with_images(&path, tail)).await.map_err(ApiError::internal)?)
+            }
+            "agents.subagents" => {
+                let IdParams { id } = params(p)?;
+                let live = self.get(&id)?.state.lock().is_live();
+                let (path, tail) = self.timeline_source(&id)?;
+                ok(tokio::task::spawn_blocking(move || timeline::with_subagents(&path, tail, live)).await.map_err(ApiError::internal)?)
             }
             "agents.hibernate" => {
                 let IdParams { id } = params(p)?;
@@ -717,6 +721,13 @@ impl Agents {
         Ok(report)
     }
 
+    /// An agent's timeline file and in-memory tail, for reads over its whole timeline.
+    fn timeline_source(&self, id: &str) -> ApiResult<(std::path::PathBuf, Vec<TimelineItem>)> {
+        let agent = self.get(id)?;
+        let tl = agent.timeline.lock();
+        Ok((tl.path().to_owned(), tl.tail()))
+    }
+
     async fn subagent_timeline(&self, p: SubagentTimelineParams) -> ApiResult<Value> {
         let agent = self.get(&p.id)?;
         let (parent, project_id) = {
@@ -814,7 +825,8 @@ mod tests {
     fn image_names_cannot_leave_the_image_directory() {
         assert_eq!(message_image_mime("12-0.png"), Some("image/png"));
         assert_eq!(message_image_mime("3-2.webp"), Some("image/webp"));
-        for bad in ["../x", "a/b.png", "../1-0.png", "1-0/../../x.png", "1-0.svg", "1-0.png.png", "x-0.png", "1-.jpg", "-0.gif", "10.png", "1-0", ""] {
+        assert_eq!(message_image_mime("3-s14.webp"), Some("image/webp"));
+        for bad in ["../x", "a/b.png", "../1-0.png", "1-0/../../x.png", "1-0.svg", "1-0.png.png", "x-0.png", "1-.jpg", "-0.gif", "10.png", "1-0", "", "1-s.png", "1-ss0.png", "s1-0.png"] {
             assert_eq!(message_image_mime(bad), None, "{bad}");
         }
     }

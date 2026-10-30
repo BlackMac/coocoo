@@ -748,7 +748,8 @@ pub struct TimelineItem {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TimelineImage {
-    /// File name (`<seq>-<index>.<ext>`), the key for `agents.image`.
+    /// File name (`<seq>-<index>.<ext>`, or `<seq>-s<index>.<ext>` for a subagent's), the key
+    /// for `agents.image`.
     pub name: String,
     pub mime: String,
     /// Bytes.
@@ -758,6 +759,16 @@ pub struct TimelineImage {
     pub width: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub height: Option<u32>,
+    /// A subagent's image, on the tool item that started it: the subagent's id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent: Option<String>,
+    /// With `subagent`: the subagent's tool call that returned it (the `id` of that call's item
+    /// in `agents.subagentTimeline`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call: Option<String>,
+    /// With `subagent`: what that call did (its intent, else the tool's name).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 /// Payload of `agent.timeline`.

@@ -172,7 +172,7 @@
         projectId={agent.projectId}
         {highlight}
         {erroractions}
-        onsubagent={(s) => s.sessionFile && (ui.dialog = { kind: 'subagent', hostId: agent.hostId, agentId: agent.id, subagentId: s.id, sessionFile: s.sessionFile })}
+        onsubagent={(item, s) => ui.showSubagent(agentKey, `${item.id}/${s.id}`, { agentId: agent.id, projectId: agent.projectId ?? undefined })}
       />
       {#each pending as e (e.id)}
         <UserItem

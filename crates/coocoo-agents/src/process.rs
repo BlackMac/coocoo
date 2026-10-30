@@ -1,6 +1,7 @@
 //! omp process lifecycle: spawn (with the browser overlay and host tools), the per-process
 //! event thread, post-turn state refresh, and crash handling.
 
+use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::Command as Process;
@@ -12,8 +13,8 @@ use std::time::Instant;
 use coocoo_proto::cgroup::Leaf;
 use coocoo_proto::util::{now_ms, preview};
 use coocoo_proto::{
-    ApiError, ApiResult, CommandsEvent, DiffStat, ItemKind, Orchestrator, TimelineDelta, TimelineItem, TodoPhase, TodoTask,
-    UiRequest, events,
+    ApiError, ApiResult, CommandsEvent, DiffStat, ItemKind, Orchestrator, TimelineDelta, TimelineImage, TimelineItem, TodoPhase,
+    TodoTask, UiRequest, events,
 };
 use omp_rpc::{
     Client, ClientOptions, Command, Event, GetSessionStatsCommand, GetStateCommand, PromptCommand, SessionState,
@@ -24,6 +25,7 @@ use serde_json::{Value, json};
 
 use crate::Agents;
 use crate::mapper::{Effect, Mapper, Sink};
+use crate::transcript::{FoundImage, ImageScan};
 use crate::secret::Redactor;
 use crate::state::{Agent, Life, PendingPrompt, Proc, State, Turn};
 
@@ -474,7 +476,7 @@ impl Agents {
     fn run_events(self: Arc<Self>, agent: &Arc<Agent>, generation: u64, events: Receiver<Event>, spawn_redactor: Arc<Redactor>) {
         let mut mapper = Mapper::new();
         let secrets = SinkSecrets { project_id: agent.summary().project_id, spawn: spawn_redactor, cached: None, held: None };
-        let mut sink = LiveSink { agents: &self, agent, generation, unsaved: Vec::new(), secrets };
+        let mut sink = LiveSink { agents: &self, agent, generation, unsaved: Vec::new(), secrets, subagent_images: SubagentImages::default() };
         loop {
             let event = match mapper.deadline() {
                 Some(deadline) => match events.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
@@ -625,6 +627,62 @@ struct LiveSink<'a> {
     /// Images whose `SaveImage` failed; their item is upserted without them.
     unsaved: Vec<String>,
     secrets: SinkSecrets,
+    subagent_images: SubagentImages,
+}
+
+/// The images subagents' tool calls returned, shown on the tool item that started them. omp
+/// sends no subagent tool results at the `progress` subscription level, so each update of such
+/// an item reads what the subagents' session files gained since the last one.
+#[derive(Default)]
+struct SubagentImages {
+    /// Session file → scan state.
+    scans: HashMap<String, ImageScan>,
+    /// Tool item id → its subagents' images so far, stored as `<seq>-s<n>.<ext>`.
+    found: HashMap<String, Vec<TimelineImage>>,
+}
+
+impl SubagentImages {
+    /// Appends the images `item`'s subagents returned so far to its own.
+    fn attach(&mut self, agent: &Agent, item: &mut TimelineItem) {
+        let Some(tool) = &item.tool else { return };
+        for sub in &tool.subagents {
+            let Some(file) = &sub.session_file else { continue };
+            let scan = self.scans.entry(file.clone()).or_default();
+            let found = match scan.scan(Path::new(file)) {
+                Ok(found) => found,
+                Err(err) => {
+                    tracing::debug!(agent = %agent.id, file, %err, "subagent session unreadable");
+                    continue;
+                }
+            };
+            if found.is_empty() {
+                continue;
+            }
+            let list = self.found.entry(item.id.clone()).or_default();
+            let dir = agent.dir.join(crate::image::DIR);
+            for FoundImage { tool_call, title, image: (mime, ext, bytes) } in found {
+                let name = format!("{}-s{}.{ext}", item.seq, list.len());
+                if let Err(err) = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(dir.join(&name), &bytes)) {
+                    tracing::warn!(agent = %agent.id, image = %name, %err, "image write failed");
+                    continue;
+                }
+                let (width, height) = crate::image::dimensions(&bytes).unzip();
+                list.push(TimelineImage {
+                    name,
+                    mime,
+                    size: bytes.len() as u64,
+                    width,
+                    height,
+                    subagent: Some(sub.id.clone()),
+                    tool_call: Some(tool_call),
+                    title: Some(title),
+                });
+            }
+        }
+        if let Some(list) = self.found.get(&item.id) {
+            item.images.extend(list.iter().cloned());
+        }
+    }
 }
 
 /// Keeps secret values out of what the event thread stores and sends ([`crate::secret`]).
@@ -691,6 +749,7 @@ impl Sink for LiveSink<'_> {
                 }
             }
             Effect::Upsert(mut item) => {
+                self.subagent_images.attach(agent, &mut item);
                 if !self.unsaved.is_empty() {
                     item.images.retain(|image| !self.unsaved.contains(&image.name));
                     self.unsaved.clear();
@@ -706,6 +765,7 @@ impl Sink for LiveSink<'_> {
                 agents.emit_item(&agent.id, item);
             }
             Effect::Progress(mut item) => {
+                self.subagent_images.attach(agent, &mut item);
                 self.secrets.redactor(agents).redact_item(&mut item);
                 agent.timeline.lock().overlay(item.clone());
                 agents.emit_item(&agent.id, item);

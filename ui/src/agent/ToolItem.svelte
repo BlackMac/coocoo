@@ -6,7 +6,8 @@
   import SubagentList from './SubagentList.svelte';
 
   // `onimage`: opens one of the call's result images (screenshots, viewed files) in the side panel.
-  let { item, onsubagent, onimage }: { item: TimelineItem; onsubagent?: (s: Subagent) => void; onimage?: (name: string) => void } = $props();
+  // `onsubagent`: opens one of the subagents the call started.
+  let { item, onsubagent, onimage }: { item: TimelineItem; onsubagent?: (item: TimelineItem, s: Subagent) => void; onimage?: (name: string) => void } = $props();
   let open = $state(false);
 
   const ICONS: Record<string, Component<{ size?: number }>> = {
@@ -80,7 +81,7 @@
       {/if}
     </div>
   {/if}
-  {#if tool.subagents?.length}<SubagentList subagents={tool.subagents} {onsubagent} />{/if}
+  {#if tool.subagents?.length}<SubagentList subagents={tool.subagents} onsubagent={onsubagent && ((s) => onsubagent(item, s))} />{/if}
 </div>
 
 <style>

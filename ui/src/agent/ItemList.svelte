@@ -27,7 +27,7 @@
     erroractions,
   }: {
     items: TimelineItem[];
-    onsubagent?: (s: Subagent) => void;
+    onsubagent?: (item: TimelineItem, s: Subagent) => void;
     host?: string;
     agentId?: string;
     projectId?: string;

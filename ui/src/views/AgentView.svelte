@@ -15,7 +15,7 @@
   import { ui, type PanelTab } from '../lib/ui.svelte';
   import { track } from '../lib/track';
   import { errorInTimeline, parseError } from '../lib/providerError';
-  import { Ellipsis, FileDiff, Globe, Image, Info, ListChecks, PanelRight, SquareKanban, Terminal, MessageSquareText } from '../lib/icons';
+  import { Ellipsis, FileDiff, Globe, Image, Info, ListChecks, PanelRight, SquareKanban, Terminal, MessageSquareText, Users } from '../lib/icons';
   import StatusDot from '../components/StatusDot.svelte';
   import InlineEdit from '../components/InlineEdit.svelte';
   import Menu from '../components/Menu.svelte';
@@ -31,6 +31,7 @@
   import PlanPanel from '../panels/PlanPanel.svelte';
   import InfoPanel from '../panels/InfoPanel.svelte';
   import BoardPanel from '../panels/BoardPanel.svelte';
+  import SubagentsPanel from '../panels/SubagentsPanel.svelte';
 
   let { host, id }: { host: string; id: string } = $props();
 
@@ -76,6 +77,7 @@
     { id: 'browser', label: 'Browser', icon: Globe },
     { id: 'terminal', label: 'Terminal', icon: Terminal },
     { id: 'images', label: 'Images', icon: Image },
+    { id: 'subagents', label: 'Subagents', icon: Users },
     { id: 'board', label: 'Board', icon: SquareKanban },
     { id: 'plan', label: 'Plan', icon: ListChecks },
     { id: 'info', label: 'Info', icon: Info },
@@ -95,8 +97,8 @@
   }
 
   // A picture the agent produces (a screenshot, an image it looks at, refinement mocks) is shown
-  // in the Images tab right away, unless the user is typing in the side panel (a terminal).
-  // Phones keep the pane they show.
+  // in the Images tab right away, unless the user is typing in the side panel (a terminal) or
+  // watching its subagents (whose pictures would pull them away). Phones keep the pane they show.
   let panelEl = $state<HTMLElement>();
   let arrived = fleet.imageArrived?.n ?? 0;
   $effect(() => {
@@ -109,6 +111,7 @@
       if (matchMedia('(max-width: 860px)').matches) return;
       const el = document.activeElement;
       if (el instanceof HTMLElement && panelEl?.contains(el) && (el.isContentEditable || el.matches('input, textarea, select'))) return;
+      if (ui.panel.open && ui.panel.tab === 'subagents') return;
       ui.panel.tab = 'images';
       ui.panel.open = true;
     });
@@ -189,6 +192,7 @@
               {#if t.id === 'changes' && a.diff?.files}<span class="cnt num">{a.diff.files}</span>{/if}
               {#if t.id === 'plan' && a.todos?.total}<span class="cnt num">{a.todos.done}/{a.todos.total}</span>{/if}
               {#if t.id === 'board' && todoCount}<span class="cnt num">{todoCount}</span>{/if}
+              {#if t.id === 'subagents' && a.subagents}<span class="cnt num run" title="{a.subagents} running">{a.subagents}</span>{/if}
             </button>
           {/each}
         </div>
@@ -201,6 +205,8 @@
             {#await loadTerminal() then m}<m.default {host} cwd={a.cwd} browserProfile={a.projectId ?? 'default'} />{/await}
           {:else if ui.panel.tab === 'images'}
             {#await loadImages() then m}<m.default agent={a} />{/await}
+          {:else if ui.panel.tab === 'subagents'}
+            <SubagentsPanel agent={a} />
           {:else if ui.panel.tab === 'board' && a.projectId}
             <BoardPanel {host} projectId={a.projectId} agent={a} />
           {:else if ui.panel.tab === 'plan'}
@@ -405,6 +411,9 @@
     background: var(--bg-3);
     color: var(--text-2);
     font-size: 10.5px;
+  }
+  .cnt.run {
+    color: var(--blue);
   }
   .pbody {
     flex: 1;

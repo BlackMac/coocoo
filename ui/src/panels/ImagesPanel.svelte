@@ -71,8 +71,8 @@
         out.push({
           key: `t:${img.name}`,
           ts: item.ts,
-          title: tool ? tool.intent || tool.name : 'Sent with a prompt',
-          source: tool ? tool.name : 'Prompt',
+          title: img.title || (tool ? tool.intent || tool.name : 'Sent with a prompt'),
+          source: img.subagent ? `Subagent ${img.subagent}` : tool ? tool.name : 'Prompt',
           mime: img.mime,
           size: img.size,
           width: img.width,
@@ -173,7 +173,7 @@
   {:else if !visuals.length}
     <div class="empty">
       <strong>{error ? 'Images not available' : 'No images yet'}</strong>
-      <span>{error ?? 'Screenshots the agent takes, images and design mocks it looks at or attaches, and the images of its card show up here.'}</span>
+      <span>{error ?? 'Screenshots the agent and its subagents take, images and design mocks they look at or attach, and the images of its card show up here.'}</span>
     </div>
   {:else if current}
     <div class="stage">

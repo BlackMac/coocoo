@@ -188,7 +188,7 @@ fn attach_images(sink: &mut dyn Sink, item: &mut TimelineItem, images: Vec<Decod
     for (index, (mime, ext, bytes)) in images.into_iter().enumerate() {
         let name = format!("{}-{index}.{ext}", item.seq);
         let (width, height) = crate::image::dimensions(&bytes).unzip();
-        item.images.push(TimelineImage { name: name.clone(), mime, size: bytes.len() as u64, width, height });
+        item.images.push(TimelineImage { name: name.clone(), mime, size: bytes.len() as u64, width, height, subagent: None, tool_call: None, title: None });
         sink.effect(Effect::SaveImage { name, bytes });
     }
 }
@@ -795,7 +795,7 @@ fn split_parts(parts: Vec<UserContent>) -> (String, Vec<ImageContent>) {
 }
 
 /// A decoded image: MIME type, file extension, bytes.
-type DecodedImage = (String, &'static str, Vec<u8>);
+pub(crate) type DecodedImage = (String, &'static str, Vec<u8>);
 
 /// An image of an accepted type with valid base64 data.
 fn decode_image(mime: Option<String>, data: Option<&str>) -> Option<DecodedImage> {
@@ -853,7 +853,7 @@ pub(crate) fn tool_output(result: &Value) -> String {
 
 /// Image parts of a tool result (`{content: [{type:"image", data, mimeType}]}`) that decode;
 /// the others stay `[image]` in its text only.
-fn tool_images(result: &Value) -> Vec<DecodedImage> {
+pub(crate) fn tool_images(result: &Value) -> Vec<DecodedImage> {
     let Some(parts) = result.get("content").and_then(Value::as_array) else { return Vec::new() };
     parts
         .iter()

@@ -203,11 +203,13 @@ export class Fleet {
   outbox = $state<Record<string, Outgoing[]>>({});
   /** Items with images (`agents.images`) per `host:agentId`, loaded by the Images tab, kept current by `agent.timeline`. */
   images = $state<Record<string, TimelineItem[]>>({});
+  /** Tool items that started subagents (`agents.subagents`) per `host:agentId`, loaded by the Subagents tab, kept current by `agent.timeline`. */
+  subagents = $state<Record<string, TimelineItem[]>>({});
   /** The latest picture an agent produced while this client watched: a tool result image by
    *  `name`, or `''` for a refinement (its mocks land on the board). `n` counts arrivals. */
   imageArrived = $state<{ key: string; name: string; n: number } | null>(null);
-  /** Items that already announced a picture (a finished call is upserted again on subagent progress). */
-  #announced = new Set<string>();
+  /** Images already announced per item (a task call gains its subagents' images one by one). */
+  #announced = new Map<string, number>();
   #outboxTimers = new Map<string, number>();
   /** `user` item ids seen per agent: only a new one confirms a prompt (not a re-sent update). */
   #seenUser = new Map<string, Set<string>>();
@@ -369,24 +371,32 @@ export class Fleet {
     this.images[key(host, id)] = await this.call('agents.images', { id }, host);
   }
 
-  /** Keeps a loaded image list current and announces pictures the agent produced. */
+  /** Fetches (or refreshes) the tool items of an agent's timeline that started subagents. */
+  async loadSubagents(host: string, id: string): Promise<void> {
+    this.subagents[key(host, id)] = await this.call('agents.subagents', { id }, host);
+  }
+
+  /** Keeps a loaded list (`images`, `subagents`) current with an upserted item it holds. */
+  #upsertInto(list: TimelineItem[] | undefined, item: TimelineItem) {
+    if (!list) return;
+    const i = list.findIndex((x) => x.id === item.id);
+    if (i >= 0) list[i] = item;
+    else list.push(item);
+  }
+
+  /** Keeps a loaded image list current and announces pictures the agent (or its subagents) produced. */
   #noteImages(k: string, item: TimelineItem) {
-    if (item.partial) return;
-    if (item.images?.length) {
-      const list = this.images[k];
-      if (list) {
-        const i = list.findIndex((x) => x.id === item.id);
-        if (i >= 0) list[i] = item;
-        else list.push(item);
-      }
-    }
+    // A running task call gains its subagents' images while it is still partial.
+    const n = item.images?.length ?? 0;
+    if (n) this.#upsertInto(this.images[k], item);
     const tool = item.tool;
+    if (!tool || (item.partial && !n)) return;
     // A refinement counts when it attaches mocks (its arguments may be cut off before them).
-    const mocks = tool?.name === 'kanban_refine' && tool.status === 'ok' && /"attachments"\s*:\s*\[\s*"/.test(tool.args);
-    const produced = tool && (item.images?.length || mocks);
+    const mocks = tool.name === 'kanban_refine' && tool.status === 'ok' && /"attachments"\s*:\s*\[\s*"/.test(tool.args);
     const id = `${k}:${item.id}`;
-    if (!produced || this.#announced.has(id)) return;
-    this.#announced.add(id);
+    const seen = this.#announced.get(id);
+    if (n ? n <= (seen ?? 0) : !mocks || seen !== undefined) return;
+    this.#announced.set(id, n);
     this.imageArrived = { key: k, name: item.images?.at(-1)?.name ?? '', n: (this.imageArrived?.n ?? 0) + 1 };
   }
 
@@ -779,12 +789,14 @@ export class Fleet {
       this.#seenUser.delete(k);
       this.#timelines.delete(k);
       delete this.images[k];
+      delete this.subagents[k];
     });
     c.on('agent.timeline', ({ agentId, item }, host) => {
       const k = key(host, agentId);
       this.#timelines.get(k)?.upsert(item);
       this.#settleItem(k, item);
       this.#noteImages(k, item);
+      if (item.tool?.subagents?.length) this.#upsertInto(this.subagents[k], item);
     });
     c.on('agent.delta', ({ agentId, itemId, text }, host) => {
       this.#timelines.get(key(host, agentId))?.delta(itemId, text);
