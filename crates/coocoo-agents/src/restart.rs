@@ -12,9 +12,8 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use coocoo_proto::ApiResult;
-use omp_rpc::StreamingBehavior;
 
-use crate::state::{Agent, PendingPrompt, RestartMark};
+use crate::state::{Agent, Delivery, PendingPrompt, RestartMark};
 use crate::{Agents, write_meta};
 
 /// How often the drain re-checks whether the asked agents ended their turns.
@@ -91,7 +90,7 @@ impl Agents {
             client
         };
         self.changed(agent);
-        let prompt = PendingPrompt { message: PAUSE.to_owned(), images: None, behavior: StreamingBehavior::Steer };
+        let prompt = PendingPrompt { message: PAUSE.to_owned(), images: None, delivery: Delivery::Steer };
         self.send_prompt(agent, client, prompt).await
     }
 

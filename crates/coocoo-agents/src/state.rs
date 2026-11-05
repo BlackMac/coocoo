@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use coocoo_proto::util::now_ms;
 use coocoo_proto::{AgentDetail, AgentStatus, AgentSummary, SlashCommand, TodoPhase, TodoSummary, UiRequest};
-use omp_rpc::{Client, ImageContent, PromptStatus, StreamingBehavior};
+use omp_rpc::{Client, ImageContent, PromptStatus};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
@@ -39,11 +39,27 @@ pub(crate) struct Proc {
     pub _cgroup: Option<coocoo_proto::cgroup::Leaf>,
 }
 
+/// How a prompt reaches an agent that is in a turn; an idle agent starts a turn either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(crate) enum Delivery {
+    /// After the current turn ends.
+    #[serde(rename = "followUp")]
+    FollowUp,
+    /// After the running tool call; the step's remaining tool calls are skipped.
+    #[serde(rename = "steer")]
+    Steer,
+    /// At the next step boundary; nothing is interrupted or skipped. omp's RPC schema lists only
+    /// `steer`/`followUp`, but its `prompt` hands `streamingBehavior` to `AgentSession.prompt`
+    /// unchecked, which takes `aside` (omp ≥ 18.12.3).
+    #[serde(rename = "aside")]
+    Aside,
+}
+
 /// A prompt accepted before the process was ready.
 pub(crate) struct PendingPrompt {
     pub message: String,
     pub images: Option<Vec<ImageContent>>,
-    pub behavior: StreamingBehavior,
+    pub delivery: Delivery,
 }
 
 /// The turn being worked on, for the usage log: from the first `agent_start` (or a prompt that

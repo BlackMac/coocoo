@@ -208,7 +208,23 @@ impl ToolEnv {
         if host.is_none() && id == self.agent_id {
             return Err(err("an agent cannot message itself"));
         }
-        self.call(host, "agents.prompt", json!({ "id": id, "message": message, "mode": "auto" }))?;
+        let mode = match args.get("mode").and_then(Value::as_str) {
+            None | Some("followUp") => "auto",
+            Some(mode @ ("aside" | "steer")) => mode,
+            Some(other) => return Err(err(format!("unknown mode `{other}`; use `followUp`, `aside` or `steer`"))),
+        };
+        // The receiver gets it as a user message: say which agent sent it.
+        let title = self.agents.upgrade().and_then(|agents| agents.summary(&self.agent_id)).map(|me| me.title);
+        let from = match title {
+            Some(title) => format!("agent “{title}”"),
+            None => "an agent".to_owned(),
+        };
+        let message = format!(
+            "[Message from {from} (agentId {}, host {}) via coocoo_send]\n\n{message}",
+            self.agent_id,
+            self.orchestrator.local_host_id()
+        );
+        self.call(host, "agents.prompt", json!({ "id": id, "message": message, "mode": mode }))?;
         Ok(HostToolOutput::Text(format!(
             "Message delivered to agent {id}. Call coocoo_wait to get its answer."
         )))
@@ -890,13 +906,14 @@ pub(crate) fn host_tools(agents: &Arc<Agents>, agent_id: &str, orchestrator: Arc
         tool(
             "coocoo_send",
             "Message agent",
-            "Send a message to another agent: starts a new turn when it is idle (hibernated agents resume automatically) or is queued as a follow-up while it works. Use coocoo_wait afterwards for the answer.",
+            "Send a message to another agent; the receiver sees who sent it. An idle agent starts a new turn with it (hibernated agents resume automatically). While it works, `mode` decides: `followUp` (default) queues the message until its current turn ends; `aside` hands it over at its next step, after the running tool calls, without interrupting or skipping anything (cooperative: the agent folds it into its work); `steer` interrupts after the running tool call and skips its remaining tool calls of that step, for a correction that must not wait. Use coocoo_wait afterwards for the answer.",
             json!({
                 "type": "object",
                 "properties": {
                     "agentId": { "type": "string" },
                     "host": { "type": "string", "description": HOST_PROP },
-                    "message": { "type": "string" }
+                    "message": { "type": "string" },
+                    "mode": { "type": "string", "enum": ["followUp", "aside", "steer"], "description": "Delivery while the agent works; default followUp." }
                 },
                 "required": ["agentId", "message"],
                 "additionalProperties": false

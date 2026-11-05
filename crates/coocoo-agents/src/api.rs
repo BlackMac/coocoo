@@ -13,13 +13,13 @@ use coocoo_proto::{
 };
 use omp_rpc::{
     AbortCommand, Client, ClientOptions, ExtensionUiResponse, GetAvailableCommandsCommand, GetAvailableModelsCommand,
-    ImageContent, LitImage, RpcInbound, SetModelCommand, SetThinkingLevelCommand, StreamingBehavior, ThinkingLevel,
+    ImageContent, LitImage, RpcInbound, SetModelCommand, SetThinkingLevelCommand, ThinkingLevel,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::process::{call, client_error};
-use crate::state::{Agent, Life, PendingPrompt, State};
+use crate::state::{Agent, Delivery, Life, PendingPrompt, State};
 use crate::timeline;
 use crate::{Agents, branch, transcript, usage, write_meta};
 
@@ -439,7 +439,7 @@ impl Agents {
         let mut state = State::new(summary, Life::Starting);
         if prompt.is_some() || !p.images.is_empty() {
             let images = (!p.images.is_empty()).then(|| p.images.into_iter().map(image_content).collect());
-            state.pending.push(PendingPrompt { message: prompt.unwrap_or_default(), images, behavior: StreamingBehavior::FollowUp });
+            state.pending.push(PendingPrompt { message: prompt.unwrap_or_default(), images, delivery: Delivery::FollowUp });
             state.begin_prompt();
         }
         let agent = Arc::new(Agent::new(self.root.join(&id), state));
@@ -478,9 +478,10 @@ impl Agents {
         if p.message.trim().is_empty() && p.images.is_empty() {
             return Err(ApiError::invalid("message must not be empty"));
         }
-        let behavior = match p.mode.as_deref() {
-            None | Some("auto" | "followUp") => StreamingBehavior::FollowUp,
-            Some("steer") => StreamingBehavior::Steer,
+        let delivery = match p.mode.as_deref() {
+            None | Some("auto" | "followUp") => Delivery::FollowUp,
+            Some("steer") => Delivery::Steer,
+            Some("aside") => Delivery::Aside,
             Some(other) => return Err(ApiError::invalid(format!("unknown mode `{other}`"))),
         };
         let agent = self.get(&p.id)?;
@@ -512,7 +513,7 @@ impl Agents {
             }
         };
         let images = (!p.images.is_empty()).then(|| p.images.into_iter().map(image_content).collect());
-        self.send_prompt(&agent, client, PendingPrompt { message: p.message, images, behavior }).await?;
+        self.send_prompt(&agent, client, PendingPrompt { message: p.message, images, delivery }).await?;
         Ok(json!({}))
     }
 

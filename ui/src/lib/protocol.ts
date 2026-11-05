@@ -1321,7 +1321,7 @@ export interface Methods {
     },
     AgentSummary,
   ];
-  'agents.prompt': [{ id: string; message: string; mode?: 'auto' | 'steer' | 'followUp'; images?: ImageInput[] }, Ok];
+  'agents.prompt': [{ id: string; message: string; mode?: 'auto' | 'steer' | 'aside' | 'followUp'; images?: ImageInput[] }, Ok];
   'agents.abort': [{ id: string }, Ok];
   'agents.respond': [{ id: string; requestId: string; response: UiResponse }, Ok];
   'agents.timeline': [{ id: string; before?: number; limit?: number }, TimelinePage];

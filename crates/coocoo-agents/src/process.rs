@@ -17,7 +17,7 @@ use coocoo_proto::{
     TodoTask, UiRequest, events,
 };
 use omp_rpc::{
-    Client, ClientOptions, Command, Event, GetSessionStatsCommand, GetStateCommand, PromptCommand, SessionState,
+    Client, ClientOptions, Command, Event, GetSessionStatsCommand, GetStateCommand, ImageContent, PromptAck, SessionState,
     SessionStats, SetAskDialogCommand, SetSubagentSubscriptionCommand, SubagentSubscriptionLevel,
 };
 use serde::Serialize;
@@ -27,7 +27,7 @@ use crate::Agents;
 use crate::mapper::{Effect, Mapper, Sink};
 use crate::transcript::{FoundImage, ImageScan};
 use crate::secret::Redactor;
-use crate::state::{Agent, Life, PendingPrompt, Proc, State, Turn};
+use crate::state::{Agent, Delivery, Life, PendingPrompt, Proc, State, Turn};
 
 /// Session events the supervisor consumes; everything else (`agent_end` with the whole
 /// transcript, tool output streaming, turn markers) stays inside omp.
@@ -65,6 +65,26 @@ impl Command for SetEventFilter {
 
     fn decode(data: Option<Value>) -> Result<Value, serde_json::Error> {
         Ok(data.unwrap_or(Value::Null))
+    }
+}
+
+/// `prompt` with [`Delivery`]: the generated command's `StreamingBehavior` lacks `aside`.
+#[derive(Serialize)]
+struct Prompt {
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    images: Option<Vec<ImageContent>>,
+    #[serde(rename = "streamingBehavior")]
+    delivery: Delivery,
+}
+
+impl Command for Prompt {
+    const NAME: &'static str = "prompt";
+    const TIMEOUT_MS: Option<u64> = None;
+    type Output = PromptAck;
+
+    fn decode(data: Option<Value>) -> Result<PromptAck, serde_json::Error> {
+        serde_json::from_value(data.unwrap_or_else(|| json!({})))
     }
 }
 
@@ -437,11 +457,7 @@ impl Agents {
     /// the `command_output` that arrives ahead of the response.
     pub(crate) async fn send_prompt(&self, agent: &Arc<Agent>, client: Arc<Client>, prompt: PendingPrompt) -> ApiResult<()> {
         let slash = prompt.message.trim_start().starts_with('/').then(|| (agent.timeline.lock().alloc(), prompt.message.trim().to_owned()));
-        let command = PromptCommand {
-            message: prompt.message,
-            images: prompt.images,
-            streaming_behavior: Some(prompt.behavior),
-        };
+        let command = Prompt { message: prompt.message, images: prompt.images, delivery: prompt.delivery };
         let result = call(client, command).await;
         match &result {
             Ok(ack) if ack.agent_invoked == Some(false) => {
