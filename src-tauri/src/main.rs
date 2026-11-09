@@ -61,12 +61,26 @@ fn main() {
             update::update_status,
             update::update_check,
             update::update_install,
+            open_folder,
         ])
          .setup(setup)
         .on_window_event(on_window_event)
         .build(tauri::generate_context!())
         .expect("failed to initialize the Coocoo desktop app");
     app.run(on_run_event);
+}
+
+/// "Open in Finder" of an agent's or project's directory. Only directories: a file would open
+/// in (or run as) its default application. On macOS Finder opens it explicitly, so an app
+/// bundle (a directory) is shown, not launched.
+#[tauri::command]
+fn open_folder(app: AppHandle, path: String) -> Result<(), String> {
+    let dir = std::path::Path::new(&path);
+    if !dir.is_absolute() || !dir.is_dir() {
+        return Err(format!("{path} is not a directory on this computer"));
+    }
+    let with = if cfg!(target_os = "macos") { Some("Finder") } else { None };
+    app.opener().open_path(path.as_str(), with).map_err(|err| format!("cannot open {path}: {err}"))
 }
 
 fn init_tracing() {
@@ -110,7 +124,8 @@ fn create_main_window(app: &AppHandle, backend: &Backend) -> tauri::Result<()> {
         .on_new_window({
             let app = app.clone();
             move |url, _features| {
-                if matches!(url.scheme(), "http" | "https" | "mailto")
+                // Editor links ("Open in VS Code") go to the editor the same way.
+                if matches!(url.scheme(), "http" | "https" | "mailto" | "vscode" | "cursor")
                     && let Err(err) = app.opener().open_url(url.as_str(), None::<&str>)
                 {
                     tracing::warn!("cannot open {url}: {err}");

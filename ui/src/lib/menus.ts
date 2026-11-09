@@ -4,8 +4,10 @@
 import type { Component } from 'svelte';
 import { copyText } from './clipboard';
 import { fleet, key } from './fleet.svelte';
+import { editorLink, openEditor } from './editor.svelte';
+import { folderLabel, openFolder } from './external';
 import { fetchProject } from './git.svelte';
-import { Archive, ArrowDownToLine, Copy, Moon, Pencil, Pin, PinOff, Plus, Trash2 } from './icons';
+import { Archive, ArrowDownToLine, Code, Copy, FolderOpen, Moon, Pencil, Pin, PinOff, Plus, Trash2 } from './icons';
 import type { AgentSummary, Project } from './protocol';
 import { router } from './router.svelte';
 import { ui } from './ui.svelte';
@@ -59,6 +61,7 @@ export function agentMenu(a: AgentSummary, rename?: () => void): MenuItem[] {
       ? { label: 'Unpin', icon: PinOff, run: () => pinAgent(a, false) }
       : { label: 'Pin to top', icon: Pin, run: () => pinAgent(a, true) },
     ...(rename ? [{ label: 'Rename', icon: Pencil, run: rename }] : []),
+    ...openItems(a.hostId, a.cwd),
     { label: 'Hibernate', icon: Moon, disabled: ['hibernated', 'stopped'].includes(a.status), run: () => lifecycle(a, 'agents.hibernate', 'Hibernate') },
     { label: 'Archive', icon: Archive, disabled: a.status === 'stopped', run: () => lifecycle(a, 'agents.archive', 'Archive') },
     { label: 'Delete', icon: Trash2, danger: true, run: () => deleteAgent(a, false) },
@@ -118,7 +121,18 @@ export function projectMenu(p: Project, full?: { rename: () => void }): MenuItem
           ...(p.git ? [{ label: 'Fetch', icon: ArrowDownToLine, run: () => void fetchProject(p) }] : []),
         ]
       : []),
+    ...openItems(p.hostId, p.path),
     { label: 'Copy path', icon: Copy, run: () => copy(p.path) },
     { label: 'Remove project', icon: Trash2, danger: true, run: () => removeProject(p) },
   ];
+}
+
+/** "Open in Finder" (desktop app, this computer only) and "Open in VS Code" (also over SSH). */
+function openItems(host: string, path: string): MenuItem[] {
+  const items: MenuItem[] = [];
+  const folder = folderLabel(host);
+  if (folder) items.push({ label: folder, icon: FolderOpen, run: () => openFolder(path) });
+  const link = editorLink(host, path);
+  if (link) items.push({ label: link.label, icon: Code, run: () => openEditor(link.url) });
+  return items;
 }

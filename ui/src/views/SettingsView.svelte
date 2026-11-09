@@ -8,6 +8,7 @@
   import { ui, type ThemePref } from '../lib/ui.svelte';
   import { Copy, Laptop, Monitor, Moon, Plus, Server, Sun, Trash2, Cloud, Bell, Check, CircleAlert, Download, RefreshCw, RotateCcw } from '../lib/icons';
   import { desktopUpdate } from '../lib/desktop-update.svelte';
+  import { EDITORS, defaultSshTarget, editor, isThisComputer, setEditorApp, setSshTarget } from '../lib/editor.svelte';
   import HostDot from '../components/HostDot.svelte';
   import InlineEdit from '../components/InlineEdit.svelte';
 
@@ -196,6 +197,42 @@
             <button role="radio" aria-checked={ui.themePref === t.id} class:on={ui.themePref === t.id} onclick={() => ui.setTheme(t.id)}><t.icon size={13} />{t.label}</button>
           {/each}
         </div>
+      </div>
+    </section>
+
+    <section>
+      <h2 class="section-title">Editor</h2>
+      <div class="card table">
+        <div class="lr ed">
+          <span>Open agents and projects in</span>
+          <div class="seg" role="radiogroup" aria-label="Editor">
+            {#each EDITORS as e (e.id)}
+              <button role="radio" aria-checked={editor.app === e.id} class:on={editor.app === e.id} onclick={() => setEditorApp(e.id)}>{e.label}</button>
+            {/each}
+          </div>
+        </div>
+        {#if editor.app !== 'off'}
+          <p class="muted explain">
+            Directories on other hosts open over the editor's Remote-SSH. The SSH target is what <code>ssh</code> on this computer accepts: an alias from
+            <code>~/.ssh/config</code> or <code>user@host</code>. Kept on this device.
+          </p>
+          {#each fleet.hostList as h (h.id)}
+            <div class="lr ed">
+              <span class="name"><HostDot online={h.online} />{h.name}</span>
+              {#if isThisComputer(h.id)}
+                <span class="faint">This computer: opens local folders</span>
+              {:else}
+                <input
+                  class="input mono"
+                  placeholder={defaultSshTarget(h) ?? 'user@host'}
+                  value={editor.ssh[h.id] ?? ''}
+                  aria-label="SSH target for {h.name}"
+                  onchange={(e) => setSshTarget(h.id, e.currentTarget.value)}
+                />
+              {/if}
+            </div>
+          {/each}
+        {/if}
       </div>
     </section>
 
@@ -609,6 +646,18 @@
   }
   .lr .num {
     text-align: right;
+  }
+  .lr.ed {
+    grid-template-columns: minmax(140px, 1fr) minmax(0, 1.2fr);
+  }
+  .lr.ed .seg {
+    justify-self: end;
+  }
+  .lr.ed .input {
+    height: 28px;
+  }
+  .lr + .explain {
+    border-top: 1px solid var(--border);
   }
   @media (max-width: 760px) {
     .page {
