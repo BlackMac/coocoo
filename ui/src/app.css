@@ -115,7 +115,13 @@ body {
   overflow: hidden;
 }
 
+/* Fixed to the visual viewport (`--app-top`/`--app-height`, main.ts), so the header stays on screen
+   whatever the browser does with the page scroll while the on-screen keyboard is up. */
 #app {
+  position: fixed;
+  top: var(--app-top, 0px);
+  left: 0;
+  right: 0;
   height: var(--app-height, 100%);
 }
 

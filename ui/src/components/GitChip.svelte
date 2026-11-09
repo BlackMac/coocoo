@@ -591,12 +591,12 @@
     font-size: var(--fs-sm);
     animation: pop var(--t-fast) var(--ease);
   }
-  /* Bottom of the visible viewport (`--app-height`, main.ts), so the pull request form stays above
-     the on-screen keyboard. */
+  /* Bottom of the visible viewport (`--app-top`/`--app-height`, main.ts), so the pull request form
+     stays above the on-screen keyboard. */
   .gpop.sheet {
     left: 0;
     right: 0;
-    bottom: calc(100% - var(--app-height, 100%));
+    bottom: calc(100% - var(--app-top, 0px) - var(--app-height, 100%));
     max-height: calc(var(--app-height, 100vh) * 0.8);
     border-radius: 14px 14px 0 0;
     padding-bottom: env(safe-area-inset-bottom);

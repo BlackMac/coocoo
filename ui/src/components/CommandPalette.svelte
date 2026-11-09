@@ -233,7 +233,7 @@
   /* As tall as the visible viewport (see Dialog.svelte): the list shrinks above the keyboard. */
   .overlay {
     position: fixed;
-    inset: 0 0 auto;
+    inset: var(--app-top, 0px) 0 auto;
     height: var(--app-height, 100%);
     z-index: 60;
     display: flex;

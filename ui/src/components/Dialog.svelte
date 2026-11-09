@@ -86,11 +86,11 @@
   .anchor {
     display: contents;
   }
-  /* As tall as the visible viewport (`--app-height`, set in main.ts), not the layout viewport:
+  /* The visible viewport (`--app-top`/`--app-height`, set in main.ts), not the layout viewport:
      with the on-screen keyboard up, a dialog must fit above it and scroll inside. */
   .overlay {
     position: fixed;
-    inset: 0 0 auto;
+    inset: var(--app-top, 0px) 0 auto;
     height: var(--app-height, 100%);
     z-index: 50;
     display: flex;
