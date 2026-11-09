@@ -402,6 +402,22 @@ impl ToolEnv {
         Ok(text(&json!({ "id": card["id"], "column": card["column"] })))
     }
 
+    fn kanban_edit(&self, args: Map<String, Value>) -> ToolResult {
+        let mut params = json!({ "projectId": self.project_id()?, "cardId": required(&args, "cardId")? });
+        if let Some(title) = args.get("title") {
+            params["title"] = json!(title.as_str().map(str::trim).filter(|t| !t.is_empty()).ok_or_else(|| err("`title` must not be empty"))?);
+        }
+        // An empty body clears it.
+        if let Some(body) = args.get("body") {
+            params["body"] = json!(body.as_str().ok_or_else(|| err("`body` must be a string"))?);
+        }
+        if params.get("title").is_none() && params.get("body").is_none() {
+            return Err(err("give `title`, `body` or both"));
+        }
+        let card = self.call(None, "boards.cardUpdate", params)?;
+        Ok(text(&json!({ "id": card["id"], "column": card["column"], "title": card["title"], "body": card.get("body") })))
+    }
+
     fn kanban_done(&self, args: Map<String, Value>) -> ToolResult {
         let mut params = json!({ "projectId": self.project_id()?, "cardId": required(&args, "cardId")?, "agentId": self.agent_id });
         for key in ["commitMessage", "note", "prTitle", "prBody"] {
@@ -1028,6 +1044,22 @@ pub(crate) fn host_tools(agents: &Arc<Agents>, agent_id: &str, orchestrator: Arc
                 "additionalProperties": false
             }),
             |env, args, _| env.kanban_move(args),
+        ),
+        tool(
+            "kanban_edit",
+            "Edit card",
+            "Change the title and/or body (Markdown) of a card on your project's Kanban board, e.g. to sharpen a suggestion, record findings or update the scope. `body` replaces the whole body (read it with kanban_list first to keep parts); an empty `body` clears it. Column, refinement and images stay.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "cardId": { "type": "string" },
+                    "title": { "type": "string" },
+                    "body": { "type": "string", "description": "New body; replaces the old one." }
+                },
+                "required": ["cardId"],
+                "additionalProperties": false
+            }),
+            |env, args, _| env.kanban_edit(args),
         ),
         tool(
             "kanban_done",
