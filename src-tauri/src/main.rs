@@ -7,6 +7,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod backend;
+#[cfg(unix)]
+mod login_path;
 mod update;
 mod watch;
 
@@ -42,6 +44,11 @@ pub(crate) struct Shell {
 
 fn main() {
     init_tracing();
+    // SAFETY: first thing after tracing setup, which starts no thread; nothing else runs yet.
+    #[cfg(unix)]
+    unsafe {
+        login_path::import();
+    }
     let app = tauri::Builder::default()
         // Must be first: a second launch hands over to the running instance and exits.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| show_main_window(app)))

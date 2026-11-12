@@ -36,6 +36,9 @@ tracing-subscriber.workspace = true
 toml = { version = "0.9", default-features = false, features = ["parse", "serde"] }
 tauri-plugin-updater = "2.14.0"
 
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # Same version wry links; used only to set the WebKit cache model.
 webkit2gtk = "2.0"

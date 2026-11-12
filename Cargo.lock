@@ -944,6 +944,7 @@ dependencies = [
  "coocoo-core",
  "coocoo-proto",
  "futures-util",
+ "libc",
  "serde",
  "serde_json",
  "tauri",
