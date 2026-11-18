@@ -13,6 +13,7 @@ use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use coocoo_proto::insights::Origin;
+use coocoo_proto::bus::answers_terminal;
 use coocoo_proto::{ApiError, ApiResult, ConnSink, HostInfo, HostKind, Request, events, util};
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
@@ -71,6 +72,8 @@ struct BrowserWatch {
 struct TerminalWatch {
     id: String,
     conns: Vec<ConnSink>,
+    /// The local connection that typed last (`terminal.input` without `report`).
+    typist: Option<u64>,
 }
 
 #[derive(Default)]
@@ -241,6 +244,7 @@ impl PeerLink {
                 "stats.watch" => return self.forward_stats_watch(sink.id, params).await,
                 "terminal.attach" => return self.forward_attach(sink, params).await,
                 "terminal.detach" => return self.forward_detach(sink.id, params).await,
+                "terminal.input" if !self.accept_terminal_input(sink.id, &params) => return Ok(Reply::Value(json!({}))),
                 _ => {}
             }
         }
@@ -327,7 +331,7 @@ impl PeerLink {
                     t.conns.push(sink.clone());
                 }
             }
-            None => watches.terminals.push(TerminalWatch { id, conns: vec![sink.clone()] }),
+            None => watches.terminals.push(TerminalWatch { id, conns: vec![sink.clone()], typist: None }),
         }
         Ok(Reply::Raw(result))
     }
@@ -350,6 +354,20 @@ impl PeerLink {
             }
         };
         if last { self.request("terminal.detach", params).await.map(Reply::Raw) } else { Ok(Reply::Value(json!({}))) }
+    }
+
+    /// The remote sees every local viewer of a terminal as this one link, so the rule of
+    /// [`answers_terminal`] that lets only one viewer answer the program's queries applies here
+    /// among the local connections.
+    fn accept_terminal_input(&self, conn_id: u64, params: &Value) -> bool {
+        let Some(id) = params["id"].as_str() else { return true };
+        let mut watches = self.watches.lock();
+        let Some(t) = watches.terminals.iter_mut().find(|t| t.id == id) else { return true };
+        if params["report"] != true {
+            t.typist = Some(conn_id);
+            return true;
+        }
+        answers_terminal(conn_id, t.typist, t.conns.iter().filter(|c| !c.is_closed()).map(|c| c.id))
     }
 
     /// Drop a closed local connection's subscriptions; stop remote streams nobody watches.

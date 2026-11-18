@@ -707,6 +707,70 @@ async fn actions_file_is_watched_and_runs_in_worktrees() {
     assert_eq!(gone["id"], again.id.as_str());
 }
 
+/// Every attached viewer's terminal answers a program's queries (cursor position, colours); only
+/// one viewer's replies may reach it, or the program reads the others as keys (`gh auth login`:
+/// "unexpected escape sequence from terminal"). The viewer that typed last answers; once it is
+/// detached, the one with the lowest connection id.
+#[tokio::test(flavor = "multi_thread")]
+async fn only_one_viewer_answers_terminal_queries() {
+    let tmp = Temp::new();
+    let terminals = Terminals::new(Emitter::new("host-a", 64));
+    // Viewers whose output is drained, so they are not detached as stalled; `a`'s is kept.
+    let viewer = |id: u64, seen: Option<Arc<std::sync::Mutex<String>>>| {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Arc<str>>(64);
+        tokio::spawn(async move {
+            while let Some(frame) = rx.recv().await {
+                if let Some(seen) = &seen {
+                    seen.lock().unwrap().push_str(&frame);
+                }
+            }
+        });
+        ConnSink::new(id, tx)
+    };
+    let seen = Arc::new(std::sync::Mutex::new(String::new()));
+    let (a, b) = (viewer(1, Some(seen.clone())), viewer(2, None));
+    let wait_for = |marker: &'static str| {
+        let seen = seen.clone();
+        async move {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while !seen.lock().unwrap().contains(marker) {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("no {marker} in the output"))
+        }
+    };
+    let info: TerminalInfo =
+        serde_json::from_value(terminals.dispatch("terminal.open", json!({ "cwd": tmp.0 }), &a).await.unwrap()).unwrap();
+    for conn in [&a, &b] {
+        terminals.dispatch("terminal.attach", json!({ "id": info.id }), conn).await.unwrap();
+    }
+    let input = |conn: &ConnSink, data: &str, report: bool| {
+        let (terminals, conn, params) = (terminals.clone(), conn.clone(), json!({ "id": info.id, "data": data, "report": report }));
+        async move { terminals.dispatch("terminal.input", params, &conn).await.unwrap() }
+    };
+
+    // The quotes keep the echoed command line from matching the marker.
+    input(&a, "stty -echo; echo RE''ADY; cat > out.txt\n", false).await;
+    wait_for("READY").await;
+    // `a` typed last.
+    input(&a, "a1\n", true).await;
+    input(&b, "b1\n", true).await;
+    // Now `b`.
+    input(&b, "typed by b\n", false).await;
+    input(&a, "a2\n", true).await;
+    input(&b, "b2\n", true).await;
+    // The typist left: the lowest connection id answers.
+    terminals.dispatch("terminal.detach", json!({ "id": info.id }), &b).await.unwrap();
+    input(&a, "a3\n", true).await;
+    input(&b, "b3\n", true).await;
+    input(&a, "\x04echo DO''NE\n", false).await;
+    wait_for("DONE").await;
+    terminals.dispatch("terminal.kill", json!({ "id": info.id }), &a).await.unwrap();
+    assert_eq!(std::fs::read_to_string(tmp.0.join("out.txt")).unwrap(), "a1\ntyped by b\nb2\na3\n");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn persona_file_is_watched_and_serves_its_avatar() {
     let e = env();

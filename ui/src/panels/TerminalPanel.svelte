@@ -87,6 +87,10 @@
   /** Bumped to start a fresh shell instead of re-attaching. */
   let generation = $state(0);
   let forceNew = false;
+  /** A query of the program is being answered: the next onData is xterm's reply. */
+  let replying = false;
+  /** The scrollback is being written after attaching. */
+  let replaying = false;
 
   /** The terminal has the keyboard focus (on a phone: the on-screen keyboard is up). */
   let focused = $state(false);
@@ -157,8 +161,31 @@
     else openExternal(uri);
   }
 
-  function send(data: string) {
-    if (termId) fleet.call('terminal.input', { id: termId, data }, host).catch(() => {});
+  /** Input not sent yet, oldest first. The daemon handles a connection's requests concurrently,
+   *  so two `terminal.input` in flight could reach the program swapped (xterm's reply to a colour
+   *  query after the one to the cursor query that follows it); one is in flight at a time, and
+   *  what piles up meanwhile goes out together. */
+  const outbox: { host: string; id: string; data: string; report: boolean }[] = [];
+  let sending = false;
+  /** One request stays well below the daemon's 256 KiB limit. */
+  const MERGE_MAX = 64 * 1024;
+
+  /** `report`: xterm answering a query of the program, not the user typing. */
+  function send(data: string, report = false) {
+    if (!termId) return;
+    const last = outbox.at(-1);
+    if (last && last.host === host && last.id === termId && last.report === report && last.data.length + data.length <= MERGE_MAX) last.data += data;
+    else outbox.push({ host, id: termId, data, report });
+    if (!sending) void flush();
+  }
+
+  async function flush() {
+    sending = true;
+    for (let next = outbox.shift(); next; next = outbox.shift()) {
+      const { host: h, id, data, report } = next;
+      await fleet.call('terminal.input', { id, data, report: report || undefined }, h).catch(() => {});
+    }
+    sending = false;
   }
 
   /** `data` with the armed modifiers applied (Ctrl to its first character, Alt as an ESC prefix). */
@@ -307,7 +334,33 @@
     t.loadAddon(fit);
     t.loadAddon(new WebLinksAddon((_e, uri) => openLink(uri)));
     t.open(el!);
-    t.onData((data) => send(applyMods(data)));
+    // xterm answers the program's queries (cursor position, colours, device attributes) through
+    // onData, like typing. Replies are marked: every attached viewer answers, and the daemon
+    // passes only one viewer's, else the program reads the extra replies as keys. Queries in
+    // replayed scrollback were answered when they ran and get no reply.
+    const query = () => {
+      replying = !replaying;
+      return replaying;
+    };
+    for (const id of [
+      { final: 'c' },
+      { prefix: '>', final: 'c' },
+      { final: 'n' },
+      { prefix: '?', final: 'n' },
+      { final: 't' },
+      { intermediates: '$', final: 'p' },
+      { prefix: '?', intermediates: '$', final: 'p' },
+    ])
+      t.parser.registerCsiHandler(id, query);
+    t.parser.registerDcsHandler({ intermediates: '$', final: 'q' }, query);
+    for (const osc of [4, 10, 11, 12]) t.parser.registerOscHandler(osc, (data) => data.includes('?') && query());
+    t.onData((data) => {
+      if (!replying) return send(applyMods(data));
+      replying = false;
+      send(data, true);
+    });
+    // A query xterm did not answer.
+    t.onWriteParsed(() => (replying = false));
     // The pty follows once the size settles: a pinch or the on-screen keyboard sliding in resize
     // the grid many times in a row, and every resize makes the shell redraw its prompt.
     let resizeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -440,7 +493,8 @@
         const { data } = await fleet.call('terminal.attach', { id: info.id, cols: t.cols, rows: t.rows }, h);
         if (cancelled) return;
         t.reset();
-        t.write(data);
+        replaying = true;
+        t.write(data, () => (replaying = false));
         for (const chunk of early ?? []) t.write(chunk);
         early = null;
         if (!want) shell = info.shell.split('/').pop() ?? info.shell;

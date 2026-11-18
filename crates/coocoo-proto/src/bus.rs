@@ -116,3 +116,19 @@ impl ConnSink {
         self.tx.is_closed()
     }
 }
+
+/// Whether connection `conn` may answer the queries of a program in a terminal (cursor position,
+/// colours, device attributes; `terminal.input` with `report`). Every attached xterm answers
+/// them, and a second answer reaches the program as typed input, so only one viewer's replies
+/// pass: the one that typed last (`typist`), or, while it is not among `viewers`, the one with
+/// the lowest connection id.
+pub fn answers_terminal(conn: u64, typist: Option<u64>, viewers: impl IntoIterator<Item = u64>) -> bool {
+    let mut lowest: Option<u64> = None;
+    for viewer in viewers {
+        if Some(viewer) == typist {
+            return viewer == conn;
+        }
+        lowest = Some(lowest.map_or(viewer, |l| l.min(viewer)));
+    }
+    lowest == Some(conn)
+}

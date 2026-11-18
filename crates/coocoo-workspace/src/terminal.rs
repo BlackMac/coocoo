@@ -68,6 +68,9 @@ struct IdParams {
 struct InputParams {
     id: String,
     data: String,
+    /// The viewer's terminal answering a query of the program, not the user typing.
+    #[serde(default)]
+    report: bool,
 }
 
 #[derive(Deserialize)]
@@ -119,11 +122,14 @@ impl Terminals {
                 Ok(json!({}))
             }
             "terminal.input" => {
-                let InputParams { id, data } = params(p)?;
+                let InputParams { id, data, report } = params(p)?;
                 if data.len() > MAX_INPUT {
                     return Err(ApiError::invalid(format!("input larger than {MAX_INPUT} bytes")));
                 }
-                self.get(&id)?.write(data.as_bytes()).await?;
+                let term = self.get(&id)?;
+                if term.accept_input(conn.id, report) {
+                    term.write(data.as_bytes()).await?;
+                }
                 Ok(json!({}))
             }
             "terminal.resize" => {
@@ -232,6 +238,8 @@ mod imp {
         /// Incomplete UTF-8 sequence at the end of the last read.
         carry: Vec<u8>,
         watchers: HashMap<u64, ConnSink>,
+        /// The connection that typed last; its viewer answers the program's queries.
+        typist: Option<u64>,
     }
 
     impl Term {
@@ -255,6 +263,17 @@ mod imp {
 
         pub(crate) fn detach(&self, conn_id: u64) {
             self.state.lock().watchers.remove(&conn_id);
+        }
+
+        /// Whether input from `conn` goes to the program: typing always (and `conn` becomes the
+        /// typist), a reply to a query only from the one viewer that answers them.
+        pub(crate) fn accept_input(&self, conn: u64, report: bool) -> bool {
+            let mut st = self.state.lock();
+            if !report {
+                st.typist = Some(conn);
+                return true;
+            }
+            coocoo_proto::bus::answers_terminal(conn, st.typist, st.watchers.keys().copied())
         }
 
         pub(crate) async fn write(&self, mut data: &[u8]) -> ApiResult<()> {
@@ -574,6 +593,9 @@ mod imp {
             match *self {}
         }
         pub(crate) fn detach(&self, _conn_id: u64) {
+            match *self {}
+        }
+        pub(crate) fn accept_input(&self, _conn: u64, _report: bool) -> bool {
             match *self {}
         }
         pub(crate) async fn write(&self, _data: &[u8]) -> ApiResult<()> {

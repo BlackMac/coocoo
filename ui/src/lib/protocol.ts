@@ -1268,7 +1268,8 @@ export interface Methods {
   'terminal.open': [{ cwd: string; cols?: number; rows?: number }, TerminalInfo];
   'terminal.attach': [{ id: string; cols?: number; rows?: number }, { data: string }];
   'terminal.detach': [{ id: string }, Ok];
-  'terminal.input': [{ id: string; data: string }, Ok];
+  /** `report`: the viewer's terminal answering a query of the program (only one viewer's pass). */
+  'terminal.input': [{ id: string; data: string; report?: boolean }, Ok];
   'terminal.resize': [{ id: string; cols: number; rows: number }, Ok];
   'terminal.kill': [{ id: string }, Ok];
   'terminal.close': [{ id: string }, Ok];
