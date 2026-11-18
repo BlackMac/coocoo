@@ -418,6 +418,19 @@ impl ToolEnv {
         Ok(text(&json!({ "id": card["id"], "column": card["column"], "title": card["title"], "body": card.get("body") })))
     }
 
+    /// Only inbox cards: todo, doing and done are the user's queue and history.
+    fn kanban_delete(&self, args: Map<String, Value>) -> ToolResult {
+        let card_id = required(&args, "cardId")?;
+        let project_id = self.project_id()?;
+        let board = self.call(None, "boards.get", json!({ "projectId": project_id }))?;
+        let card = board["cards"].as_array().into_iter().flatten().find(|c| c["id"] == card_id.as_str()).ok_or_else(|| err(format!("no card `{card_id}`")))?;
+        if card["column"] != "inbox" {
+            return Err(err(format!("card `{card_id}` is in {}, not the inbox; only inbox cards can be deleted", card["column"].as_str().unwrap_or("?"))));
+        }
+        self.call(None, "boards.cardDelete", json!({ "projectId": project_id, "cardId": card_id }))?;
+        Ok(text(&json!({ "deleted": card_id })))
+    }
+
     fn kanban_done(&self, args: Map<String, Value>) -> ToolResult {
         let mut params = json!({ "projectId": self.project_id()?, "cardId": required(&args, "cardId")?, "agentId": self.agent_id });
         for key in ["commitMessage", "note", "prTitle", "prBody"] {
@@ -1060,6 +1073,18 @@ pub(crate) fn host_tools(agents: &Arc<Agents>, agent_id: &str, orchestrator: Arc
                 "additionalProperties": false
             }),
             |env, args, _| env.kanban_edit(args),
+        ),
+        tool(
+            "kanban_delete",
+            "Delete card",
+            "Delete a card from your project's Kanban inbox, e.g. a suggestion that is obsolete, a duplicate or already done. Only inbox cards; cards in todo, doing or done stay.",
+            json!({
+                "type": "object",
+                "properties": { "cardId": { "type": "string" } },
+                "required": ["cardId"],
+                "additionalProperties": false
+            }),
+            |env, args, _| env.kanban_delete(args),
         ),
         tool(
             "kanban_done",
