@@ -283,6 +283,7 @@ fn apply_session_state(st: &mut State, state: SessionState) -> Option<(String, S
     }
     st.queued_steering = state.queued_messages.steering;
     st.queued_follow_up = state.queued_messages.follow_up;
+    st.queued_live_steered = usize::try_from(state.queued_messages.live_steered).unwrap_or(0);
     st.todos = state
         .todo_phases
         .into_iter()
@@ -912,10 +913,11 @@ impl Sink for LiveSink<'_> {
                     agents.restart_for_secrets_when_idle(agent);
                 }
             }
-            Effect::Queue { steering, follow_up } => {
+            Effect::Queue { steering, follow_up, live_steered } => {
                 if self.update(|st| {
                     st.queued_steering = steering;
                     st.queued_follow_up = follow_up;
+                    st.queued_live_steered = live_steered;
                     true
                 }) {
                     agents.changed(agent);

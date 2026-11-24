@@ -612,6 +612,8 @@ export interface AgentDetail {
   todos: TodoPhase[];
   queuedSteering: string[];
   queuedFollowUp: string[];
+  /** Leading `queuedSteering` entries the running model already got: they cannot be removed. */
+  queuedLiveSteered: number;
   requests: UiRequest[];
   contextWindow?: number;
 }
@@ -1324,6 +1326,8 @@ export interface Methods {
   ];
   'agents.prompt': [{ id: string; message: string; mode?: 'auto' | 'steer' | 'aside' | 'followUp'; images?: ImageInput[] }, Ok];
   'agents.abort': [{ id: string }, Ok];
+  /** `removed: false` when the message was delivered meanwhile. */
+  'agents.removeQueued': [{ id: string; queue: 'steering' | 'followUp'; message: string }, { removed: boolean }];
   'agents.respond': [{ id: string; requestId: string; response: UiResponse }, Ok];
   'agents.timeline': [{ id: string; before?: number; limit?: number }, TimelinePage];
   'agents.output': [{ id: string }, { status: AgentStatus; text?: string }];

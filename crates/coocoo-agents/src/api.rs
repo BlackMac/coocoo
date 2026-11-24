@@ -13,7 +13,8 @@ use coocoo_proto::{
 };
 use omp_rpc::{
     AbortCommand, Client, ClientOptions, ExtensionUiResponse, GetAvailableCommandsCommand, GetAvailableModelsCommand,
-    ImageContent, LitImage, RpcInbound, SetModelCommand, SetThinkingLevelCommand, ThinkingLevel,
+    ImageContent, LitImage, QueuedMessageQueue, RemoveQueuedMessageCommand, RpcInbound, SetModelCommand, SetThinkingLevelCommand,
+    ThinkingLevel,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -33,6 +34,16 @@ const MAX_PAGE: usize = 2000;
 #[serde(rename_all = "camelCase")]
 struct IdParams {
     id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoveQueuedParams {
+    id: String,
+    /// `steering` or `followUp`.
+    queue: QueuedMessageQueue,
+    /// The queue entry's text as `AgentDetail` lists it.
+    message: String,
 }
 
 #[derive(Deserialize, Default)]
@@ -220,6 +231,7 @@ impl Agents {
             "agents.create" => ok(self.create(params(p)?).await?),
             "agents.prompt" => self.prompt(params(p)?).await,
             "agents.abort" => self.abort(params(p)?).await,
+            "agents.removeQueued" => self.remove_queued(params(p)?).await,
             "agents.respond" => self.respond(params(p)?),
             "agents.timeline" => self.timeline(params(p)?).await,
             "agents.output" => {
@@ -536,6 +548,14 @@ impl Agents {
             call(client, AbortCommand {}).await?;
         }
         Ok(json!({}))
+    }
+
+    /// Withdraw a steering or follow-up message the agent has not received yet.
+    async fn remove_queued(&self, p: RemoveQueuedParams) -> ApiResult<Value> {
+        let agent = self.get(&p.id)?;
+        let Some(client) = agent.client() else { return Ok(json!({ "removed": false })) };
+        let result = call(client, RemoveQueuedMessageCommand { message: p.message, queue: p.queue }).await?;
+        Ok(json!({ "removed": result.removed }))
     }
 
     fn respond(&self, p: RespondParams) -> ApiResult<Value> {

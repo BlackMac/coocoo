@@ -20,7 +20,13 @@
   const draft: Draft = untrack(() => ui.draft(key(a.hostId, a.id)));
   const running = $derived(a.status === 'running' || a.status === 'starting' || a.status === 'waiting');
   const readonly = $derived(a.status === 'stopped');
-  const queued = $derived([...(detail?.queuedSteering ?? []).map((t) => ({ t, kind: 'Steer' })), ...(detail?.queuedFollowUp ?? []).map((t) => ({ t, kind: 'Queued' }))]);
+  /** The agent's queue; live-steered entries already reached the model and cannot be removed. */
+  const queued = $derived([
+    ...(detail?.queuedSteering ?? []).map((t, i) => ({ t, kind: 'Steer', queue: 'steering' as const, removable: i >= (detail?.queuedLiveSteered ?? 0) })),
+    ...(detail?.queuedFollowUp ?? []).map((t) => ({ t, kind: 'Queued', queue: 'followUp' as const, removable: true })),
+  ]);
+  /** Queue entries being removed (`queue:text`). */
+  let removing = $state<Record<string, boolean>>({});
   /** Mid-turn prompts sent from here that the agent's queue does not show yet. */
   const outgoing = $derived((fleet.outbox[k] ?? []).filter((e) => e.target === 'queue'));
 
@@ -142,6 +148,19 @@
     }
   }
 
+  async function removeQueued(queue: 'steering' | 'followUp', message: string) {
+    const id = `${queue}:${message}`;
+    removing[id] = true;
+    try {
+      const { removed } = await fleet.call('agents.removeQueued', { id: a.id, queue, message }, a.hostId);
+      if (!removed) ui.toast('info', 'Already delivered to the agent');
+    } catch (err) {
+      ui.error('Could not remove the message', err);
+    } finally {
+      delete removing[id];
+    }
+  }
+
   function onkeydown(e: KeyboardEvent) {
     if (menuOpen && menu && !e.isComposing) {
       const n = menu.options.length;
@@ -222,7 +241,18 @@
   {#if queued.length || outgoing.length}
     <div class="queued">
       {#each queued as q, i (i)}
-        <div class="qrow"><span class="qk">{q.kind}</span><span class="ellipsis">{q.t}</span></div>
+        <div class="qrow">
+          <span class="qk">{q.kind}</span><span class="ellipsis">{q.t}</span>
+          {#if q.removable}
+            <button
+              class="btn ghost icon sm qx"
+              title="Remove"
+              aria-label="Remove queued message"
+              disabled={removing[`${q.queue}:${q.t}`]}
+              onclick={() => removeQueued(q.queue, q.t)}><X size={12} /></button
+            >
+          {/if}
+        </div>
       {/each}
       {#each outgoing as e (e.id)}
         {#if e.state === 'failed'}
@@ -331,9 +361,18 @@
   }
   .qrow {
     display: flex;
+    align-items: center;
     gap: 8px;
     min-width: 0;
     color: var(--text-2);
+  }
+  .qrow .ellipsis {
+    flex: 1;
+  }
+  .qx {
+    flex: none;
+    width: 20px;
+    height: 20px;
   }
   .qrow.pending {
     align-items: center;

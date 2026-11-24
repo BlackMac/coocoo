@@ -107,7 +107,7 @@ pub(crate) enum Effect {
     Resolve { id: String },
     SubagentStarted(String),
     SubagentEnded(String),
-    Queue { steering: Vec<String>, follow_up: Vec<String> },
+    Queue { steering: Vec<String>, follow_up: Vec<String>, live_steered: usize },
     Thinking(String),
     /// Full visible text of the latest assistant message.
     Output(String),
@@ -601,7 +601,11 @@ impl Mapper {
                 }
             }
             RpcAgentEvent::Notice(e) => leveled_notice(sink, e.level, e.message),
-            RpcAgentEvent::QueueUpdate(q) => sink.effect(Effect::Queue { steering: q.steering, follow_up: q.follow_up }),
+            RpcAgentEvent::QueueUpdate(q) => sink.effect(Effect::Queue {
+                steering: q.steering,
+                follow_up: q.follow_up,
+                live_steered: usize::try_from(q.live_steered).unwrap_or(0),
+            }),
             RpcAgentEvent::TodoAutoClear(_) => sink.effect(Effect::TodosCleared),
             RpcAgentEvent::IrcMessage(irc) => {
                 let text = irc.message.content.map(content_text).unwrap_or_default();

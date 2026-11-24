@@ -22,6 +22,7 @@ const ACTIONS: &[&str] = &[
     "agents.create",
     "agents.prompt",
     "agents.abort",
+    "agents.removeQueued",
     "agents.respond",
     "agents.setModel",
     "agents.setThinking",

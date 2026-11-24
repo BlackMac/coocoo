@@ -839,6 +839,10 @@ pub struct AgentDetail {
     pub todos: Vec<TodoPhase>,
     pub queued_steering: Vec<String>,
     pub queued_follow_up: Vec<String>,
+    /// Leading `queued_steering` entries already handed to the running model; they can no
+    /// longer be removed (`agents.removeQueued`).
+    #[serde(default)]
+    pub queued_live_steered: usize,
     pub requests: Vec<UiRequest>,
     /// Context window size in tokens, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]

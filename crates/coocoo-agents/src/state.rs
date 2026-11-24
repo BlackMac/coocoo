@@ -133,6 +133,8 @@ pub(crate) struct State {
     pub todos: Vec<TodoPhase>,
     pub queued_steering: Vec<String>,
     pub queued_follow_up: Vec<String>,
+    /// Leading `queued_steering` entries omp already sent into the running response.
+    pub queued_live_steered: usize,
     pub requests: Vec<UiRequest>,
     pub context_window: Option<u64>,
     pub commands: Option<Vec<SlashCommand>>,
@@ -167,6 +169,7 @@ impl State {
             todos: Vec::new(),
             queued_steering: Vec::new(),
             queued_follow_up: Vec::new(),
+            queued_live_steered: 0,
             requests: Vec::new(),
             context_window: None,
             commands: None,
@@ -231,6 +234,7 @@ impl State {
             todos: self.todos.clone(),
             queued_steering: self.queued_steering.clone(),
             queued_follow_up: self.queued_follow_up.clone(),
+            queued_live_steered: self.queued_live_steered,
             requests: self.requests.clone(),
             context_window: self.context_window,
         }
@@ -371,6 +375,7 @@ impl State {
         self.pending.clear();
         self.queued_steering.clear();
         self.queued_follow_up.clear();
+        self.queued_live_steered = 0;
         let requests = std::mem::take(&mut self.requests);
         let proc = self.proc.take();
         self.sync();
