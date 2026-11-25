@@ -12,6 +12,7 @@
   import { Dictation } from '../lib/speech.svelte';
   import { track } from '../lib/track';
   import { ArrowLeft, Ban, Check, ChevronDown, CornerDownLeft, Mic } from '../lib/icons';
+  import { formSummary } from '../lib/form';
 
   // A controller-style display for the whole fleet, after SlashVibe: a list of sessions with their
   // state, one session's latest round, its pending question as lettered options, and prompts by
@@ -190,6 +191,8 @@
       }
       case 'secret':
         return { title: `Secret ${p.name} requested`, sub: p.description, rows: [{ label: 'Enter it in Coocoo', act: openAgent }] };
+      case 'form':
+        return { title: formSummary(p.html), rows: [{ label: 'Answer in Coocoo', act: openAgent }] };
     }
     return null;
   });

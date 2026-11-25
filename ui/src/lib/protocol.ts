@@ -439,7 +439,7 @@ export interface TimelinePage {
   hasMore: boolean;
 }
 
-export type UiRequestMethod = 'select' | 'confirm' | 'input' | 'editor' | 'ask' | 'secret';
+export type UiRequestMethod = 'select' | 'confirm' | 'input' | 'editor' | 'ask' | 'form' | 'secret';
 
 export interface UiRequest {
   id: string;
@@ -739,6 +739,15 @@ export interface AskUiPayload {
   timeout?: number;
 }
 
+/** The `ask` tool's HTML `<form>` (omp ≥ 19); answered with `{ data }` by control name. */
+export interface FormUiPayload {
+  type: 'extension_ui_request';
+  method: 'form';
+  id: string;
+  html: string;
+  timeout?: number;
+}
+
 /** A file Coocoo wrote a secret into. */
 export interface SecretFile {
   /** Absolute path on the agent's host. */
@@ -795,6 +804,7 @@ export type UiRequestPayload =
   | InputUiPayload
   | EditorUiPayload
   | AskUiPayload
+  | FormUiPayload
   | SecretUiPayload;
 
 export interface AskAnswer {
@@ -808,6 +818,7 @@ export type UiResponse =
   | { value: string }
   | { confirmed: boolean }
   | { answers: AskAnswer[] }
+  | { data: Record<string, string | number | string[]> }
   | { cancelled: true };
 
 // ─── Browser ──────────────────────────────────────────────────────────────────────────────────

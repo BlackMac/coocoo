@@ -1,6 +1,7 @@
 <script lang="ts">
   import { fleet, type AttentionItem } from '../lib/fleet.svelte';
   import type { UiRequest } from '../lib/protocol';
+  import { formSummary } from '../lib/form';
   import { ago } from '../lib/format';
   import { now } from '../lib/clock.svelte';
   import { href, router } from '../lib/router.svelte';
@@ -71,6 +72,7 @@
   function summary(r: UiRequest): string {
     const p = r.payload;
     if (p.method === 'secret') return `Secret ${p.name} requested`;
+    if (p.method === 'form') return formSummary(p.html);
     if (p.method !== 'ask') return p.title;
     const first = p.questions[0]?.question ?? 'Question';
     return p.questions.length > 1 ? `${p.questions.length} questions · ${first}` : first;

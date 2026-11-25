@@ -3,6 +3,7 @@
   import { fleet } from '../lib/fleet.svelte';
   import { ui } from '../lib/ui.svelte';
   import type { AskAnswer, AskUiPayload, UiRequest, UiResponse } from '../lib/protocol';
+  import { formData, sanitizeForm } from '../lib/form';
   import { MessageSquareText, Check, KeyRound } from '../lib/icons';
   import SecretRequest from './SecretRequest.svelte';
 
@@ -16,6 +17,25 @@
   let custom = $state<Record<string, string>>({});
   /** Compact cards reveal the free-text field on demand. */
   let otherOpen = $state<Record<string, boolean>>({});
+  // form: the agent's HTML form, rendered from an allowlist (lib/form.ts)
+  let formHost = $state<HTMLDivElement>();
+  let formEl: HTMLFormElement | undefined;
+  $effect(() => {
+    if (p.method !== 'form' || !formHost) return;
+    const form = sanitizeForm(p.html);
+    // Enter in a text field submits like the button (native submit would reload nothing useful).
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      submitForm();
+    });
+    formHost.replaceChildren(form);
+    formEl = form;
+  });
+
+  function submitForm() {
+    if (!formEl?.reportValidity()) return;
+    void respond({ data: formData(formEl) });
+  }
 
   /** The request is answered: take it off the list now (`agent.requestResolved` follows). */
   const drop = () => fleet.dropRequest(host, request);
@@ -60,7 +80,7 @@
 <div class="req" class:compact>
   <div class="head">
     {#if p.method === 'secret'}<KeyRound size={14} />{:else}<MessageSquareText size={14} />{/if}
-    <span class="kind">{p.method === 'secret' ? 'Secret requested' : p.method === 'ask' ? (p.questions.length > 1 ? `${p.questions.length} questions` : 'Question') : p.method === 'confirm' ? 'Confirmation' : 'Input requested'}</span>
+    <span class="kind">{p.method === 'secret' ? 'Secret requested' : p.method === 'ask' ? (p.questions.length > 1 ? `${p.questions.length} questions` : 'Question') : p.method === 'form' ? 'Question' : p.method === 'confirm' ? 'Confirmation' : 'Input requested'}</span>
     <button class="btn ghost sm dismiss" disabled={busy} onclick={() => respond({ cancelled: true })}>{p.method === 'secret' ? 'Decline' : 'Dismiss'}</button>
   </div>
 
@@ -97,6 +117,11 @@
     {/each}
     <div class="actions">
       <button class="btn primary sm" disabled={!askReady || busy} onclick={() => submitAsk(p as AskUiPayload)}>Send answers</button>
+    </div>
+  {:else if p.method === 'form'}
+    <div class="form" bind:this={formHost}></div>
+    <div class="actions">
+      <button class="btn primary sm" disabled={busy} onclick={submitForm}>Send answer</button>
     </div>
   {:else if p.method === 'select'}
     <div class="title">{p.title}</div>
@@ -288,5 +313,91 @@
   }
   .inline .input {
     flex: 1;
+  }
+  /* The agent's form (no classes of its own: plain elements, styled here). */
+  .form :global(form) {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .form :global(p) {
+    margin: 0;
+  }
+  .form :global(:is(ul, ol)) {
+    margin: 0;
+    padding-left: 20px;
+  }
+  .form :global(fieldset) {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
+  .form :global(legend) {
+    margin-bottom: 4px;
+    font-weight: 500;
+  }
+  .form :global(label) {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 3px 0;
+    cursor: pointer;
+  }
+  .form :global(label:has(input[type='text'], input:not([type]), select, textarea, input[type='number'], input[type='date'], input[type='email'], input[type='url'])) {
+    flex-wrap: wrap;
+  }
+  .form :global(input[type='radio']),
+  .form :global(input[type='checkbox']) {
+    flex: none;
+    accent-color: var(--accent);
+  }
+  .form :global(:is(input:not([type='radio'], [type='checkbox']), select, textarea)) {
+    flex: 1;
+    min-width: 160px;
+    height: 28px;
+    padding: 0 8px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r);
+    background: var(--bg);
+    color: var(--text);
+  }
+  .form :global(textarea) {
+    height: auto;
+    min-height: 64px;
+    padding: 6px 8px;
+  }
+  .form :global(label.other input[type='text']) {
+    max-width: 360px;
+  }
+  .form :global(pre) {
+    margin: 0;
+    padding: 8px 10px;
+    overflow-x: auto;
+    border-radius: var(--r);
+    background: var(--bg);
+    font-size: var(--fs-sm);
+  }
+  .form :global(code) {
+    font-family: var(--mono);
+    font-size: 0.92em;
+  }
+  .form :global(table) {
+    border-collapse: collapse;
+    font-size: var(--fs-sm);
+  }
+  .form :global(:is(th, td)) {
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    text-align: left;
+  }
+  .form :global(:is(img, svg)) {
+    max-width: 100%;
+    height: auto;
   }
 </style>

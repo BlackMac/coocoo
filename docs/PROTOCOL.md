@@ -465,6 +465,6 @@ such as `ask`; via the vendored official Rust client `crates/omp-rpc`). The daem
   `coocoo_schedules`, `coocoo_schedule_save` (create/change a scheduled run of the agent's project: `cron` or `at` as an ISO 8601 date-time, read in `timezone` without an offset; `agentId: "self"` targets the agent itself) and `coocoo_schedule_delete`, and
   `coocoo_secret_request` (ask the user for a secret without seeing it, see `secrets`);
 - passes `--append-system-prompt` telling the agent it runs in Coocoo, to call `coocoo_task_summary` first whenever it starts a new task, and to get secrets only through `coocoo_secret_request` and never print or re-encode them;
-- enables `set_ask_dialog` and surfaces omp `extension_ui_request`s as `UiRequest`s;
+- enables `set_ask_dialog` and surfaces omp `extension_ui_request`s as `UiRequest`s. omp ≥ 19's `ask` tool sends `method: "form"` with the agent's HTML `<form>` (`payload.html`); clients render it from an allowlist (no scripts, styles or event handlers), add the "Other" answer omp promises for radio and checkbox groups, and answer with `{ data }` by control name (string, number for `type=number`, string array for checkbox groups and multi-selects; unchecked radios and lone checkboxes omitted) or `{ cancelled: true }`;
 - starts every process of a project with its secrets in the env and omp's secret obfuscation on;
 - hibernates idle agents (process exit, session kept) and resumes them with `--resume <sessionFile>`.

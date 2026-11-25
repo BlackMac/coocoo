@@ -407,6 +407,7 @@ impl Mapper {
             ExtensionUiRequest::Input(r) => (r.id.clone(), "input"),
             ExtensionUiRequest::Editor(r) => (r.id.clone(), "editor"),
             ExtensionUiRequest::Ask(r) => (r.id.clone(), "ask"),
+            ExtensionUiRequest::Form(r) => (r.id.clone(), "form"),
             ExtensionUiRequest::Cancel(r) => {
                 sink.effect(Effect::Resolve { id: r.target_id.clone() });
                 return;

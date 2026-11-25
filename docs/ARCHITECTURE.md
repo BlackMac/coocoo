@@ -59,7 +59,7 @@ driven by the official Rust client (vendored in `crates/omp-rpc`):
   extra process — and route through the Orchestrator, so an agent on a laptop can start and
   supervise agents on any server in the fleet. `coocoo_schedules`, `coocoo_schedule_save` and
   `coocoo_schedule_delete` let an agent schedule runs in its project (`schedules.*`).
-- **Attention:** omp `ask`/`confirm`/`select`/`input` dialogs become `UiRequest`s, surfaced in the
+- **Attention:** omp `ask` (an HTML form since omp 19)/`confirm`/`select`/`input` dialogs become `UiRequest`s, surfaced in the
   overview's needs-you queue and answerable from any client.
 - **Secrets:** `coocoo_secret_request` opens a `secret` `UiRequest`; the value goes from the client
   to the daemon of the agent's host only (`secrets.provide`), never through omp. It is stored per

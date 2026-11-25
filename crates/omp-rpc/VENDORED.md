@@ -2,7 +2,7 @@
 
 Official Rust client for the omp RPC protocol, copied unmodified (except for removing the
 standalone `[workspace]` table from `Cargo.toml`) from
-https://github.com/can1357/oh-my-pi/tree/v18.12.3/sdk/rust/omp-rpc (MIT). `LICENSE` is the
+https://github.com/can1357/oh-my-pi/tree/v19.1.1/sdk/rust/omp-rpc (MIT). `LICENSE` is the
 upstream repository license at that tag.
 
 `src/wire.rs` is generated upstream from the RPC wire schema. To update, copy the directory from

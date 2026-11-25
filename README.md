@@ -285,7 +285,7 @@ macOS signing needs these repository secrets; the macOS jobs fail without them:
   or `wget` there and a release with CLI archives for the local version.
 - An agent working in a worktree can't see its changes on a dev server that runs from the main
   checkout. It has to start its own server for the worktree.
-- `crates/omp-rpc` tracks omp v18.12.3. Frames it doesn't know decode to `Unknown` and are ignored.
+- `crates/omp-rpc` tracks omp v19.1.1. Frames it doesn't know decode to `Unknown` and are ignored.
 
 ## License
 

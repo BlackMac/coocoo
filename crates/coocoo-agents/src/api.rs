@@ -12,9 +12,9 @@ use coocoo_proto::{
     TimelineItem, WorktreeRef, events,
 };
 use omp_rpc::{
-    AbortCommand, Client, ClientOptions, ExtensionUiResponse, GetAvailableCommandsCommand, GetAvailableModelsCommand,
-    ImageContent, LitImage, QueuedMessageQueue, RemoveQueuedMessageCommand, RpcInbound, SetModelCommand, SetThinkingLevelCommand,
-    ThinkingLevel,
+    AbortCommand, Client, ClientOptions, ConfiguredThinkingLevel, ExtensionUiResponse, GetAvailableCommandsCommand,
+    GetAvailableModelsCommand, ImageContent, LitImage, QueuedMessageQueue, RemoveQueuedMessageCommand, RpcInbound, SetModelCommand,
+    SetThinkingLevelCommand,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -215,7 +215,7 @@ fn message_image_mime(name: &str) -> Option<&'static str> {
     crate::image::mime(ext)
 }
 
-fn parse_thinking(level: &str) -> ApiResult<ThinkingLevel> {
+fn parse_thinking(level: &str) -> ApiResult<ConfiguredThinkingLevel> {
     serde_json::from_value(Value::String(level.to_owned()))
         .map_err(|_| ApiError::invalid(format!("unknown thinking level `{level}`")))
 }
@@ -617,7 +617,8 @@ impl Agents {
             .ok_or_else(|| ApiError::invalid("model must be `provider/modelId`"))?;
         let model = match agent.client() {
             Some(client) => {
-                let info = call(client, SetModelCommand { provider: provider.to_owned(), model_id: model_id.to_owned() })
+                let command = SetModelCommand { provider: provider.to_owned(), model_id: model_id.to_owned(), thinking_level: None, role: None };
+                let info = call(client, command)
                     .await
                     .map_err(|e| ApiError::invalid(e.message))?;
                 format!("{}/{}", info.provider, info.id)
@@ -636,16 +637,10 @@ impl Agents {
     async fn set_thinking(&self, p: ThinkingParams) -> ApiResult<Value> {
         let agent = self.get(&p.id)?;
         let level = p.level.trim();
-        match agent.client() {
-            Some(client) => {
-                let parsed = parse_thinking(level)?;
-                call(client, SetThinkingLevelCommand { level: parsed }).await.map_err(|e| ApiError::invalid(e.message))?;
-            }
-            // `auto` is valid on the command line (applied at the next start) but not over RPC.
-            None if level == "auto" => {}
-            None => {
-                parse_thinking(level)?;
-            }
+        // Without a process the level applies at the next start.
+        let parsed = parse_thinking(level)?;
+        if let Some(client) = agent.client() {
+            call(client, SetThinkingLevelCommand { level: parsed }).await.map_err(|e| ApiError::invalid(e.message))?;
         }
         agent.state.lock().summary.thinking = Some(level.to_owned());
         self.changed(&agent);
