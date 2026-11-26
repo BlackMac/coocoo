@@ -135,6 +135,8 @@ pub(crate) struct State {
     pub queued_follow_up: Vec<String>,
     /// Leading `queued_steering` entries omp already sent into the running response.
     pub queued_live_steered: usize,
+    /// Messages for the agent sent at its next step in a turn ([`crate::Agents::deliver_notices`]).
+    pub notices: Vec<String>,
     pub requests: Vec<UiRequest>,
     pub context_window: Option<u64>,
     pub commands: Option<Vec<SlashCommand>>,
@@ -170,6 +172,7 @@ impl State {
             queued_steering: Vec::new(),
             queued_follow_up: Vec::new(),
             queued_live_steered: 0,
+            notices: Vec::new(),
             requests: Vec::new(),
             context_window: None,
             commands: None,

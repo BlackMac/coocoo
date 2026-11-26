@@ -458,6 +458,7 @@ impl Agents {
         let persisted = agent.clone();
         tokio::task::spawn_blocking(move || write_meta(&persisted)).await.map_err(ApiError::internal)?;
         self.agents.write().insert(id, agent.clone());
+        self.announce_newcomer(&agent);
         let summary = agent.summary();
         self.emitter.emit(events::AGENT_UPDATED, &summary);
         self.record_ledger(&summary, None);

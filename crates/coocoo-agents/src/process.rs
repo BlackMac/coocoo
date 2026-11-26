@@ -154,6 +154,8 @@ struct SpawnSpec {
     tools: Vec<omp_rpc::HostTool>,
     /// The project's secrets (and their shadow variables, [`crate::secret::SHADOW_PREFIX`]).
     env: Vec<(String, String)>,
+    /// `--append-system-prompt`: Coocoo's rules, plus who else works in `cwd`.
+    appendix: String,
 }
 
 struct Spawned {
@@ -202,7 +204,7 @@ fn spawn_omp(spec: SpawnSpec) -> Result<Spawned, String> {
         .arg("--config")
         .arg(&overlay)
         .arg("--append-system-prompt")
-        .arg(crate::tools::SYSTEM_APPENDIX)
+        .arg(&spec.appendix)
         .current_dir(&spec.cwd)
         .env("COOCOO_AGENT_ID", &spec.agent_id)
         .env("COOCOO_HOST_ID", &spec.host_id)
@@ -355,6 +357,12 @@ impl Agents {
             Ok(url) => url,
             Err(message) => return Err(self.spawn_failed(agent, message).await),
         };
+        // Who else works here as of this start: a resumed agent gets the current list, so notices
+        // queued while it slept are covered.
+        let appendix = match self.coworker_prompt(agent) {
+            Some(coworkers) => format!("{}\n\n{coworkers}", crate::tools::SYSTEM_APPENDIX),
+            None => crate::tools::SYSTEM_APPENDIX.to_owned(),
+        };
         let spec = {
             let mut st = agent.state.lock();
             st.life = Life::Starting;
@@ -362,6 +370,7 @@ impl Agents {
             st.spawn_versions = secrets.versions;
             // This process gets every secret saved so far.
             st.secret_restart.clear();
+            st.notices.clear();
             st.sync();
             SpawnSpec {
                 omp: self.omp.clone(),
@@ -376,6 +385,7 @@ impl Agents {
                 host_id: self.host_id().to_owned(),
                 tools: crate::tools::host_tools(self, &agent.id, orchestrator.clone(), done_action),
                 env: secrets.env,
+                appendix,
             }
         };
         let resume = spec.resume.is_some();
@@ -822,6 +832,7 @@ impl Sink for LiveSink<'_> {
                         agents.record_agent(agent, "turn.start", |event| event);
                     }
                     agents.changed(agent);
+                    agents.deliver_notices(agent);
                 }
             }
             Effect::PromptResult { status, settled, error } => {
